@@ -1,0 +1,25 @@
+# Device firmware dumps and partition backups — NEVER commit (engineering Rule 2 corollary).
+# These are raw copies of the device's flash and may contain proprietary firmware.
+device-backups/
+docs/references/hw-dumps/
+*.img
+*.bin
+*.mbn
+*.elf
+full_emmc*
+
+# WEC7 / Platform Builder build outputs
+NK.bin
+NK.nb0
+*.nb0
+/build/
+*.obj
+*.lib
+*.pdb
+
+# Local / editor
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/
