@@ -25,8 +25,8 @@ proceeds. Statuses: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE`.
 | **M0** | Recovery Plan | IN PROGRESS | Verified partition backups + documented restore. | `02-recovery-plan.md` |
 | **M1** | Hardware Mapping | IN PROGRESS | Full register map at CONFIRMED confidence. | `01-hardware-map.md` |
 | **M2** | Development Toolchain | NOT STARTED | Isolated, reproducible PB env builds stock BSP. | `03-toolchain-setup.md` |
-| **M3** | C2 BSP Skeleton | IN PROGRESS (scaffold) | Workspace, OAL config, linker scripts, startup asm. | `bsp/` |
-| **M4** | First Kernel Boot | BLOCKED | Deterministic kernel exec + serial debug on HW. | HW map §6, §13 |
+| **M3** | C2 BSP Skeleton | IN PROGRESS | Workspace + component contracts done. **Startup asm + debug-UART proof-of-life (`bootstub/`) written & building for ARMv7-A.** Linker load addr still placeholder. | `bsp/`, `bootstub/` |
+| **M4** | First Kernel Boot | BLOCKED (on-device) | Proof-of-life stub builds; on-device run blocked on HW map §6 (UART base), §13.1 (handoff), §2 (carveouts) + M0 backups. | `bootstub/`, HW map §6, §13 |
 | **M5** | Display bring-up | NOT STARTED | 360×360 framebuffer updates. | HW map §8 |
 | **M6** | Touch bring-up | NOT STARTED | Touch events with correct coordinates. | HW map §9 |
 | **M7** | eMMC / storage | NOT STARTED | Persistent filesystem. | HW map §10 |
@@ -40,7 +40,13 @@ proceeds. Statuses: `NOT STARTED` · `IN PROGRESS` · `BLOCKED` · `DONE`.
 2. **M1** — promote hardware-map values from `FAMILY`/`VERIFY` to `CONFIRMED` by
    extracting from the AsteroidOS `skipjack` tree and the live Void Linux instance.
 3. **M4 unblocking research** — the four open questions in HW map §13 (bootloader
-   handoff, debug channel, reserved-memory carveouts, watchdog behavior).
+   handoff, debug channel, reserved-memory carveouts, watchdog behavior). The three
+   that directly unblock the boot stub: §6 UART base, §13.1 handoff, §2 carveouts.
+
+### Done this session
+- Project scaffold (docs + BSP skeleton).
+- `bootstub/` — bare-metal ARMv7-A proof-of-life (CPU init + MSM UART_DM banner). Builds
+  cleanly for `cortex-a7`; disassembly audited. On-device run gated per above (Rules 2, 4, 8).
 
 ## Blockers
 

@@ -23,3 +23,6 @@ NK.nb0
 .DS_Store
 .vscode/
 .idea/
+
+# Build output dirs (any location)
+build/
