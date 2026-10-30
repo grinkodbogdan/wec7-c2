@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кінопошук UA</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">Кінопошук <span>UA</span></a>
+    <form id="search" role="search">
+      <input id="q" type="search" placeholder="Назва фільму…" autocomplete="off" aria-label="Пошук">
+    </form>
+    <div class="filters" role="group" aria-label="Озвучення">
+      <button data-audio="any" aria-pressed="true">Усі</button>
+      <button data-audio="ukrainian" aria-pressed="false">🇺🇦 Українська</button>
+      <button data-audio="original" aria-pressed="false">Оригінал</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="summary" class="muted"></p>
+    <section id="grid" class="grid" aria-live="polite"></section>
+    <nav class="pager">
+      <button id="prev">← Назад</button>
+      <span id="page"></span>
+      <button id="next">Далі →</button>
+    </nav>
+  </main>
+
+  <dialog id="detail">
+    <button class="close" aria-label="Закрити">×</button>
+    <div id="detail-body"></div>
+  </dialog>
+
+  <footer class="muted">
+    Лише українське озвучення та оригінальна доріжка. Джерела: легальні безкоштовні архіви та добірки.
+    <span id="stats"></span>
+  </footer>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

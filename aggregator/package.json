@@ -1,0 +1,15 @@
+{
+  "name": "ua-film-aggregator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Film aggregator with its own database that keeps only Ukrainian and original-language audio",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node --no-warnings src/server.js",
+    "sync": "node --no-warnings src/sync.js",
+    "test": "node --no-warnings --test test/*.test.js"
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "title": "Земля",
+    "originalTitle": "Земля",
+    "year": 1930,
+    "kind": "movie",
+    "originalLanguage": "xx",
+    "overview": "Німий фільм Олександра Довженка про колективізацію в українському селі.",
+    "offers": [
+      {
+        "source": "archive",
+        "id": "earth-1930-movie",
+        "url": "https://archive.org/details/earth-1930-movie",
+        "embedUrl": "https://archive.org/embed/earth-1930-movie",
+        "audioLanguage": "silent",
+        "license": "Public domain"
+      }
+    ]
+  }
+]
