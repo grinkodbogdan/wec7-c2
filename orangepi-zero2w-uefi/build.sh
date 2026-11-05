@@ -49,7 +49,8 @@ git -C "$WORK/edk2" submodule update --init --depth 1 \
   BaseTools/Source/C/BrotliCompress/brotli \
   MdeModulePkg/Library/BrotliCustomDecompressLib/brotli \
   MdePkg/Library/MipiSysTLib/mipisyst \
-  MdePkg/Library/BaseFdtLib/libfdt
+  MdePkg/Library/BaseFdtLib/libfdt \
+  SecurityPkg/DeviceSecurity/SpdmLib/libspdm
 fetch https://github.com/ARM-software/arm-trusted-firmware.git "$TFA_TAG" tf-a
 fetch https://github.com/u-boot/u-boot.git "$UBOOT_TAG" u-boot
 
@@ -67,19 +68,19 @@ DTB="$WORK/u-boot/u-boot.dtb"
 echo "==> Building EDK2 ($TARGET)"
 (
   cd "$WORK/edk2"
-  export WORKSPACE="$WORK/edk2-build"
   export PACKAGES_PATH="$WORK/edk2:$HERE"
   export GCC_AARCH64_PREFIX="$CROSS"
-  mkdir -p "$WORKSPACE"
   make -C BaseTools -j"$JOBS"
-  # edksetup.sh reads unset variables, so relax -u while sourcing it.
+  # edksetup.sh sets WORKSPACE to the current directory and parses "$@", so
+  # clear the script's own arguments, and relax -u while sourcing it.
+  set --
   set +u
   . ./edksetup.sh
   set -u
   build -n "$JOBS" -a AARCH64 -t GCC -b "$TARGET" \
     -p OrangePiZero2W/OrangePiZero2W.dsc
 )
-FD="$WORK/edk2-build/Build/OrangePiZero2W/${TARGET}_GCC/FV/OPIZ2W_EFI.fd"
+FD="$WORK/edk2/Build/OrangePiZero2W/${TARGET}_GCC/FV/OPIZ2W_EFI.fd"
 
 echo "==> Packing FIT + SPL"
 STAGE="$WORK/fit"
