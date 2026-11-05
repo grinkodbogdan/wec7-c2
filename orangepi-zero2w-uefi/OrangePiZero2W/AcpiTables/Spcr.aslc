@@ -1,0 +1,59 @@
+/** @file
+  Serial Port Console Redirection Table (SPCR) for UART0.
+
+  UART0 is a DesignWare 16550-compatible UART with 32-bit wide registers
+  4 bytes apart, so the "16550 with parameters in the GAS" interface type is
+  used and the GAS access size is DWORD.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent
+**/
+
+#include <AcpiHelperMacros.h>
+#include <IndustryStandard/Acpi.h>
+#include <IndustryStandard/SerialPortConsoleRedirectionTable.h>
+#include <Library/PcdLib.h>
+#include "AcpiTables.h"
+
+STATIC EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE  Spcr = {
+  ACPI_HEADER (
+    EFI_ACPI_6_3_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_SIGNATURE,
+    EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE,
+    EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_REVISION
+    ),
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_INTERFACE_TYPE_16550_WITH_GAS,
+  {
+    EFI_ACPI_RESERVED_BYTE,
+    EFI_ACPI_RESERVED_BYTE,
+    EFI_ACPI_RESERVED_BYTE
+  },
+  ACPI_GAS32 (H618_UART0_BASE),
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_INTERRUPT_TYPE_GIC,
+  0,                                            // Irq (not used on Arm)
+  H618_UART0_GSIV,                              // GlobalSystemInterrupt
+#if (FixedPcdGet64 (PcdUartDefaultBaudRate) == 9600)
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_BAUD_RATE_9600,
+#elif (FixedPcdGet64 (PcdUartDefaultBaudRate) == 19200)
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_BAUD_RATE_19200,
+#elif (FixedPcdGet64 (PcdUartDefaultBaudRate) == 57600)
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_BAUD_RATE_57600,
+#elif (FixedPcdGet64 (PcdUartDefaultBaudRate) == 115200)
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_BAUD_RATE_115200,
+#else
+  #error Unsupported SPCR baud rate
+#endif
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_PARITY_NO_PARITY,
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_STOP_BITS_1,
+  0,                                            // FlowControl: none
+  EFI_ACPI_SERIAL_PORT_CONSOLE_REDIRECTION_TABLE_TERMINAL_TYPE_VT_UTF8,
+  EFI_ACPI_RESERVED_BYTE,
+  0xFFFF,                                       // PciDeviceId (not PCI)
+  0xFFFF,                                       // PciVendorId (not PCI)
+  0x00,                                         // PciBusNumber
+  0x00,                                         // PciDeviceNumber
+  0x00,                                         // PciFunctionNumber
+  0x00000000,                                   // PciFlags
+  0x00,                                         // PciSegment
+  EFI_ACPI_RESERVED_DWORD
+};
+
+VOID *CONST  ReferenceAcpiTable = &Spcr;

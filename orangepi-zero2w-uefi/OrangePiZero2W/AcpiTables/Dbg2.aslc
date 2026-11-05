@@ -1,0 +1,59 @@
+/** @file
+  Debug Port Table 2 (DBG2): UART0, for Windows kernel debugging over serial.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent
+**/
+
+#include <AcpiHelperMacros.h>
+#include <IndustryStandard/Acpi.h>
+#include <IndustryStandard/DebugPort2Table.h>
+#include "AcpiTables.h"
+
+#define UART_NAMESPACE_STRING  { '\\', '_', 'S', 'B', '.', 'U', 'R', 'T', '0', 0x00 }
+
+#pragma pack (1)
+typedef struct {
+  EFI_ACPI_DBG2_DEBUG_DEVICE_INFORMATION_STRUCT    Ddi;
+  EFI_ACPI_6_3_GENERIC_ADDRESS_STRUCTURE           BaseAddressRegister;
+  UINT32                                           AddressSize;
+  UINT8                                            NameSpaceString[10];
+} H618_DBG2_DEVICE_INFORMATION;
+
+typedef struct {
+  EFI_ACPI_DEBUG_PORT_2_DESCRIPTION_TABLE    Description;
+  H618_DBG2_DEVICE_INFORMATION               Uart0;
+} H618_DBG2_TABLE;
+#pragma pack ()
+
+STATIC H618_DBG2_TABLE  Dbg2 = {
+  {
+    ACPI_HEADER (
+      EFI_ACPI_6_3_DEBUG_PORT_2_TABLE_SIGNATURE,
+      H618_DBG2_TABLE,
+      EFI_ACPI_DEBUG_PORT_2_TABLE_REVISION
+      ),
+    OFFSET_OF (H618_DBG2_TABLE, Uart0),       // OffsetDbgDeviceInfo
+    1                                         // NumberDbgDeviceInfo
+  },
+  {
+    {
+      EFI_ACPI_DBG2_DEBUG_DEVICE_INFORMATION_STRUCT_REVISION,
+      sizeof (H618_DBG2_DEVICE_INFORMATION),
+      1,                                      // NumberofGenericAddressRegisters
+      sizeof (((H618_DBG2_DEVICE_INFORMATION *)0)->NameSpaceString),
+      OFFSET_OF (H618_DBG2_DEVICE_INFORMATION, NameSpaceString),
+      0,                                      // OemDataLength
+      0,                                      // OemDataOffset
+      EFI_ACPI_DBG2_PORT_TYPE_SERIAL,
+      EFI_ACPI_DBG2_PORT_SUBTYPE_SERIAL_16550_WITH_GAS,
+      { EFI_ACPI_RESERVED_BYTE, EFI_ACPI_RESERVED_BYTE },
+      OFFSET_OF (H618_DBG2_DEVICE_INFORMATION, BaseAddressRegister),
+      OFFSET_OF (H618_DBG2_DEVICE_INFORMATION, AddressSize)
+    },
+    ACPI_GAS32 (H618_UART0_BASE),
+    H618_UART0_SIZE,
+    UART_NAMESPACE_STRING
+  }
+};
+
+VOID *CONST  ReferenceAcpiTable = &Dbg2;

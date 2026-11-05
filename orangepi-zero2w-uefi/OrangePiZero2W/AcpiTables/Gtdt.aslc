@@ -1,0 +1,39 @@
+/** @file
+  Generic Timer Description Table (GTDT).
+
+  The H616/H618 device tree describes all four architected timer PPIs as
+  level triggered, active high, so all flags are 0.
+
+  SPDX-License-Identifier: BSD-2-Clause-Patent
+**/
+
+#include <IndustryStandard/Acpi.h>
+#include <Library/PcdLib.h>
+#include "AcpiTables.h"
+
+#define H618_GTDT_TIMER_FLAGS  0      // level triggered, active high, not always-on
+
+EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE  Gtdt = {
+  ACPI_HEADER (
+    EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE_SIGNATURE,
+    EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE,
+    EFI_ACPI_6_3_GENERIC_TIMER_DESCRIPTION_TABLE_REVISION
+    ),
+  0xFFFFFFFFFFFFFFFF,                             // CntControlBasePhysicalAddress (none)
+  0,                                              // Reserved
+  FixedPcdGet32 (PcdArmArchTimerSecIntrNum),      // SecurePL1TimerGSIV
+  H618_GTDT_TIMER_FLAGS,
+  FixedPcdGet32 (PcdArmArchTimerIntrNum),         // NonSecurePL1TimerGSIV
+  H618_GTDT_TIMER_FLAGS,
+  FixedPcdGet32 (PcdArmArchTimerVirtIntrNum),     // VirtualTimerGSIV
+  H618_GTDT_TIMER_FLAGS,
+  FixedPcdGet32 (PcdArmArchTimerHypIntrNum),      // NonSecurePL2TimerGSIV
+  H618_GTDT_TIMER_FLAGS,
+  0xFFFFFFFFFFFFFFFF,                             // CntReadBasePhysicalAddress (none)
+  0,                                              // PlatformTimerCount
+  0,                                              // PlatformTimerOffset
+  0,                                              // VirtualPL2TimerGSIV (ARMv8.1 only)
+  0                                               // VirtualPL2TimerFlags
+};
+
+VOID *CONST  ReferenceAcpiTable = &Gtdt;

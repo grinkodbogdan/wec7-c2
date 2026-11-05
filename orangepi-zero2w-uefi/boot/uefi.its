@@ -1,0 +1,60 @@
+/*
+ * FIT image loaded by mainline U-Boot SPL on the Orange Pi Zero 2W.
+ *
+ * SPL loads TF-A BL31 to 0x40000000 and the UEFI firmware to 0x4A000000,
+ * then starts BL31, which drops to EL2 and jumps to the image marked
+ * os = "u-boot" (our UEFI firmware, in place of U-Boot proper).
+ *
+ * The /incbin/ paths are relative to the directory mkimage runs in;
+ * build.sh copies the three inputs there first.
+ */
+
+/dts-v1/;
+
+/ {
+	description = "EDK2 UEFI + TF-A for Orange Pi Zero 2W";
+	#address-cells = <1>;
+
+	images {
+		uefi {
+			description = "EDK2 UEFI firmware (BL33)";
+			type = "standalone";
+			os = "u-boot";
+			arch = "arm64";
+			compression = "none";
+			load = <0x4a000000>;
+			entry = <0x4a000000>;
+			data = /incbin/("OPIZ2W_EFI.fd");
+		};
+
+		atf {
+			description = "ARM Trusted Firmware BL31";
+			type = "firmware";
+			os = "arm-trusted-firmware";
+			arch = "arm64";
+			compression = "none";
+			load = <0x40000000>;
+			entry = <0x40000000>;
+			data = /incbin/("bl31.bin");
+		};
+
+		fdt-1 {
+			description = "sun50i-h618-orangepi-zero2w";
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			data = /incbin/("board.dtb");
+		};
+	};
+
+	configurations {
+		default = "config-1";
+
+		config-1 {
+			description = "sun50i-h618-orangepi-zero2w";
+			firmware = "atf";
+			loadables = "uefi";
+			fdt = "fdt-1";
+		};
+	};
+};

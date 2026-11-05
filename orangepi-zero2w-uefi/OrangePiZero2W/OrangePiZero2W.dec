@@ -1,0 +1,34 @@
+## @file
+#  Orange Pi Zero 2W (Allwinner H618) platform package.
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  DEC_SPECIFICATION              = 0x0001001A
+  PACKAGE_NAME                   = OrangePiZero2W
+  PACKAGE_GUID                   = 322252fd-254b-40b7-aa69-bcef77ecacd0
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
+
+[Guids.common]
+  gOrangePiZero2WTokenSpaceGuid = { 0xc9da0080, 0xd5c2, 0x4022, { 0xb2, 0x19, 0xe0, 0xf5, 0x21, 0x68, 0x73, 0x5f } }
+
+[PcdsFixedAtBuild.common]
+  # GIC-400 virtualisation interfaces (needed only for the ACPI MADT).
+  gOrangePiZero2WTokenSpaceGuid.PcdGicInterruptInterfaceHBase|0x03024000|UINT64|0x00000001
+  gOrangePiZero2WTokenSpaceGuid.PcdGicInterruptInterfaceVBase|0x03026000|UINT64|0x00000002
+  # VGIC maintenance interrupt: PPI 9 -> GSIV 25.
+  gOrangePiZero2WTokenSpaceGuid.PcdGicVgicMaintIrq|25|UINT32|0x00000003
+  # Cortex-A53 PMU interrupts: SPI 140..143 -> GSIV 172..175.
+  gOrangePiZero2WTokenSpaceGuid.PcdGicPmuIrq0|172|UINT32|0x00000004
+  gOrangePiZero2WTokenSpaceGuid.PcdGicPmuIrq1|173|UINT32|0x00000005
+  gOrangePiZero2WTokenSpaceGuid.PcdGicPmuIrq2|174|UINT32|0x00000006
+  gOrangePiZero2WTokenSpaceGuid.PcdGicPmuIrq3|175|UINT32|0x00000007
+  # DRAM that TF-A BL31 lives in at the bottom of DRAM. Reported to the OS as
+  # reserved so nothing ever overwrites the secure monitor.
+  gOrangePiZero2WTokenSpaceGuid.PcdTfaReservedSize|0x00200000|UINT64|0x00000008
+  # Largest DRAM size the board can have (H616/H618 maximum is 4 GiB).
+  gOrangePiZero2WTokenSpaceGuid.PcdDramMaxSize|0x100000000|UINT64|0x00000009

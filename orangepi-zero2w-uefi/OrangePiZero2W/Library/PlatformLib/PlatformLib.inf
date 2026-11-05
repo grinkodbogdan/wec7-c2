@@ -1,0 +1,45 @@
+## @file
+#  ArmPlatformLib for the Orange Pi Zero 2W (Allwinner H618).
+#
+#  SPDX-License-Identifier: BSD-2-Clause-Patent
+##
+
+[Defines]
+  INF_VERSION                    = 0x0001001A
+  BASE_NAME                      = OrangePiZero2WPlatformLib
+  FILE_GUID                      = c3df3a24-e575-43d0-b3d0-36b9c13f5e3f
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = ArmPlatformLib|SEC PEIM
+
+[Packages]
+  ArmPkg/ArmPkg.dec
+  ArmPlatformPkg/ArmPlatformPkg.dec
+  EmbeddedPkg/EmbeddedPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  MdePkg/MdePkg.dec
+  OrangePiZero2W/OrangePiZero2W.dec
+
+[LibraryClasses]
+  ArmLib
+  BaseLib
+  DebugLib
+  PcdLib
+
+[Sources.common]
+  PlatformLib.c
+  PlatformMem.c
+
+[Sources.AARCH64]
+  AArch64/PlatformHelper.S
+
+[FixedPcd]
+  gArmTokenSpaceGuid.PcdFdBaseAddress
+  gArmTokenSpaceGuid.PcdFdSize
+  gArmTokenSpaceGuid.PcdSystemMemoryBase
+  gArmTokenSpaceGuid.PcdSystemMemorySize
+  gOrangePiZero2WTokenSpaceGuid.PcdTfaReservedSize
+  gOrangePiZero2WTokenSpaceGuid.PcdDramMaxSize
+
+[Ppis]
+  gArmMpCoreInfoPpiGuid
