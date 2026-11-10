@@ -4,11 +4,13 @@ An in-progress port of [DragonFly BSD](https://www.dragonflybsd.org/) to 64-bit
 ARM (aarch64). DragonFly runs only on x86-64 upstream; this is the first part of
 the work needed to change that.
 
-**This is not a usable operating system yet.** The real DragonFly kernel now
-boots on an emulated ARM64 machine, runs its whole startup sequence on one CPU
-and stops at the prompt asking for a root filesystem. It cannot go further:
-there is no way to run user programs yet, no second CPU, and no drivers. See
-[What works](#what-works) and [What is missing](#what-is-missing).
+**This is not a usable operating system yet.** The real DragonFly kernel boots
+on an emulated ARM64 machine, mounts a root filesystem from a ramdisk and runs
+a first user program, which can fork, take page faults and talk to the console.
+What it cannot run is real software: there is no C library or toolchain for
+this platform, so that one hand-written test program is all there is. It also
+uses one CPU only and has no hardware drivers. See [What works](#what-works)
+and [What is missing](#what-is-missing).
 
 ## Will this run on the TicWatch C2?
 
@@ -35,7 +37,8 @@ and lays this directory's `sys/` tree over it.
 | `sys/platform/arm64/include/` | Platform headers: per-CPU data, thread, PCB, pmap, address space layout |
 | `sys/platform/arm64/conf/` | Kernel linker script |
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
-| `build.sh` | Fetch, overlay, build the kernel, and run it in QEMU |
+| `user/init.c` | The first user program: a freestanding `/sbin/init` that tests the kernel and offers a small prompt |
+| `build.sh` | Fetch, overlay, build the kernel and ramdisk, and run them in QEMU |
 | `tools/mi-coverage.sh` | Compiles only the shared kernel sources for aarch64 and reports failures |
 
 The naming follows DragonFly's existing split: `cpu/x86_64` + `platform/pc64`
@@ -43,62 +46,69 @@ becomes `cpu/aarch64` + `platform/arm64`.
 
 ## Building and running
 
-Requirements: `git`, `clang`, `ld.lld`, `llvm-objcopy`, `llvm-nm`, and
-`qemu-system-aarch64` to run. No cross-GCC is needed.
+Requirements: `git`, `clang`, `ld.lld`, `llvm-objcopy`, `llvm-nm`,
+`genisoimage`, and `qemu-system-aarch64` to run. No cross-GCC is needed.
 
 ```sh
-./build.sh build     # fetch DragonFly (~900MB checkout), overlay, build
+./build.sh build     # fetch DragonFly (~900MB checkout), build kernel + ramdisk
 ./build.sh run       # boot in QEMU on your terminal; Ctrl-A X exits
 ```
 
 `build.sh` stands in for `config(8)` and the kernel makefiles, which do not
-know about arm64 yet. Expected console output:
+know about arm64 yet. Expected console output (abridged):
 
 ```
 Copyright (c) 2003-2026 The DragonFly Project.
-Copyright (c) 1992-2003 The FreeBSD Project.
-Copyright (c) 1979, 1980, 1983, 1986, 1988, 1989, 1991, 1992, 1993, 1994
-	The Regents of the University of California. All rights reserved.
+...
 DragonFly/arm64 94448f62 #0: Tue Nov 10 16:20:32 UTC 2026
 Machine: linux,dummy-virt
 CPU: ARM Cortex-A72 r0p3 (midr 0x410fd083)
-  Physical address bits: 44, ASID bits: 16, running at EL1
-  Features: FP AdvSIMD AES SHA2 CRC32
 real memory  = 1073741824 (1024 MB)
 gic0: GICv2, distributor 0x8000000, cpu interface 0x8010000, 192 irqs
-avail memory = 1027870720 (980 MB)
-CPU Topology: cores_per_chip: 1; threads_per_core: 1; chips_per_package: 1;
-Initialize MI interrupts for 1 cpus
-link_elf_lookup_symbol: missing symbol hash table
-interrupt uses mplock: swi_taskq
-wdog: In-kernel automatic watchdog reset enabled
+avail memory = 1027399680 (979 MB)
+...
+md0: Preloaded image <initrd> 434176 bytes at 0xfffff80048000000
+Mounting root from cd9660:md0
+cd9660: RockRidge Extension
+Mounting devfs
 
-Manual root filesystem specification:
-  <fstype>:<device>  Specify root (e.g. ufs:da0s1a)
-  ?                  List valid disk boot devices
-  panic              Just panic
-  abort              Abort manual input
+Hello from user mode on DragonFly/aarch64 (pid 1)
 
-mountroot>
+  ok      getpid() == 1
+  ok      write to .data
+  ok      mmap anonymous memory
+  ok      demand-zero page reads 0
+  ok      page fault on write
+  ok      fork, child exit status 7
+  ok      copy-on-write after fork
+pid 3 (init): data abort (user) at pc 0x400d4c, addr 0x8, signal 11
+pid 3 (init), uid 0: exited on signal 11
+  ok      child killed by SIGSEGV
+
+Commands: test, uptime, reboot, poweroff
+init>
 ```
 
-The prompt takes keyboard input. `?` lists no devices because there are no
-storage drivers; any answer ends in "Root mount failed", after which the kernel
-reboots itself.
+The SIGSEGV line is part of the test: a child process dereferences a bad
+pointer on purpose and the parent checks that it was killed. `poweroff` shuts
+the kernel down cleanly and exits QEMU.
 
 Boot arguments work as on other platforms: `QEMU_APPEND="-v"` for verbose
 boot, `-s` for single user, `name=value` for loader tunables, and `selftest`
 to run the atomic-primitive checks. Other knobs: `QEMU_CPU=max`,
 `QEMU_MEM=3G`, `QEMU_EXTRA="-M virt,virtualization=on"` (enter at EL2).
+Without a ramdisk (`vfs.root.mountfrom` unset) the kernel stops at the
+`mountroot>` prompt.
 
 ## What works
 
 Tested under QEMU 8.2 `virt` with Cortex-A53, Cortex-A72 and `max` CPU models,
-256MB to 3GB of RAM, entered at both EL1 and EL2. One CPU only.
+256MB to 3GB of RAM, entered at both EL1 and EL2. One CPU only. The user
+program's checks pass on all of them.
 
 - **The kernel links and runs.** All 264 source files that `sys/conf/files`
   marks `standard` are compiled and linked with the arm64 platform code into a
-  2.7MB kernel. Six shared files needed a one-line `__aarch64__` addition.
+  2.8MB kernel. Six shared files needed a one-line `__aarch64__` addition.
 - **Boot.** The image carries a Linux arm64 `Image` header, so QEMU, U-Boot and
   Android bootloaders can load it. Memory size, serial port, interrupt
   controller, timer and boot arguments come from the device tree.
@@ -112,7 +122,14 @@ Tested under QEMU 8.2 `virt` with Cortex-A53, Cortex-A72 and `max` CPU models,
   scheduler's interrupt source. Uptime advances and timeouts fire.
 - **Console.** DragonFly's own `kprintf` and console layer on a PL011 serial
   port, output and polled input.
-- **Reboot and power-off** through PSCI.
+- **Root filesystem.** A ramdisk handed over the Linux way (QEMU `-initrd`, or
+  the ramdisk slot of an Android boot image) becomes memory disk `md0` and is
+  mounted as an ISO 9660 root.
+- **User mode.** Programs are loaded by the standard ELF loader and run at
+  EL0: system calls, page faults, fork with copy-on-write, exit status, and
+  processes killed by a signal. `/dev/console` can be read and written.
+- **Reboot and power-off** through PSCI, including a clean shutdown requested
+  from user mode.
 
 ## What is missing
 
@@ -120,9 +137,10 @@ Roughly in the order it blocks progress:
 
 | Area | State | What it takes |
 |---|---|---|
-| User mode | Not started. Exceptions from user mode are fatal and there is no return path to it | System call entry, user page faults, signal delivery, `exec` register setup, FP/SIMD state switching. On x86-64 this is most of `trap.c`, `machdep.c` and `npx.c`, about 5,000 lines |
-| Something to run | Nothing | A cross toolchain for `aarch64-dragonfly`, then libc, the runtime linker and the thread library, all of which have per-CPU assembly |
-| Storage | No drivers | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then at least virtio-blk or a RAM disk |
+| Software to run | One hand-written test program | A cross toolchain for `aarch64-dragonfly`, then libc, the runtime linker and the thread library, all of which have per-CPU assembly. This is now the largest gap |
+| User mode, remaining | Basics work | Signal handlers (`sendsig`/`sigreturn`), FP/SIMD state (any FP instruction in user mode currently kills the process), thread-local storage system calls, debugger support |
+| Terminal | Raw read/write only | A real tty driver for the serial port, needed before a shell or login can run |
+| Storage | Ramdisk only, read-only ISO 9660 | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then virtio-blk and a writable filesystem |
 | More than one CPU | Not started | Starting secondary CPUs through PSCI, inter-processor interrupts, and an audit of shared code that assumes x86's strong memory ordering |
 | Interrupt controllers | GICv2 only | GICv3, which most hardware from the last several years uses, and MSI |
 | pmap performance | Correct but slow | One global lock, no address-space IDs (every process switch flushes the TLB), no large pages, dirty/accessed tracking by over-approximation |
@@ -152,10 +170,10 @@ naming what is missing, so hitting one is obvious.
 ## Roadmap
 
 1. ~~Reach `mi_startup()` on one CPU and boot to the root prompt.~~ Done.
-2. **A root filesystem.** Device-tree bus, bus DMA, and a virtio-blk driver or
-   memory disk so the kernel can mount something.
-3. **User mode.** Exception entry and return for EL0, system calls, signals,
-   and a cross-built `/sbin/init` and shell. This is the largest step.
+2. ~~A root filesystem and a first user process.~~ Done, with a ramdisk and
+   a test program.
+3. **Real userland.** Signal handlers, FP/SIMD, TLS, a tty driver, and a
+   cross-built libc, `/sbin/init` and shell. This is the largest step.
 4. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
 5. **Real hardware.** GICv3 and drivers for one board (Raspberry Pi 4 or a
    well-documented Rockchip board).
