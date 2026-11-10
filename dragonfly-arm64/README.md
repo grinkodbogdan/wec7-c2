@@ -6,23 +6,22 @@ the work needed to change that.
 
 **This is not a usable operating system yet.** The real DragonFly kernel boots
 on an emulated ARM64 machine, mounts a root filesystem from a ramdisk and runs
-a first user program, which can fork, take page faults and talk to the console.
-What it cannot run is real software: there is no C library or toolchain for
-this platform, so that one hand-written test program is all there is. It also
-uses one CPU only and has no hardware drivers. See [What works](#what-works)
-and [What is missing](#what-is-missing).
+user programs: an init that tests the kernel and a small interactive shell,
+with a working terminal, signals, floating point and a writable `/tmp`. What it
+cannot run is real software, because DragonFly's C library and toolchain have
+not been ported; the programs here use a few-hundred-line stand-in. It also
+uses one CPU only, has no disk, network or display drivers, and has never run
+on real hardware. See [What works](#what-works) and
+[What is missing](#what-is-missing).
 
-## Will this run on the TicWatch C2?
+## Target hardware
 
-No. The TicWatch C2 (Snapdragon Wear 2100, Cortex-A7) is a **32-bit** ARM
-device. DragonFly dropped 32-bit support in 2014 and its kernel assumes 64-bit
-pointers and `long` throughout, so the only realistic ARM target is 64-bit. A
-32-bit port would be a second, larger project on top of this one.
+The intended first phone is the **Xiaomi Mi 5** (Snapdragon 820, 64-bit).
+Nothing has been tried on one yet. See [Xiaomi Mi 5](#xiaomi-mi-5) for what is
+in place and what is not.
 
-Realistic first hardware for this port is anything with a GICv2 interrupt
-controller and a PL011 serial port that boots Linux-style kernel images: QEMU's
-`virt` machine today, a Raspberry Pi 4 with modest work. Phones come much later
-(see [Roadmap](#roadmap)).
+The TicWatch C2 that the rest of this repository is about **cannot** run this:
+it is a 32-bit ARM device, and DragonFly has been 64-bit only since 2014.
 
 ## Layout
 
@@ -37,7 +36,7 @@ and lays this directory's `sys/` tree over it.
 | `sys/platform/arm64/include/` | Platform headers: per-CPU data, thread, PCB, pmap, address space layout |
 | `sys/platform/arm64/conf/` | Kernel linker script |
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
-| `user/init.c` | The first user program: a freestanding `/sbin/init` that tests the kernel and offers a small prompt |
+| `user/` | Test userland: a mini C library (`libc.c`, not a port of DragonFly's), an `init` that tests the kernel, and a small shell |
 | `build.sh` | Fetch, overlay, build the kernel and ramdisk, and run them in QEMU |
 | `tools/mi-coverage.sh` | Compiles only the shared kernel sources for aarch64 and reports failures |
 
@@ -65,46 +64,62 @@ Machine: linux,dummy-virt
 CPU: ARM Cortex-A72 r0p3 (midr 0x410fd083)
 real memory  = 1073741824 (1024 MB)
 gic0: GICv2, distributor 0x8000000, cpu interface 0x8010000, 192 irqs
-avail memory = 1027399680 (979 MB)
 ...
 md0: Preloaded image <initrd> 434176 bytes at 0xfffff80048000000
 Mounting root from cd9660:md0
-cd9660: RockRidge Extension
 Mounting devfs
 
-Hello from user mode on DragonFly/aarch64 (pid 1)
+Hello from user mode on DragonFly/aarch64
 
-  ok      getpid() == 1
   ok      write to .data
   ok      mmap anonymous memory
   ok      demand-zero page reads 0
   ok      page fault on write
   ok      fork, child exit status 7
   ok      copy-on-write after fork
-pid 3 (init): data abort (user) at pc 0x400d4c, addr 0x8, signal 11
+pid 3 (init): data abort (user) at pc 0x4006cc, addr 0x8, signal 11
 pid 3 (init), uid 0: exited on signal 11
   ok      child killed by SIGSEGV
+  ok      signal handler ran
+  ok      handler could use floating point
+  ok      floating point intact after handler
+  ok      floating point across context switches
+  ok      create a file on tmpfs
+  ok      read it back
+  ok      remove it
+All checks passed.
 
-Commands: test, uptime, reboot, poweroff
-init>
+DragonFly/arm64 test shell.  Type help for commands.
+# uname
+DragonFly 94448f62 aarch64 (ARM Cortex-A72)
+# echo hello > /tmp/a
+# cat /tmp/a
+hello
+# spin
+spinning; press ^C to stop
+^C[killed by signal 2]
+# poweroff
 ```
 
 The SIGSEGV line is part of the test: a child process dereferences a bad
-pointer on purpose and the parent checks that it was killed. `poweroff` shuts
-the kernel down cleanly and exits QEMU.
+pointer on purpose and the parent checks that it was killed. `help` lists the
+shell's commands; `/sbin/init` re-runs the checks; `poweroff` shuts the kernel
+down cleanly and exits QEMU.
 
 Boot arguments work as on other platforms: `QEMU_APPEND="-v"` for verbose
 boot, `-s` for single user, `name=value` for loader tunables, and `selftest`
 to run the atomic-primitive checks. Other knobs: `QEMU_CPU=max`,
-`QEMU_MEM=3G`, `QEMU_EXTRA="-M virt,virtualization=on"` (enter at EL2).
+`QEMU_MEM=3G`, `QEMU_EXTRA="-M virt,virtualization=on"` (enter at EL2),
+`QEMU_EXTRA="-M virt,gic-version=3"` (GICv3).
 Without a ramdisk (`vfs.root.mountfrom` unset) the kernel stops at the
 `mountroot>` prompt.
 
 ## What works
 
 Tested under QEMU 8.2 `virt` with Cortex-A53, Cortex-A72 and `max` CPU models,
-256MB to 3GB of RAM, entered at both EL1 and EL2. One CPU only. The user
-program's checks pass on all of them.
+256MB to 3GB of RAM, GICv2 and GICv3, entered at both EL1 and EL2, and loaded
+at both a 2MB-aligned and an unaligned address. One CPU only. The 14 checks
+`init` runs pass on all of them.
 
 - **The kernel links and runs.** All 264 source files that `sys/conf/files`
   marks `standard` are compiled and linked with the arm64 platform code into a
@@ -117,7 +132,7 @@ program's checks pass on all of them.
   code paths for user address spaces exist but have never run.
 - **Threads and scheduling.** Kernel threads are created, switched and
   preempted by interrupt threads; the idle loop sleeps the CPU.
-- **Interrupts and time.** GICv2 dispatch that honours critical sections, soft
+- **Interrupts and time.** GICv2 and GICv3 dispatch that honours critical sections, soft
   interrupts, and the ARM generic timer as both the system timebase and the
   scheduler's interrupt source. Uptime advances and timeouts fire.
 - **Console.** DragonFly's own `kprintf` and console layer on a PL011 serial
@@ -126,8 +141,14 @@ program's checks pass on all of them.
   the ramdisk slot of an Android boot image) becomes memory disk `md0` and is
   mounted as an ISO 9660 root.
 - **User mode.** Programs are loaded by the standard ELF loader and run at
-  EL0: system calls, page faults, fork with copy-on-write, exit status, and
-  processes killed by a signal. `/dev/console` can be read and written.
+  EL0: system calls, page faults, fork with copy-on-write, exec, exit status.
+- **Signals.** Handlers run on the user stack and return through
+  `sigreturn`; processes without a handler are killed.
+- **Floating point.** FP/SIMD registers are saved and restored across context
+  switches, fork, exec and signal handlers.
+- **Terminal.** The serial port is a real tty: line editing, echo, and
+  Ctrl-C/Ctrl-Z delivered as signals to the foreground job.
+- **Writable storage in memory.** tmpfs mounts on `/tmp`.
 - **Reboot and power-off** through PSCI, including a clean shutdown requested
   from user mode.
 
@@ -137,12 +158,11 @@ Roughly in the order it blocks progress:
 
 | Area | State | What it takes |
 |---|---|---|
-| Software to run | One hand-written test program | A cross toolchain for `aarch64-dragonfly`, then libc, the runtime linker and the thread library, all of which have per-CPU assembly. This is now the largest gap |
-| User mode, remaining | Basics work | Signal handlers (`sendsig`/`sigreturn`), FP/SIMD state (any FP instruction in user mode currently kills the process), thread-local storage system calls, debugger support |
-| Terminal | Raw read/write only | A real tty driver for the serial port, needed before a shell or login can run |
-| Storage | Ramdisk only, read-only ISO 9660 | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then virtio-blk and a writable filesystem |
+| Software to run | A stand-in C library and two test programs | A cross toolchain for `aarch64-dragonfly`, then DragonFly's libc, runtime linker and thread library, all of which have per-CPU assembly. This is the largest gap |
+| User mode, remaining | Most of it works | Thread-local storage system calls (needed by the real libc and threads), debugger support (`ptrace`, single step) |
+| Storage | Ramdisk root (read-only ISO 9660) and tmpfs | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then real disk drivers and a persistent filesystem |
 | More than one CPU | Not started | Starting secondary CPUs through PSCI, inter-processor interrupts, and an audit of shared code that assumes x86's strong memory ordering |
-| Interrupt controllers | GICv2 only | GICv3, which most hardware from the last several years uses, and MSI |
+| Interrupt controllers | GICv2 and GICv3, boot CPU only | Per-CPU setup for secondary CPUs, MSI (GICv2m or the GICv3 ITS) |
 | pmap performance | Correct but slow | One global lock, no address-space IDs (every process switch flushes the TLB), no large pages, dirty/accessed tracking by over-approximation |
 | Kernel modules | Cannot load | Relocation processing and a kernel symbol table |
 | Debugging | None | The in-kernel debugger backend, crash dumps, `ptrace` register access |
@@ -170,17 +190,52 @@ naming what is missing, so hitting one is obvious.
 ## Roadmap
 
 1. ~~Reach `mi_startup()` on one CPU and boot to the root prompt.~~ Done.
-2. ~~A root filesystem and a first user process.~~ Done, with a ramdisk and
-   a test program.
-3. **Real userland.** Signal handlers, FP/SIMD, TLS, a tty driver, and a
-   cross-built libc, `/sbin/init` and shell. This is the largest step.
-4. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
-5. **Real hardware.** GICv3 and drivers for one board (Raspberry Pi 4 or a
-   well-documented Rockchip board).
-6. **Self-hosting.** Native toolchain, `buildworld` on arm64.
-7. **Phones.** Each phone needs its own serial, storage, display, touch, power
-   and modem drivers, and vendors publish these only for Linux. Expect this to
-   be a per-device project comparable in size to everything above.
+2. ~~A root filesystem and a first user process.~~ Done.
+3. ~~Signals, floating point, a terminal and a shell.~~ Done, against a
+   stand-in C library.
+4. **Mi 5 first boot.** A framebuffer console, a boot image, and the fixes the
+   first attempt on hardware turns up. See below.
+5. **Real userland.** Cross toolchain, DragonFly's libc and runtime linker,
+   thread-local storage. This is the largest step.
+6. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
+7. **Drivers.** A device-tree bus, bus DMA, then storage, USB and network.
+8. **Self-hosting.** Native toolchain, `buildworld` on arm64.
+
+## Xiaomi Mi 5
+
+The Mi 5 (codename gemini, Snapdragon 820 / MSM8996) is the target phone. This
+section separates what the port already does from what is assumed about the
+phone and not yet checked against its device tree.
+
+In place and tested in QEMU:
+
+- **64-bit ARMv8 CPU support.** The Kryo cores are identified by name.
+- **GICv3.** The interrupt controller family this chip uses.
+- **Loading at an unaligned address.** Qualcomm's bootloader of that era puts
+  the kernel at a fixed offset from the start of RAM instead of honouring the
+  image header, so the kernel no longer needs a 2MB-aligned load address.
+- **Ramdisk root.** Arrives the same way an Android boot image's ramdisk does.
+- **PSCI** for reboot and power-off.
+
+Not done, in the order a first boot needs them:
+
+1. **A way to see anything.** The kernel's only console is a PL011 serial
+   port. The Mi 5's debug serial port is a different (Qualcomm) UART and is
+   only reachable by opening the phone. The practical console is the display:
+   a driver that draws text into the framebuffer the bootloader leaves set up.
+   Neither exists yet.
+2. **A boot image.** The kernel and the phone's device tree packed in the
+   Android boot image format so `fastboot boot` can load it without flashing.
+3. **Device tree memory reservations.** The kernel currently treats all RAM as
+   free. On a phone, parts of it belong to the modem and firmware; using them
+   will crash. This must be fixed before the first attempt.
+4. **Everything after first boot.** Storage (UFS), USB, touch, display
+   control, power management and the modem each need a driver written for this
+   chip. None of DragonFly's existing drivers apply.
+
+`fastboot boot` loads an image into RAM for one boot without writing to the
+phone's storage, which is the safe way to experiment. Keep a backup of the
+phone's partitions regardless.
 
 For scale: FreeBSD's arm64 port was a funded, multi-year effort before it first
 shipped in FreeBSD 11.0, and DragonFly's kernel differs enough from FreeBSD's

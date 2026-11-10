@@ -51,7 +51,7 @@ struct arm64_bootinfo {
 	int		bi_ncpus;
 	vm_paddr_t	bi_uart_base;		/* arm,pl011 */
 	vm_paddr_t	bi_gicd_base;		/* GICv2 distributor */
-	vm_paddr_t	bi_gicc_base;		/* GICv2 cpu interface */
+	vm_paddr_t	bi_gicc_base;		/* v2 cpu interface, v3 redistributors */
 	int		bi_gic_version;		/* 0 = none found */
 	int		bi_timer_irq;		/* virtual timer INTID */
 	int		bi_psci;		/* 0 none, 1 hvc, 2 smc */
@@ -94,7 +94,7 @@ void	trap_fatal(struct trapframe *frame, int from_el1) __dead2;
 
 void	arm64_intr_init(void);
 void	arm64_intr(struct trapframe *frame);
-int	gic_init(vm_paddr_t gicd, vm_paddr_t gicc);
+int	gic_init(int version, vm_paddr_t gicd, vm_paddr_t percpu);
 void	gic_enable_irq(int irq);
 void	gic_disable_irq(int irq);
 int	gic_ack(void);

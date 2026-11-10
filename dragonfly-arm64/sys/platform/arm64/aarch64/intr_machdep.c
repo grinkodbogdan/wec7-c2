@@ -191,17 +191,20 @@ arm64_intr_init(void)
 {
 	struct arm64_bootinfo *bi = &arm64_bootinfo;
 
-	if (bi->bi_gic_version != 2 || bi->bi_gicc_base == 0) {
+	if ((bi->bi_gic_version != 2 && bi->bi_gic_version != 3) ||
+	    bi->bi_gicc_base == 0) {
 		kprintf("WARNING: no supported interrupt controller "
 		    "(GIC version %d), running without interrupts\n",
 		    bi->bi_gic_version);
 		return;
 	}
-	arm64_nirqs = gic_init(bi->bi_gicd_base, bi->bi_gicc_base);
+	arm64_nirqs = gic_init(bi->bi_gic_version, bi->bi_gicd_base,
+	    bi->bi_gicc_base);
 	if (arm64_nirqs > MAX_HARDINTS)
 		arm64_nirqs = MAX_HARDINTS;
-	kprintf("gic0: GICv2, distributor 0x%jx, cpu interface 0x%jx, "
-	    "%d irqs\n", (uintmax_t)bi->bi_gicd_base,
+	kprintf("gic0: GICv%d, distributor 0x%jx, %s 0x%jx, %d irqs\n",
+	    bi->bi_gic_version, (uintmax_t)bi->bi_gicd_base,
+	    bi->bi_gic_version == 3 ? "redistributors" : "cpu interface",
 	    (uintmax_t)bi->bi_gicc_base, arm64_nirqs);
 }
 

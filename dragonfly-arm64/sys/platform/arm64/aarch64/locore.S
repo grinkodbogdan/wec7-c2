@@ -33,8 +33,14 @@
  *				   only live until initarm() disables it
  *	TTBR1  0xfffff80000000000  DMAP, direct map of the low 4GB of
  *				   physical memory (same base as pc64)
- *	TTBR1  0xffffffff80000000  KERNBASE, 1GB of 2MB blocks starting at
- *				   the kernel's physical load address
+ *	TTBR1  0xffffffff80000000  KERNBASE, 32MB of 4KB pages starting
+ *				   at the kernel's physical load address
+ *
+ * The kernel image is mapped with 4KB pages rather than 2MB blocks so
+ * that it can be loaded at any page-aligned address.  Bootloaders that
+ * predate the "load anywhere" flag of the Image header (the LK-based
+ * ones on many Qualcomm phones, for example) put the kernel at a fixed
+ * offset such as RAM base + 0x80000, which is not 2MB aligned.
  */
 
 #define	L0_SHIFT	39
@@ -68,6 +74,20 @@
 /* RES1 bits + M, C, SA, I */
 #define	SCTLR_VALUE	0x30d0180d
 
+#define	PAGE_NORMAL	(0x3 | PTE_AF | PTE_SH_INNER | PTE_ATTR_NORMAL)
+
+/* Level 3 tables for the kernel image: 16 x 2MB = 32MB. */
+#define	KERN_L3_TABLES	16
+
+/*
+ * Offset from the start of RAM at which a loader that honours the
+ * Image header places the kernel.  Zero is fine for those; setting it
+ * (-DTEXT_OFFSET=0x80000) exists to test the unaligned-load path.
+ */
+#ifndef TEXT_OFFSET
+#define	TEXT_OFFSET	0
+#endif
+
 #define	BOOTSTACK_SIZE	(4 * 4096)
 
 	.section .text.boot, "ax"
@@ -76,7 +96,7 @@ _start:
 	/* Linux arm64 Image header */
 	b	1f			/* code0 */
 	.long	0			/* code1 */
-	.quad	0			/* text_offset */
+	.quad	TEXT_OFFSET		/* text_offset */
 	.quad	_end - _start		/* image_size */
 	.quad	0xa			/* flags: LE, 4K pages, load anywhere */
 	.quad	0
@@ -106,6 +126,19 @@ _start:
 	orr	x1, x1, #3		/* EL1 may use the physical timer */
 	msr	cnthctl_el2, x1
 	msr	cntvoff_el2, xzr
+	/*
+	 * With a GICv3 the cpu interface is a set of system registers,
+	 * which EL2 must allow EL1 to use (ICC_SRE_EL2.Enable and .SRE).
+	 */
+	mrs	x1, id_aa64pfr0_el1
+	ubfx	x1, x1, #24, #4
+	cbz	x1, 8f
+	mrs	x1, S3_4_C12_C9_5	/* ICC_SRE_EL2 */
+	orr	x1, x1, #0x1		/* SRE */
+	orr	x1, x1, #0x8		/* Enable */
+	msr	S3_4_C12_C9_5, x1
+	isb
+8:
 	mov	x1, #0x3c5		/* EL1h, DAIF masked */
 	msr	spsr_el2, x1
 	adr	x1, in_el1
@@ -164,21 +197,29 @@ in_el1:
 	cmp	x3, #4
 	b.lo	5b
 
-	/* TTBR1: kernel image, 1GB of 2MB blocks at KERNBASE. */
+	/* TTBR1: kernel image, 32MB of 4KB pages at KERNBASE. */
 	adrp	x1, boot_l1_kern
 	orr	x2, x1, #PTE_TABLE
 	str	x2, [x22, #(PT_INDEX(KERNBASE, L0_SHIFT) * 8)]
 	adrp	x3, boot_l2_kern
 	orr	x2, x3, #PTE_TABLE
 	str	x2, [x1, #(PT_INDEX(KERNBASE, L1_SHIFT) * 8)]
-	ldr	x2, =(BLK_NORMAL | PTE_UXN)
-	orr	x2, x2, x20		/* load address must be 2MB aligned */
+	adrp	x5, boot_l3_kern
 	mov	x4, #0
-6:	str	x2, [x3, x4, lsl #3]
-	add	x2, x2, #(1 << L2_SHIFT)
+6:	add	x2, x5, x4, lsl #12	/* level 2 entry -> its level 3 table */
+	orr	x2, x2, #PTE_TABLE
+	str	x2, [x3, x4, lsl #3]
 	add	x4, x4, #1
-	cmp	x4, #512
+	cmp	x4, #KERN_L3_TABLES
 	b.lo	6b
+	ldr	x2, =(PAGE_NORMAL | PTE_UXN)
+	orr	x2, x2, x20		/* load address is page aligned */
+	mov	x4, #0
+7:	str	x2, [x5, x4, lsl #3]
+	add	x2, x2, #4096
+	add	x4, x4, #1
+	cmp	x4, #(KERN_L3_TABLES * 512)
+	b.lo	7b
 
 	/* Program the translation regime and turn the MMU on. */
 	ldr	x1, =MAIR_VALUE
@@ -245,5 +286,6 @@ boot_l0_ttbr1:	.space	4096
 boot_l1_dmap:	.space	4096
 boot_l1_kern:	.space	4096
 boot_l2_kern:	.space	4096
+boot_l3_kern:	.space	4096 * KERN_L3_TABLES
 bootstack:	.space	BOOTSTACK_SIZE
 bootstack_top:

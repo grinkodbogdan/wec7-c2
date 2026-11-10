@@ -134,7 +134,7 @@ CFLAGS="--target=aarch64-unknown-none-elf -D__DragonFly__ -D_KERNEL \
 	-mgeneral-regs-only -mstrict-align -fno-strict-aliasing \
 	-fno-strict-overflow -fno-stack-protector -fno-omit-frame-pointer \
 	-fno-asynchronous-unwind-tables -ferror-limit=10 \
-	-nostdinc -I$OBJ/opt -I$OBJ/include -I$S"
+	-nostdinc -I$OBJ/opt -I$OBJ/include -I$S $EXTRA_CFLAGS"
 # The shared kernel is written for GCC and is not warning-clean under
 # clang; the port's own code is held to -Wall -Werror.
 MI_CFLAGS="$CFLAGS -w"
