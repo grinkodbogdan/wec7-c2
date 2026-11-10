@@ -70,7 +70,7 @@ dump_frame(struct trapframe *frame)
 
 	kprintf("  elr  0x%016lx  spsr 0x%08lx\n", frame->tf_elr,
 	    frame->tf_spsr);
-	kprintf("  esr  0x%08lx          far  0x%016lx\n", frame->tf_esr,
+	kprintf("  esr  0x%08x          far  0x%016lx\n", frame->tf_esr,
 	    frame->tf_far);
 	kprintf("  sp   0x%016lx  lr   0x%016lx\n", frame->tf_sp,
 	    frame->tf_lr);
@@ -87,7 +87,7 @@ trap(struct trapframe *frame)
 
 	switch (ec) {
 	case EXCP_BRK:
-		kprintf("trap: BRK #%lu at 0x%lx, resuming\n",
+		kprintf("trap: BRK #%u at 0x%lx, resuming\n",
 		    frame->tf_esr & 0xffff, frame->tf_elr);
 		frame->tf_elr += 4;
 		return;

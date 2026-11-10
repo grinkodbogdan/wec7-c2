@@ -23,6 +23,7 @@
 #ifndef _SYS_TYPES_H_
 #include <sys/types.h>
 #endif
+#include <machine/globaldata.h>
 
 /*
  * Miscellaneous machine-dependent declarations for the arm64 platform.
@@ -60,6 +61,28 @@ struct arm64_bootinfo {
 extern struct arm64_bootinfo arm64_bootinfo;
 extern u_long	arm64_onfault;
 extern volatile u_long arm64_ticks;
+
+extern	char	sigcode[];
+extern	int	szsigcode;
+extern	uint64_t *vm_page_dump;
+extern	vm_offset_t vm_page_dump_size;
+extern	int	busdma_swi_pending;
+extern	void	(*cpu_idle_hook)(void);
+
+struct dumperinfo;
+struct mdglobaldata;
+
+void	busdma_swi(void);
+void	cpu_gdinit(struct mdglobaldata *gd, int cpu);
+void	cpu_idle(void);
+void	cpu_idle_restore(void);		/* cannot be called from C */
+void	cpu_heavy_restore(void);	/* cannot be called from C */
+void	cpu_kthread_restore(void);	/* cannot be called from C */
+void	cpu_reset(void);
+void	dump_add_page(vm_paddr_t);
+void	dump_drop_page(vm_paddr_t);
+void	minidumpsys(struct dumperinfo *);
+void	pagezero(void *addr);
 
 void	initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys);
 

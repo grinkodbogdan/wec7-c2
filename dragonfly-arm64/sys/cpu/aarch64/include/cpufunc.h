@@ -36,6 +36,9 @@
 #include <machine/clock.h>
 #include <machine/smp.h>
 #include <cpu/armreg.h>
+#ifdef _KERNEL
+#include <machine/md_var.h>
+#endif
 
 __BEGIN_DECLS
 
@@ -144,6 +147,27 @@ cpu_enable_intr(void)
 	__asm __volatile("msr daifclr, #3");
 }
 #endif
+
+/*
+ * Save and restore the full interrupt mask state (the DAIF bits).
+ *
+ * The names are x86_64's.  Machine-independent code (kern/lwkt_ipiq.c)
+ * calls read_rflags()/write_rflags() directly to bracket regions that
+ * must end with the caller's original interrupt state, and only ever
+ * passes the value back unmodified, so the register behind the name
+ * does not matter to it.
+ */
+static __inline u_long
+read_rflags(void)
+{
+	return (READ_SPECIALREG(daif));
+}
+
+static __inline void
+write_rflags(u_long daif)
+{
+	WRITE_SPECIALREG(daif, daif);
+}
 
 static __inline register_t
 intr_disable(void)
@@ -264,6 +288,30 @@ cpu_cntvct(void)
 	__asm __volatile("isb\n\tmrs	%0, cntvct_el0" : "=r" (val));
 	return (val);
 }
+
+/*
+ * Machine-independent code reads the "TSC" by name for lock contention
+ * timing, IPI timeouts and entropy.  The virtual counter has the
+ * properties those callers want (see <machine/clock.h>).
+ */
+static __inline tsc_uclock_t
+rdtsc(void)
+{
+	tsc_uclock_t val;
+
+	__asm __volatile("mrs	%0, cntvct_el0" : "=r" (val));
+	return (val);
+}
+
+static __inline tsc_uclock_t
+rdtsc_ordered(void)
+{
+	return (cpu_cntvct());
+}
+
+void	smp_invltlb(void);
+void	smp_sniff(void);
+void	cpu_sniff(int dcpu);
 
 #endif /* _KERNEL */
 

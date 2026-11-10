@@ -32,25 +32,39 @@ struct trapframe {
 	__uint64_t	tf_lr;		/* x30 */
 	__uint64_t	tf_elr;		/* exception return address (pc) */
 	__uint64_t	tf_spsr;	/* saved processor state */
-	__uint64_t	tf_esr;		/* exception syndrome */
+	__uint32_t	tf_esr;		/* exception syndrome (ESR_EL1) */
+	__uint32_t	tf_trapno;	/* software trap type, <cpu/trap.h> */
 	__uint64_t	tf_far;		/* fault address */
 	__uint64_t	tf_x[30];	/* x0 - x29 */
 };
 
 /*
- * Interrupt frames are identical to trap frames on this architecture;
- * the interrupt number is read back from the interrupt controller.
+ * Interrupt frame.  The layout is identical to struct trapframe (the
+ * vector code builds one frame type for everything) but it is a
+ * distinct type, as it is on x86_64, because machine-
+ * independent code declares interrupt and systimer callbacks in terms
+ * of it.
  */
-#define	intrframe	trapframe
+struct intrframe {
+	__uint64_t	if_sp;
+	__uint64_t	if_lr;
+	__uint64_t	if_elr;
+	__uint64_t	if_spsr;
+	__uint32_t	if_esr;
+	__uint32_t	if_vec;		/* interrupt number, set by dispatch */
+	__uint64_t	if_far;
+	__uint64_t	if_x[30];
+};
 
 #define	TF_FP(tf)		((tf)->tf_x[29])
 
-#define	CLKF_USERMODE(framep)	(((framep)->tf_spsr & PSR_M_MASK) == PSR_M_EL0t)
+/* CLKF_* take a struct intrframe, TRAPF_* a struct trapframe. */
+#define	CLKF_USERMODE(framep)	(((framep)->if_spsr & PSR_M_MASK) == PSR_M_EL0t)
 #define	CLKF_INTR(intr_nest)	((intr_nest) > 1)
-#define	CLKF_PC(framep)		((framep)->tf_elr)
-#define	TRAPF_USERMODE(framep)	CLKF_USERMODE(framep)
+#define	CLKF_PC(framep)		((framep)->if_elr)
+#define	TRAPF_USERMODE(framep)	(((framep)->tf_spsr & PSR_M_MASK) == PSR_M_EL0t)
 #define	TRAPF_PC(framep)	((framep)->tf_elr)
 
-#define	INTR_TO_TRAPFRAME(frame) (frame)
+#define	INTR_TO_TRAPFRAME(frame) ((struct trapframe *)(frame))
 
 #endif /* _CPU_FRAME_H_ */

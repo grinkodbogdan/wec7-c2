@@ -83,6 +83,9 @@
 #ifndef _MACHINE_PARAM_H_
 #include <machine/param.h>
 #endif
+#ifndef _MACHINE_VMPARAM_H_
+#include <machine/vmparam.h>
+#endif
 
 struct pmap;
 struct pv_entry;
@@ -210,6 +213,16 @@ void	pmap_page_set_memattr(vm_page_t m, vm_memattr_t ma);
 void	pmap_unmapdev (vm_offset_t, vm_size_t);
 void	pmap_invalidate_cache_pages(vm_page_t *pages, int count);
 void	pmap_invalidate_cache_range(vm_offset_t sva, vm_offset_t eva);
+
+/*
+ * Software emulation of accessed/dirty bits is an x86 EPT concern that
+ * vm_fault asks every pmap about.  Never needed here.
+ */
+static __inline int
+pmap_emulate_ad_bits(pmap_t pmap __unused)
+{
+	return (0);
+}
 
 #endif /* _KERNEL */
 

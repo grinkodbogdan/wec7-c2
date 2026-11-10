@@ -51,8 +51,32 @@ int	cpu_send_ipiq_passive	(int);
 
 extern cpumask_t		smp_active_mask;
 
+/*
+ * kern/subr_cpu_topology.c walks cpus by "APIC id".  aarch64 has no
+ * such thing; hardware identifies cpus by MPIDR affinity, which the
+ * platform translates to a dense logical cpu id at boot.  The topology
+ * code only needs an enumerable id space, so the logical id serves.
+ */
+extern int ncpus;
+
+#define	CPUID_TO_APICID(cpuid)		(cpuid)
+#define	APICID_TO_CPUID(apicid)		(apicid)
+
+static __inline int
+get_apicid_from_cpuid(int cpuid)
+{
+	return (cpuid);
+}
+
+static __inline int
+get_cpuid_from_apicid(int apicid)
+{
+	return (apicid < ncpus ? apicid : -1);
+}
+
 void	detect_cpu_topology(void);
 int	get_chip_ID(int cpuid);
+int	get_chip_ID_from_APICID(int apicid);
 int	get_core_number_within_chip(int cpuid);
 int	get_logical_CPU_number_within_core(int cpuid);
 

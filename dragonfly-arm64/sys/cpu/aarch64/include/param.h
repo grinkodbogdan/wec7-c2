@@ -75,21 +75,27 @@
 #define PDRSHIFT	L2_SHIFT	/* LOG2(NBPDR) */
 #define NBPDR		(1<<PDRSHIFT)	/* bytes/page dir */
 #define PDRMASK		(NBPDR-1)
+#define NPDEPGSHIFT	9		/* LOG2(NPDEPG) */
 #define NPDEPG		(PAGE_SIZE/8LU)	/* PAGE_SIZE/sizeof(pd_entry_t) */
 
 #define PDPSHIFT	L1_SHIFT	/* LOG2(NBPDP) */
 #define NBPDP		(1<<PDPSHIFT)	/* bytes/page dir ptr table */
 #define PDPMASK		(NBPDP-1)
+#define NPDPEPGSHIFT	9		/* LOG2(NPDPEPG) */
 #define NPDPEPG		(PAGE_SIZE/8LU)	/* PAGE_SIZE/sizeof(pdp_entry_t) */
 
 #define PML4SHIFT	L0_SHIFT	/* LOG2(NBPML4) */
 #define NBPML4		(1UL<<PML4SHIFT)/* bytes/page map level4 table */
 #define PML4MASK	(NBPML4-1)
+#define NPML4EPGSHIFT	9		/* LOG2(NPML4EPG) */
 #define NPML4EPG	(PAGE_SIZE/8LU)	/* PAGE_SIZE/sizeof(pml4_entry_t) */
 
 /* bits 63:48 must all equal bit 47 with 48-bit VAs */
 #define PML4_SIGNMASK  0xFFFF800000000000LU
 
+/* bytes per mmu segment: one level 2 entry */
+#define SEG_SHIFT	L2_SHIFT
+#define SEG_SIZE	(1<<SEG_SHIFT)
 #define SEG_MASK	(SEG_SIZE-1)
 
 #define DEV_BSHIFT	9		/* log2(DEV_BSIZE) */
@@ -128,6 +134,9 @@
  */
 
 /* clicks to bytes */
+#define ctob(x)	((x)<<PAGE_SHIFT)
+
+/* bytes to clicks */
 #define btoc(x)	(((unsigned)(x)+PAGE_MASK)>>PAGE_SHIFT)
 
 /*

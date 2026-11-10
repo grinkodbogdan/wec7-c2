@@ -38,6 +38,7 @@ done
 grep -rhoE '#include[[:space:]]+"opt_[a-zA-Z0-9_]+\.h"' "$S" 2>/dev/null |
     sed -E 's/.*"(.*)"/\1/' | sort -u | while read -r h; do : > "$C/opt/$h"; done
 : > "$C/opt/opt_global.h"
+echo "#define MAXUSERS 0" > "$C/opt/opt_maxusers.h"
 grep -rhoE '#include[[:space:]]+"use_[a-zA-Z0-9_]+\.h"' "$S" 2>/dev/null |
     sed -E 's/.*"(.*)"/\1/' | sort -u | while read -r h; do
 	n=$(echo "${h#use_}" | sed 's/\.h$//' | tr a-z A-Z)
@@ -86,6 +87,27 @@ echo "Most common first errors:"
 for f in $(cat "$C/fail"); do
 	grep -m1 -E "error:" "$C/out/$(echo "$f" | tr / _).err"
 done | sed -E 's/^[^ ]*: (fatal )?error: //' | sort | uniq -c | sort -rn | head -${TOP:-25}
+
+# With everything compiled, a relocatable link shows what the standard
+# files still need from elsewhere: machine-dependent code that has not
+# been written yet, plus optional and config-generated files.
+if [ "$pass" = "$total" ] && [ $# -eq 0 ]; then
+	LD=${LD:-ld.lld}
+	NM=${NM:-llvm-nm}
+	command -v "$NM" >/dev/null 2>&1 || NM=nm
+	$LD -r -o "$C/mi.o" "$C"/out/*.o
+	$NM -u "$C/mi.o" | awk '{ print $2 }' | sort -u > "$C/undefined"
+	if [ -f "$OBJ/kernel.elf" ]; then
+		$NM --defined-only "$OBJ/kernel.elf" | awk '{ print $3 }' |
+		    sort -u > "$C/provided"
+		comm -23 "$C/undefined" "$C/provided" > "$C/undefined.tmp"
+		mv "$C/undefined.tmp" "$C/undefined"
+	fi
+	echo "(none)"
+	echo
+	echo "Unresolved symbols after linking them: $(wc -l < "$C/undefined")"
+	echo "  list written to $C/undefined"
+fi
 if [ $verbose = 1 ]; then
 	echo
 	for f in $(sort "$C/fail"); do

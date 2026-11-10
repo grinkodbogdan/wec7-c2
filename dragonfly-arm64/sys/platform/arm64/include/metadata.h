@@ -20,10 +20,14 @@
 #ifndef _MACHINE_METADATA_H_
 #define	_MACHINE_METADATA_H_
 
-/* Flattened device tree handed over by the loader. */
-#define	MODINFOMD_DTBP		0x1001
+/*
+ * Numbering is shared with pc64 because kern/subr_module.c decodes
+ * these by name; the BIOS memory map type is never produced here.
+ */
+#define	MODINFOMD_SMAP		0x1001
 #define	MODINFOMD_EFI_MAP	0x1004
 #define	MODINFOMD_EFI_FB	0x1005
+#define	MODINFOMD_DTBP		0x1006	/* flattened device tree */
 
 struct efi_map_header {
 	uint64_t	memory_size;

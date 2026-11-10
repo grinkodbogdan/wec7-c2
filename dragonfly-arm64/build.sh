@@ -15,7 +15,7 @@ set -e
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 DFLY_REPO=${DFLY_REPO:-https://github.com/DragonFlyBSD/DragonFlyBSD.git}
-DFLY_COMMIT=${DFLY_COMMIT:-94448f62}
+DFLY_COMMIT=${DFLY_COMMIT:-94448f622a06cde90ba42d688e9cab2448ad9ab3}
 DFLY_SRC=${DFLY_SRC:-$HERE/work/dragonfly}
 OBJ=${OBJ:-$HERE/work/obj}
 CC=${CC:-clang}
@@ -34,6 +34,13 @@ fetch() {
 	fi
 	# Overlay the port.  Plain copy keeps the tree usable with diff -ruN.
 	cp -R "$HERE/sys/." "$S/"
+	# The few machine-independent files that test for __x86_64__ need
+	# to learn about __aarch64__.  Skip if already applied.
+	for p in "$HERE"/patches/*.diff; do
+		if git -C "$DFLY_SRC" apply --check "$p" 2>/dev/null; then
+			git -C "$DFLY_SRC" apply "$p"
+		fi
+	done
 }
 
 # Mimic what config(8) + kern.fwd.mk do: <machine/*.h> resolves to the
