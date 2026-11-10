@@ -248,7 +248,7 @@ To read it: hold power until the phone restarts, boot TWRP for gemini with
   controller, and refreshes the panel itself after each line of text (the
   Mi 5's panels do not refresh on their own).
 - Keeps the six memory regions the device tree reserves out of use, and
-  removes the three marked as firmware-only (155 MB) from its address space.
+  removes the three marked as firmware-only (209 MB) from its address space.
 - Takes the timer frequency from the device tree if the firmware did not
   program it.
 - Uses the GICv3 interrupt controller under the `soc` bus, PSCI over SMC,
