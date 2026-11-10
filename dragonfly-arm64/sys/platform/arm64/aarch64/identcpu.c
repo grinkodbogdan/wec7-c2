@@ -21,12 +21,10 @@
  * CPU identification from the aarch64 ID registers.
  */
 
-#include <sys/types.h>
-#include <sys/_null.h>
+#include <sys/param.h>
+#include <sys/systm.h>
 #include <cpu/armreg.h>
 #include <machine/md_var.h>
-
-int	kprintf(const char *fmt, ...) __printflike(1, 2);
 
 struct cpu_part {
 	u_int		impl;

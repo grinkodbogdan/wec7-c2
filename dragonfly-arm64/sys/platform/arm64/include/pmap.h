@@ -23,12 +23,11 @@
 #include <cpu/pmap.h>
 
 /*
- * Kernel address space layout.  The table indexes mirror pc64's so the
- * two pmaps share their arithmetic: with a 4K granule and 48-bit VAs an
- * aarch64 translation table has exactly the shape of an x86_64 one.
- * The differences are in the PTE bits and in there being two roots:
- * TTBR0 for the user half and TTBR1 for the kernel half, so a user
- * pmap holds no kernel entries at all.
+ * With a 4K granule and 48-bit VAs an aarch64 translation table has
+ * exactly the shape of an x86_64 one.  The differences are in the PTE
+ * bits and in there being two roots: TTBR0 for the user half and TTBR1
+ * for the kernel half, so a user pmap holds no kernel entries at all.
+ * See <machine/vmparam.h> for the layout.
  */
 #define KVADDR(l4, l3, l2, l1) ( \
 	((unsigned long)-1 << 47) | \
@@ -43,19 +42,12 @@
 	((unsigned long)(l2) << PDRSHIFT) | \
 	((unsigned long)(l1) << PAGE_SHIFT))
 
-#define NKPML4E		16		/* L0 slots of kernel VM */
-#define	NDMPML4E	8		/* L0 slots of DMAP (4TB) */
-
 #define NUPDP_USER	(NPML4EPG/2)
 #define NUPDP_TOTAL	(NPML4EPG)
 #define NUPD_TOTAL	(NPDPEPG * NUPDP_TOTAL)
 #define NUPT_TOTAL	(NPDEPG * NUPD_TOTAL)
 #define NUPTE_TOTAL	((vm_pindex_t)NPTEPG * NUPT_TOTAL)
 #define NUPTE_USER	((vm_pindex_t)NPTEPG * NPDEPG * NPDPEPG * NUPDP_USER)
-
-#define	KPML4I		(NPML4EPG-NKPML4E) /* Start of KVM */
-#define	DMPML4I		(KPML4I-NDMPML4E) /* DMAP directly below KVM */
-#define	KPDPI		(NPDPEPG-2)	/* kernbase at -2GB */
 
 #ifndef LOCORE
 
@@ -67,9 +59,6 @@
 #endif
 #ifndef _SYS_QUEUE_H_
 #include <sys/queue.h>
-#endif
-#ifndef _SYS_TREE_H_
-#include <sys/tree.h>
 #endif
 #ifndef _SYS_SPINLOCK_H_
 #include <sys/spinlock.h>
@@ -97,8 +86,9 @@ struct vmspace;
  * vm_page structure extension for pmap.
  */
 struct md_page {
-	long interlock_count;
-	long writeable_count_unused;
+	TAILQ_HEAD(, pv_entry)	pv_list;	/* mappings of this page */
+	int			pv_list_count;
+	int			pt_refs;	/* valid entries, if a PT page */
 };
 
 #define MD_PAGE_FREEABLE(m)	\
@@ -125,32 +115,16 @@ struct pmap_statistics {
 };
 typedef struct pmap_statistics *pmap_statistics_t;
 
-struct pv_entry_rb_tree;
-RB_PROTOTYPE2(pv_entry_rb_tree, pv_entry, pv_entry,
-	      pv_entry_compare, vm_pindex_t);
-
-#define PM_PLACEMARKS		64		/* 16 @ 4 zones */
-#define PM_NOPLACEMARK		((vm_pindex_t)-1)
-#define PM_PLACEMARK_WAKEUP	((vm_pindex_t)0x8000000000000000LLU)
-
 struct pmap {
-	pml4_entry_t		*pm_pml4;	/* KVA of level 0 table */
-	struct pv_entry		*pm_pmlpv;	/* PV entry for level 0 */
+	pml4_entry_t		*pm_pml4;	/* DMAP address of level 0 table */
 	TAILQ_ENTRY(pmap)	pm_pmnode;	/* list of pmaps */
-	RB_HEAD(pv_entry_rb_tree, pv_entry) pm_pvroot;
 	int			pm_count;	/* reference count */
 	cpulock_t		pm_active_lock; /* interlock */
 	cpumask_t		pm_active;	/* active on cpus */
 	int			pm_flags;
-	uint32_t		pm_softhold;
 	struct pmap_statistics	pm_stats;	/* pmap statistics */
 	struct spinlock		pm_spin;
-	struct pv_entry		*pm_pvhint_pt;	/* pv_entry lookup hint */
-	vm_pindex_t		pm_placemarks[PM_PLACEMARKS];
-	uint64_t		pm_invgen;	/* pmap generation id */
-	uint64_t		pm_ttbr0;	/* table PA | ASID << 48 */
-	uint32_t		pm_asid;	/* address space id, 0 = none */
-	uint32_t		pm_asid_gen;	/* generation pm_asid is from */
+	uint64_t		pm_ttbr0;	/* value for TTBR0_EL1 */
 };
 
 #define PMAP_FLAG_SIMPLE	0x00000001
@@ -169,22 +143,14 @@ extern struct pmap	*kernel_pmap;
 #endif
 
 /*
- * For each vm_page_t, there is a list of all currently
- * valid virtual mappings of that page.  An entry is
- * a pv_entry_t, the list is pv_table.
+ * For each managed vm_page_t there is a list of all currently valid
+ * virtual mappings of that page, one pv_entry per mapping.
  */
 typedef struct pv_entry {
 	pmap_t		pv_pmap;	/* pmap where mapping lies */
-	vm_pindex_t	pv_pindex;	/* PTE, PT, PD, PDP, or PML4 */
-	RB_ENTRY(pv_entry) pv_entry;
-	struct vm_page	*pv_m;		/* page being mapped */
-	u_int		pv_hold;	/* interlock action */
-	u_int		pv_flags;
+	vm_offset_t	pv_va;		/* virtual address for mapping */
+	TAILQ_ENTRY(pv_entry) pv_list;	/* on the page's list */
 } *pv_entry_t;
-
-#define PV_HOLD_LOCKED		0x80000000U
-#define PV_HOLD_WAITING		0x40000000U
-#define PV_HOLD_MASK		0x1FFFFFFFU
 
 #ifdef	_KERNEL
 
@@ -205,7 +171,8 @@ typedef char vm_memattr_t;
 
 void	pmap_release(struct pmap *pmap);
 void	pmap_interlock_wait (struct vmspace *);
-void	pmap_bootstrap (vm_paddr_t *);
+void	pmap_bootstrap (vm_paddr_t *, vm_paddr_t);
+void	arm64_sync_icache(vm_offset_t va, vm_size_t len);
 void	*pmap_mapdev (vm_paddr_t, vm_size_t);
 void	*pmap_mapdev_attr(vm_paddr_t, vm_size_t, int);
 void	*pmap_mapdev_uncacheable(vm_paddr_t, vm_size_t);

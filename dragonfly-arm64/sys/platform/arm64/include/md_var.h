@@ -59,8 +59,7 @@ struct arm64_bootinfo {
 };
 
 extern struct arm64_bootinfo arm64_bootinfo;
-extern u_long	arm64_onfault;
-extern volatile u_long arm64_ticks;
+extern uint64_t	arm64_ttbr0_kernel;
 
 extern	char	sigcode[];
 extern	int	szsigcode;
@@ -70,7 +69,39 @@ extern	int	busdma_swi_pending;
 extern	void	(*cpu_idle_hook)(void);
 
 struct dumperinfo;
+struct intrframe;
 struct mdglobaldata;
+struct thread;
+
+u_long	initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys);
+int	bootinfo_selftest(void);
+void	arm64_selftest(void);
+void	arm64_usermode_unimplemented(struct trapframe *frame);
+
+int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
+
+void	cninit_early(vm_paddr_t uart_base);
+void	cnputc_early(int c);
+void	cnputs_early(const char *s);
+
+void	identify_cpu(void);
+
+void	trap(struct trapframe *frame);
+void	trap_fatal(struct trapframe *frame, int from_el1) __dead2;
+
+void	arm64_intr_init(void);
+void	arm64_intr(struct trapframe *frame);
+int	gic_init(vm_paddr_t gicd, vm_paddr_t gicc);
+void	gic_enable_irq(int irq);
+void	gic_disable_irq(int irq);
+int	gic_ack(void);
+void	gic_eoi(int iar);
+
+void	clock_intr(struct intrframe *frame);
+void	clock_intr_quiesce(void);
+
+int64_t	psci_call(uint64_t fn, uint64_t a1, uint64_t a2, int use_smc);
+void	cpu_poweroff(void) __dead2;
 
 void	busdma_swi(void);
 void	cpu_gdinit(struct mdglobaldata *gd, int cpu);
@@ -83,30 +114,5 @@ void	dump_add_page(vm_paddr_t);
 void	dump_drop_page(vm_paddr_t);
 void	minidumpsys(struct dumperinfo *);
 void	pagezero(void *addr);
-
-void	initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys);
-
-int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
-
-void	cninit_early(vm_paddr_t uart_base);
-void	cnputc_early(int c);
-
-void	identify_cpu(void);
-
-void	trap(struct trapframe *frame);
-void	trap_fatal(struct trapframe *frame, int from_el1);
-void	arm64_intr(struct trapframe *frame);
-int	probe_read64(vm_offset_t va, u_long *valp);
-
-int	gic_init(vm_paddr_t gicd, vm_paddr_t gicc);
-void	gic_enable_irq(int irq);
-int	gic_ack(void);
-void	gic_eoi(int iar);
-
-void	cpu_initclocks_early(int irq, int hz);
-void	clock_intr(void);
-
-int64_t	psci_call(uint64_t fn, uint64_t a1, uint64_t a2, int use_smc);
-void	cpu_poweroff(void) __dead2;
 
 #endif /* !_MACHINE_MD_VAR_H_ */

@@ -213,6 +213,15 @@ virtstart:
 	mov	x1, x20			/* kernel physical base */
 	bl	initarm
 
+	/*
+	 * initarm() returns the top of thread0's kernel stack.  Move
+	 * onto it and start the machine-independent kernel, which does
+	 * not return.
+	 */
+	mov	sp, x0
+	mov	x29, #0
+	bl	mi_startup
+
 7:	wfi
 	b	7b
 
@@ -220,9 +229,10 @@ virtstart:
 
 	.bss
 	.balign	4096
+	.globl	boot_l0_ttbr0
 boot_l0_ttbr0:	.space	4096
 boot_l1_ident:	.space	4096
-	.globl	boot_l0_ttbr1
+	.globl	boot_l0_ttbr1, boot_l1_dmap
 boot_l0_ttbr1:	.space	4096
 boot_l1_dmap:	.space	4096
 boot_l1_kern:	.space	4096

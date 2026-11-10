@@ -34,7 +34,7 @@
 #include <sys/_null.h>
 #include <machine/md_var.h>
 
-void	bzero(void *, size_t);
+void	bzero(volatile void *, size_t);
 
 #define	FDT_MAGIC	0xd00dfeed
 #define	FDT_BEGIN_NODE	1

@@ -23,14 +23,16 @@
 /*
  * Machine dependent constants for the arm64 platform.
  *
- * The kernel half of the address space deliberately uses the same
- * layout as pc64 so machine-independent assumptions about where
- * things live keep holding:
+ * Address space layout:
  *
  *	0x0000000000000000 - 0x00007fffffffffff	userland (TTBR0)
  *	0xffff800000000000 - 0xffffffffffffffff	kernel   (TTBR1)
  *	    0xfffff80000000000	DMAP, direct map of physical memory
+ *	    0xffffff0000000000	kernel virtual memory (kernel_map), 512GB
  *	    0xffffffff80000000	KERNBASE, kernel text/data
+ *
+ * KERNBASE matches pc64.  The DMAP and kernel_map each own one
+ * level 0 table slot, which keeps the bootstrap page tables trivial.
  */
 
 /*
@@ -71,8 +73,8 @@
 
 #define	USRSTACK		VM_MAX_USER_ADDRESS
 
-#define	VM_MIN_KERNEL_ADDRESS	0xffff800000000000UL
-#define	VM_MAX_KERNEL_ADDRESS	0xffffffffffffffffUL
+#define	VM_MIN_KERNEL_ADDRESS	0xffffff0000000000UL
+#define	VM_MAX_KERNEL_ADDRESS	0xffffff8000000000UL
 
 #define	VM_MAX_ADDRESS		VM_MAX_USER_ADDRESS
 #define	VM_MIN_ADDRESS		VM_MIN_USER_ADDRESS

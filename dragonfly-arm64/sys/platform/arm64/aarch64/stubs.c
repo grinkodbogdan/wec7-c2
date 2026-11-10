@@ -1,0 +1,408 @@
+/*
+ * Copyright (c) 2026 The DragonFly Project.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED.  IN NO EVENT SHALL THE
+ * AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY DAMAGES ARISING IN ANY WAY OUT
+ * OF THE USE OF THIS SOFTWARE.
+ */
+
+/*
+ * Machine-dependent entry points the kernel requires that are not
+ * implemented for arm64 yet.
+ *
+ * Everything here exists so the kernel links.  The functions fall into
+ * three groups: single-cpu versions of SMP hooks (correct while only
+ * one cpu runs), hooks for features that do not apply, and genuinely
+ * missing functionality, which fails with an error or panics so that
+ * reaching it is obvious rather than silently wrong.  This file should
+ * shrink to nothing.
+ */
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/kernel.h>
+#include <sys/proc.h>
+#include <sys/bus.h>
+#include <sys/bus_dma.h>
+#include <sys/mbuf.h>
+#include <sys/linker.h>
+#include <sys/ptrace.h>
+#include <sys/signalvar.h>
+#include <sys/sysmsg.h>
+#include <sys/sysproto.h>
+#include <sys/kerneldump.h>
+#include <sys/tls.h>
+
+#include <vm/vm.h>
+#include <vm/pmap.h>
+
+#include <machine/cpu.h>
+#include <machine/cpufunc.h>
+#include <machine/elf.h>
+#include <machine/md_var.h>
+#include <machine/reg.h>
+#include <machine/smp.h>
+#include <machine/vframe.h>
+
+#define	NOT_YET(what)	panic("arm64: " what " is not implemented yet")
+
+/*
+ * Single cpu.  Secondary cpus are never started, so there is nobody to
+ * send an IPI to, stop, or shoot a TLB entry down on.  (TLB
+ * invalidations are broadcast by the hardware in any case.)
+ */
+volatile cpumask_t stopped_cpus;
+cpumask_t	smp_active_mask = CPUMASK_INITIALIZER_ONLYONE;
+int		naps;			/* application processors started */
+
+void
+cpu_send_ipiq(int dcpu __unused)
+{
+}
+
+void
+smp_invltlb(void)
+{
+	cpu_invltlb();
+}
+
+void
+smp_sniff(void)
+{
+}
+
+void
+cpu_sniff(int dcpu __unused)
+{
+}
+
+int
+stop_cpus(cpumask_t map __unused)
+{
+	return (1);
+}
+
+int
+restart_cpus(cpumask_t map __unused)
+{
+	return (1);
+}
+
+void
+cpu_smp_stopped(void)
+{
+}
+
+/*
+ * CPU topology.  Reported flat: every cpu its own single-core,
+ * single-thread package.  The device tree's cpu-map node is not read.
+ */
+void
+detect_cpu_topology(void)
+{
+}
+
+int
+get_chip_ID(int cpuid)
+{
+	return (cpuid);
+}
+
+int
+get_chip_ID_from_APICID(int apicid)
+{
+	return (apicid);
+}
+
+int
+get_core_number_within_chip(int cpuid __unused)
+{
+	return (0);
+}
+
+int
+get_logical_CPU_number_within_core(int cpuid __unused)
+{
+	return (0);
+}
+
+/*
+ * Not applicable: x86 I/O privilege level and virtual kernel support.
+ */
+int
+cpu_set_iopl(void)
+{
+	return (ENODEV);
+}
+
+int
+cpu_clr_iopl(void)
+{
+	return (ENODEV);
+}
+
+void
+cpu_vkernel_trap(struct trapframe *frame __unused, int error __unused)
+{
+	NOT_YET("vkernel support");
+}
+
+void
+set_vkernel_fp(struct trapframe *frame __unused)
+{
+	NOT_YET("vkernel support");
+}
+
+/*
+ * User mode.  None of this can be reached before a process runs in
+ * user mode, which needs the exception entry and return paths first.
+ */
+void
+exec_setregs(u_long entry __unused, u_long stack __unused,
+	     u_long ps_strings __unused)
+{
+	NOT_YET("exec (user register setup)");
+}
+
+void
+sendsig(sig_t catcher __unused, int sig __unused, sigset_t *mask __unused,
+	u_long code __unused)
+{
+	NOT_YET("signal delivery");
+}
+
+int
+sys_sigreturn(struct sysmsg *sysmsg __unused,
+	      const struct sigreturn_args *uap __unused)
+{
+	return (ENOSYS);
+}
+
+int
+sys_sysarch(struct sysmsg *sysmsg __unused,
+	    const struct sysarch_args *uap __unused)
+{
+	return (ENOSYS);
+}
+
+int
+sys_xsyscall(struct sysmsg *sysmsg __unused,
+	     const struct nosys_args *uap __unused)
+{
+	return (ENOSYS);
+}
+
+int
+sys_set_tls_area(struct sysmsg *sysmsg __unused,
+		 const struct set_tls_area_args *uap __unused)
+{
+	return (ENOSYS);
+}
+
+int
+sys_get_tls_area(struct sysmsg *sysmsg __unused,
+		 const struct get_tls_area_args *uap __unused)
+{
+	return (ENOSYS);
+}
+
+void
+set_user_TLS(void)
+{
+}
+
+int
+cpu_sanitize_frame(struct trapframe *frame __unused)
+{
+	return (EINVAL);
+}
+
+int
+cpu_sanitize_tls(struct savetls *tls __unused)
+{
+	return (EINVAL);
+}
+
+/*
+ * Debugger and procfs access to another process's registers.
+ */
+int
+fill_regs(struct lwp *lp __unused, struct reg *regs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+set_regs(struct lwp *lp __unused, struct reg *regs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+fill_fpregs(struct lwp *lp __unused, struct fpreg *fpregs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+set_fpregs(struct lwp *lp __unused, struct fpreg *fpregs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+ptrace_set_pc(struct lwp *lp __unused, unsigned long addr __unused)
+{
+	return (ENOSYS);
+}
+
+int
+ptrace_single_step(struct lwp *lp __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_read_regs(struct lwp *lp __unused, struct reg *regs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_write_regs(struct lwp *lp __unused, struct reg *regs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_read_fpregs(struct lwp *lp __unused, struct fpreg *fpregs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_write_fpregs(struct lwp *lp __unused, struct fpreg *fpregs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_read_dbregs(struct lwp *lp __unused, struct dbreg *dbregs __unused)
+{
+	return (ENOSYS);
+}
+
+int
+procfs_write_dbregs(struct lwp *lp __unused, struct dbreg *dbregs __unused)
+{
+	return (ENOSYS);
+}
+
+/*
+ * Kernel modules: relocation processing for loadable objects.
+ */
+int
+elf_reloc(linker_file_t lf __unused, Elf_Addr relocbase __unused,
+	  const void *data __unused, int type __unused,
+	  elf_lookup_fn lookup __unused)
+{
+	return (-1);
+}
+
+int
+elf_reloc_local(linker_file_t lf __unused, Elf_Addr relocbase __unused,
+		const void *data __unused, int type __unused,
+		elf_lookup_fn lookup __unused)
+{
+	return (-1);
+}
+
+/*
+ * Crash dumps.
+ */
+void
+md_dumpsys(struct dumperinfo *di __unused)
+{
+	kprintf("arm64: kernel dumps are not implemented yet\n");
+}
+
+void
+dump_add_page(vm_paddr_t pa __unused)
+{
+}
+
+void
+dump_drop_page(vm_paddr_t pa __unused)
+{
+}
+
+/*
+ * Bus DMA.  No driver that does DMA can attach yet (there is no bus
+ * to attach to), so creation fails cleanly and the rest is unreachable.
+ */
+int
+bus_dma_tag_create(bus_dma_tag_t parent __unused, bus_size_t alignment __unused,
+		   bus_size_t boundary __unused, bus_addr_t lowaddr __unused,
+		   bus_addr_t highaddr __unused, bus_size_t maxsize __unused,
+		   int nsegments __unused, bus_size_t maxsegsz __unused,
+		   int flags __unused, bus_dma_tag_t *dmat)
+{
+	*dmat = NULL;
+	return (ENOSYS);
+}
+
+int
+bus_dma_tag_destroy(bus_dma_tag_t dmat __unused)
+{
+	return (0);
+}
+
+int
+bus_dmamem_alloc(bus_dma_tag_t dmat __unused, void **vaddr,
+		 int flags __unused, bus_dmamap_t *mapp __unused)
+{
+	*vaddr = NULL;
+	return (ENOMEM);
+}
+
+void
+bus_dmamem_free(bus_dma_tag_t dmat __unused, void *vaddr __unused,
+		bus_dmamap_t map __unused)
+{
+}
+
+int
+bus_dmamap_load(bus_dma_tag_t dmat __unused, bus_dmamap_t map __unused,
+		void *buf __unused, bus_size_t buflen __unused,
+		bus_dmamap_callback_t *callback __unused,
+		void *callback_arg __unused, int flags __unused)
+{
+	return (ENOSYS);
+}
+
+int
+bus_dmamap_load_mbuf_segment(bus_dma_tag_t dmat __unused,
+			     bus_dmamap_t map __unused,
+			     struct mbuf *m0 __unused,
+			     bus_dma_segment_t *segs __unused,
+			     int maxsegs __unused, int *nsegs __unused,
+			     int flags __unused)
+{
+	return (ENOSYS);
+}
+
+void
+busdma_swi(void)
+{
+}

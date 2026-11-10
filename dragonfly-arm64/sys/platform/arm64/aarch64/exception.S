@@ -21,19 +21,13 @@
  * EL1 exception vectors.  Every entry builds a struct trapframe
  * (see <cpu/frame.h>) on the kernel stack and calls into C.
  *
- * Only exceptions taken from EL1 are wired up so far; there is no
- * userland yet, so anything from EL0 is fatal.
+ * Only exceptions taken from EL1 are wired up so far.  Entry from EL0
+ * (system calls, user faults, interrupts while in user mode) and the
+ * return to it are not written yet, so anything from EL0 is fatal.
  */
 
-/* Offsets into struct trapframe; must match <cpu/frame.h>. */
-#define	TF_SP		0
-#define	TF_LR		8
-#define	TF_ELR		16
-#define	TF_SPSR		24
-#define	TF_ESR		32
-#define	TF_FAR		40
-#define	TF_X		48
-#define	TF_SIZE		(TF_X + 30 * 8)
+#include <cpu/asm.h>
+#include "assym.s"
 
 .macro	save_frame
 	sub	sp, sp, #TF_SIZE
@@ -157,20 +151,34 @@ psci_call:
 	ret
 
 /*
- * int probe_read64(vm_offset_t va, u_long *valp)
+ * Signal trampoline, copied out to user space by exec.  The handler
+ * returns here with sp pointing at the struct sigframe; sf_uc is passed
+ * to sigreturn(2).
  *
- * Read a 64-bit word from a kernel virtual address that may not be
- * mapped.  Returns 0 on success, EFAULT if the access faulted.
+ * TODO: untested, there is no user mode yet.  The offset of sf_uc and
+ * the system call convention (number in x8) are provisional.
  */
-	.globl	probe_read64
-probe_read64:
-	adr	x9, 4f
-	adrp	x10, arm64_onfault
-	str	x9, [x10, :lo12:arm64_onfault]
-	ldr	x9, [x0]
-	str	xzr, [x10, :lo12:arm64_onfault]
-	str	x9, [x1]
-	mov	x0, #0
-	ret
-4:	mov	x0, #14			/* EFAULT */
-	ret
+	.globl	sigcode, esigcode
+	.balign	4
+sigcode:
+	add	x0, sp, #8		/* &sf->sf_uc */
+	mov	x8, #344		/* SYS_sigreturn */
+	svc	#0
+	brk	#0xdead
+esigcode:
+
+	.data
+	.globl	szsigcode
+szsigcode:
+	.long	esigcode - sigcode
+
+/*
+ * kern/link_elf.c walks the kernel's own dynamic section to find its
+ * symbol table.  The kernel is linked statically for now, so give it
+ * an empty one (a lone DT_NULL): kernel modules cannot resolve symbols
+ * against the kernel until this is real.
+ */
+	.balign	8
+	.globl	_DYNAMIC
+_DYNAMIC:
+	.quad	0, 0
