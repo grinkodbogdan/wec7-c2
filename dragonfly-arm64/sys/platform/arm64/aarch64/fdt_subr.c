@@ -29,9 +29,11 @@
  * exist for Linux's allocator to place and reserve nothing here.)
  *
  * Limitations (all acceptable for bring-up, none for the final port):
- *   - "reg" is decoded using the root node's #address-cells/#size-cells,
- *     so devices must sit directly under the root or under a bus with
- *     the same cell counts and an identity "ranges".
+ *   - "reg" is decoded with the parent node's #address-cells and
+ *     #size-cells, but bus address translation is not done: every
+ *     "ranges" on the way to the root is assumed to be the identity
+ *     mapping, which holds for the "soc" buses of the platforms seen
+ *     so far.
  *   - only the first matching UART and interrupt controller are kept.
  */
 
@@ -76,6 +78,8 @@ struct fdt_node {
 	const char	*method;
 	const char	*format;
 	uint32_t	width, height, stride;
+	uint32_t	rdist_stride;
+	int		acells, scells;		/* for this node's children */
 	int		done;
 };
 
@@ -149,9 +153,12 @@ fdt_cells(const uint32_t *p, int ncells)
  * Called once per node, after all of its properties have been seen.
  */
 static void
-fdt_node_done(struct fdt_node *n, int depth, int acells, int scells,
-	      struct arm64_bootinfo *bi)
+fdt_node_done(struct fdt_node *nodes, int depth, struct arm64_bootinfo *bi)
 {
+	struct fdt_node *n = &nodes[depth];
+	/* The specification's defaults apply to the root's own "reg". */
+	int acells = depth > 0 ? nodes[depth - 1].acells : 2;
+	int scells = depth > 0 ? nodes[depth - 1].scells : 1;
 	int cells = acells + scells;
 	uint32_t off;
 
@@ -196,8 +203,12 @@ fdt_node_done(struct fdt_node *n, int depth, int acells, int scells,
 		bi->bi_fb_base = fdt_cells(n->reg, acells);
 		bi->bi_fb_width = n->width;
 		bi->bi_fb_height = n->height;
-		bi->bi_fb_bpp = (n->format != NULL &&
-		    streq(n->format, "r5g6b5")) ? 16 : 32;
+		bi->bi_fb_bpp = 32;
+		if (n->format != NULL && streq(n->format, "r5g6b5"))
+			bi->bi_fb_bpp = 16;
+		if (n->format != NULL && (streq(n->format, "r8g8b8") ||
+		    streq(n->format, "b8g8r8")))
+			bi->bi_fb_bpp = 24;
 		bi->bi_fb_stride = n->stride ? n->stride :
 		    n->width * bi->bi_fb_bpp / 8;
 	}
@@ -217,6 +228,7 @@ fdt_node_done(struct fdt_node *n, int depth, int acells, int scells,
 			}
 		} else if (fdt_is_compatible(n, "arm,gic-v3")) {
 			bi->bi_gic_version = 3;
+			bi->bi_gicr_stride = n->rdist_stride;
 			bi->bi_gicd_base = fdt_cells(n->reg, acells);
 			/* second region: the redistributors */
 			if (n->reg_len / 4 >= (uint32_t)(2 * cells)) {
@@ -258,8 +270,6 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 	struct fdt_node nodes[FDT_MAXDEPTH];
 	struct fdt_node *n;
 	int depth = -1;
-	int acells = 2;
-	int scells = 1;
 	int in_chosen = 0;
 	const uint32_t *rsv;
 
@@ -290,14 +300,15 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 			const char *name = (const char *)p;
 
 			if (depth >= 0 && depth < FDT_MAXDEPTH) {
-				fdt_node_done(&nodes[depth], depth, acells,
-					      scells, bi);
+				fdt_node_done(nodes, depth, bi);
 			}
 			++depth;
 			if (depth < FDT_MAXDEPTH) {
 				n = &nodes[depth];
 				bzero(n, sizeof(*n));
 				n->name = name;
+				n->acells = 2;
+				n->scells = 1;
 			}
 			if (depth == 1) {
 				in_chosen = streq(name, "chosen");
@@ -309,8 +320,7 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 		}
 		case FDT_END_NODE:
 			if (depth >= 0 && depth < FDT_MAXDEPTH) {
-				fdt_node_done(&nodes[depth], depth, acells,
-					      scells, bi);
+				fdt_node_done(nodes, depth, bi);
 			}
 			if (depth == 1) {
 				in_chosen = 0;
@@ -352,11 +362,12 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 				n->stride = fdt32(data);
 			} else if (depth == 0 && streq(pname, "model")) {
 				bi->bi_model = data;
-			} else if (depth == 0 &&
-				   streq(pname, "#address-cells")) {
-				acells = fdt32(data);
-			} else if (depth == 0 && streq(pname, "#size-cells")) {
-				scells = fdt32(data);
+			} else if (streq(pname, "#address-cells")) {
+				n->acells = fdt32(data);
+			} else if (streq(pname, "#size-cells")) {
+				n->scells = fdt32(data);
+			} else if (streq(pname, "redistributor-stride")) {
+				n->rdist_stride = fdt_cells(data, len / 4);
 			} else if (in_chosen && depth == 1 &&
 				   streq(pname, "bootargs")) {
 				bi->bi_bootargs = data;

@@ -54,6 +54,7 @@ struct arm64_bootinfo {
 	vm_paddr_t	bi_gicd_base;		/* GICv2 distributor */
 	vm_paddr_t	bi_gicc_base;		/* v2 cpu interface, v3 redistributors */
 	int		bi_gic_version;		/* 0 = none found */
+	u_int		bi_gicr_stride;		/* v3: bytes per cpu, 0 = default */
 	int		bi_timer_irq;		/* virtual timer INTID */
 	int		bi_psci;		/* 0 none, 1 hvc, 2 smc */
 	u_int		bi_fdt_size;
@@ -67,7 +68,7 @@ struct arm64_bootinfo {
 	u_int		bi_fb_width;
 	u_int		bi_fb_height;
 	u_int		bi_fb_stride;		/* bytes per line */
-	u_int		bi_fb_bpp;		/* 32 or 16 */
+	u_int		bi_fb_bpp;		/* 32, 24 or 16 */
 };
 
 extern struct arm64_bootinfo arm64_bootinfo;

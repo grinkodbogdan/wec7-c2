@@ -53,7 +53,7 @@ static struct {
 	uint8_t		*base;		/* direct map address */
 	u_int		width, height;	/* pixels */
 	u_int		stride;		/* bytes per line */
-	u_int		bpp;		/* 32 or 16 */
+	u_int		bpp;		/* 32, 24 or 16 */
 	u_int		scale;		/* pixels per font pixel */
 	u_int		cols, rows;
 	u_int		col, row;
@@ -93,6 +93,9 @@ fb_fill(u_int x, u_int y, u_int w, u_int h, int on)
 		if (fb.bpp == 16) {
 			for (i = 0; i < w; ++i)
 				((uint16_t *)line)[i] = on ? 0xffff : 0;
+		} else if (fb.bpp == 24) {
+			for (i = 0; i < w * 3; ++i)
+				line[i] = on ? 0xff : 0;
 		} else {
 			for (i = 0; i < w; ++i)
 				((uint32_t *)line)[i] = on ? 0xffffffff : 0;
@@ -221,7 +224,7 @@ fbcons_bootarg(struct arm64_bootinfo *bi)
 	bi->bi_fb_height = parse_num(&p);
 	bi->bi_fb_stride = parse_num(&p);
 	bi->bi_fb_bpp = parse_num(&p);
-	if (bi->bi_fb_bpp != 16)
+	if (bi->bi_fb_bpp != 16 && bi->bi_fb_bpp != 24)
 		bi->bi_fb_bpp = 32;
 	if (bi->bi_fb_stride == 0)
 		bi->bi_fb_stride = bi->bi_fb_width * bi->bi_fb_bpp / 8;

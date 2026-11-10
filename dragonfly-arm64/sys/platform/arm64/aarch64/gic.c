@@ -82,6 +82,7 @@
 static volatile uint8_t *gicd;
 static volatile uint8_t *gicc;		/* v2: cpu interface */
 static volatile uint8_t *gicr;		/* v3: this cpu's redistributor */
+static u_int gicr_stride = GICR_FRAME_SIZE;	/* some SoCs pad the frames */
 static int gic_version;
 static int gic_nirqs;
 
@@ -121,7 +122,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 		}
 		if (typer & GICR_TYPER_LAST)
 			break;
-		rd += GICR_FRAME_SIZE;
+		rd += gicr_stride;
 	}
 
 	/* Mark the cpu awake and wait for the redistributor to agree. */
@@ -174,6 +175,8 @@ gic_init(int version, vm_paddr_t gicd_pa, vm_paddr_t percpu_pa)
 		gic_nirqs = 1020;
 
 	if (version == 3) {
+		if (arm64_bootinfo.bi_gicr_stride != 0)
+			gicr_stride = arm64_bootinfo.bi_gicr_stride;
 		gic_v3_init(percpu_pa);
 		return (gic_nirqs);
 	}
