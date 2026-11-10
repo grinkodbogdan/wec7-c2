@@ -28,6 +28,13 @@
 #ifndef _SYS_TYPES_H_
 #include <sys/types.h>
 #endif
+/*
+ * Machine-independent sources rely on <machine/cpufunc.h> dragging in
+ * the thread, clock and smp definitions, as it does on x86_64.
+ */
+#include <sys/thread.h>
+#include <machine/clock.h>
+#include <machine/smp.h>
 #include <cpu/armreg.h>
 
 __BEGIN_DECLS
