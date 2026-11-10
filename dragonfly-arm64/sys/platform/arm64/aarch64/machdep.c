@@ -32,6 +32,9 @@
 #include <sys/eventhandler.h>
 #include <sys/random.h>
 #include <sys/sysctl.h>
+#include <sys/linker.h>
+#include <sys/malloc.h>
+#include <sys/libkern.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -91,6 +94,12 @@ vm_offset_t	vm_page_dump_size;
 int		busdma_swi_pending;
 void		(*cpu_idle_hook)(void);
 
+/*
+ * Module metadata in the format loader(8) produces, describing the
+ * initial ramdisk as a preloaded memory disk image for md(4).
+ */
+static uint32_t	preload_buf[32];
+
 /* Environment handed to kgetenv(), built from the boot arguments. */
 static char	bootenv[1024];
 
@@ -145,6 +154,38 @@ parse_bootargs(const char *args)
 		bootverbose = 1;
 }
 
+static uint32_t *
+preload_add(uint32_t *p, uint32_t type, const void *data, uint32_t size)
+{
+	*p++ = type;
+	*p++ = size;
+	bcopy(data, p, size);
+	return (p + howmany(size, sizeof(u_long)) * (sizeof(u_long) / 4));
+}
+
+/*
+ * A ramdisk passed the Linux way (QEMU -initrd, a boot image's ramdisk)
+ * becomes md0.  There is no loader(8) to preload modules, so fabricate
+ * the one metadata record md(4) looks for.
+ */
+static void
+preload_initrd(vm_paddr_t start, vm_paddr_t end)
+{
+	static const char name[] = "initrd";
+	static const char type[] = "md_image";
+	vm_offset_t addr = PHYS_TO_DMAP(start);
+	size_t size = end - start;
+	uint32_t *p = preload_buf;
+
+	p = preload_add(p, MODINFO_NAME, name, sizeof(name));
+	p = preload_add(p, MODINFO_TYPE, type, sizeof(type));
+	p = preload_add(p, MODINFO_ADDR, &addr, sizeof(addr));
+	p = preload_add(p, MODINFO_SIZE, &size, sizeof(size));
+	*p++ = MODINFO_END;
+	*p++ = 0;
+	preload_metadata = (caddr_t)preload_buf;
+}
+
 /*
  * Add [start, end) to phys_avail[], leaving out any part that
  * overlaps one of the (nres) reserved ranges.
@@ -195,7 +236,8 @@ u_long
 initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 {
 	struct arm64_bootinfo *bi = &arm64_bootinfo;
-	struct arm64_memregion reserved[2];
+	struct arm64_memregion reserved[3];
+	int nreserved = 2;
 	struct mdglobaldata *gd;
 	vm_paddr_t firstaddr;
 	int fdt_ok;
@@ -241,8 +283,8 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	/*
 	 * Physical memory.  Everything the firmware reports is usable
 	 * except the kernel image (plus what pmap_bootstrap() carves
-	 * off right behind it) and the device tree blob, which
-	 * arm64_bootinfo keeps pointers into.
+	 * off right behind it), the device tree blob, which
+	 * arm64_bootinfo keeps pointers into, and the initial ramdisk.
 	 *
 	 * XXX /memreserve/ entries and /reserved-memory nodes are not
 	 * honoured yet.  QEMU has none; real firmware does.
@@ -254,6 +296,12 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	reserved[0].mr_size = firstaddr - kernphys;
 	reserved[1].mr_start = fdt_pa;
 	reserved[1].mr_size = bi->bi_fdt_size;
+	if (bi->bi_initrd_end > bi->bi_initrd_start) {
+		reserved[2].mr_start = bi->bi_initrd_start;
+		reserved[2].mr_size = bi->bi_initrd_end - bi->bi_initrd_start;
+		nreserved = 3;
+		preload_initrd(bi->bi_initrd_start, bi->bi_initrd_end);
+	}
 	n = 0;
 	for (i = 0; i < bi->bi_nmem; ++i) {
 		Realmem += bi->bi_mem[i].mr_size;
@@ -262,7 +310,7 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 		    bi->bi_mem[i].mr_size;
 		add_phys_avail(bi->bi_mem[i].mr_start,
 		    bi->bi_mem[i].mr_start + bi->bi_mem[i].mr_size,
-		    reserved, 2, &n);
+		    reserved, nreserved, &n);
 	}
 	avail_start = phys_avail[0].phys_beg;
 	avail_end = phys_avail[n - 1].phys_end;
@@ -450,6 +498,28 @@ bootinfo_selftest(void)
 	    (arm64_bootinfo.bi_bootargs != NULL &&
 	     strstr(arm64_bootinfo.bi_bootargs, "selftest") != NULL));
 }
+
+/*
+ * The point in boot where pc64 starts the other cpus (mp_start_aps).
+ * Nothing is started here yet, but the per-cpu state every cpu,
+ * including the boot cpu, gets at this stage is still needed.
+ */
+static void
+arm64_mp_start(void *dummy __unused)
+{
+	size_t ipiq_size;
+
+	malloc_reinit_ncpus();
+
+	ipiq_size = sizeof(struct lwkt_ipiq) * ncpus;
+	mycpu->gd_ipiq = (void *)kmem_alloc(kernel_map, ipiq_size,
+					    VM_SUBSYS_IPIQ);
+	bzero(mycpu->gd_ipiq, ipiq_size);
+
+	/* initialize arc4random. */
+	arc4_init_pcpu(0);
+}
+SYSINIT(startaps, SI_BOOT2_START_APS, SI_ORDER_FIRST, arm64_mp_start, NULL);
 
 /*
  * Per-cpu data

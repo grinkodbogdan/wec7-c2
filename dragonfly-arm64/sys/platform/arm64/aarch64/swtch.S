@@ -142,6 +142,12 @@ END(cpu_lwkt_restore)
  */
 ENTRY(cpu_heavy_switch)
 	save_switch_frame cpu_heavy_restore
+	/* The user thread pointer belongs to the outgoing thread. */
+	mrs	x11, tpidr_el1
+	ldr	x11, [x11, #GD_CURTHREAD]
+	ldr	x11, [x11, #TD_PCB]
+	mrs	x12, tpidr_el0
+	str	x12, [x11, #PCB_TPIDR_EL0]
 	switch_stacks
 END(cpu_heavy_switch)
 
@@ -234,12 +240,9 @@ ENTRY(fork_trampoline)
 	blr	x19
 	/*
 	 * The function returned, which means "go to user mode" with the
-	 * trapframe at sp.  That path does not exist yet.
+	 * trapframe at sp.
 	 */
-	mov	x0, sp
-	bl	arm64_usermode_unimplemented
-1:	wfi
-	b	1b
+	b	user_return
 END(fork_trampoline)
 
 /*

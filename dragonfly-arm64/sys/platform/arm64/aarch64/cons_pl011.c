@@ -20,10 +20,11 @@
 /*
  * Polled console on an ARM PL011 UART.
  *
- * This is a kernel console only: output and blocking input by polling
- * the data register.  There is no tty layer attachment or interrupt
- * driven input yet, so nothing in userland could log in over it; the
- * device node exists because the console framework requires one.
+ * Everything is polled.  The device node (/dev/ttyu0, reached through
+ * /dev/console) supports plain read and write, which is enough for a
+ * program to print and to read keystrokes, but it is not a tty: there
+ * is no line discipline, no termios and no interrupt driven input, so
+ * a real getty/login/shell cannot use it yet.
  *
  * The UART is assumed to have been configured (baud rate, enabled) by
  * the firmware, and to sit in the low 1GB that locore maps as device
@@ -36,6 +37,7 @@
 #include <sys/conf.h>
 #include <sys/cons.h>
 #include <sys/device.h>
+#include <sys/uio.h>
 
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
@@ -57,8 +59,17 @@ static cn_putc_t	pl011_cnputc;
 CONS_DRIVER(pl011, pl011_cnprobe, pl011_cninit, pl011_cninit_fini, NULL,
 	    pl011_cngetc, pl011_cncheckc, pl011_cnputc, NULL, NULL);
 
+static d_open_t		pl011_open;
+static d_close_t	pl011_close;
+static d_read_t		pl011_read;
+static d_write_t	pl011_write;
+
 static struct dev_ops pl011_ops = {
-	{ "pl011", 0, 0 }
+	{ "pl011", 0, 0 },
+	.d_open =	pl011_open,
+	.d_close =	pl011_close,
+	.d_read =	pl011_read,
+	.d_write =	pl011_write,
 };
 
 /*
@@ -138,4 +149,67 @@ pl011_cngetc(void *private)
 	while ((c = pl011_cncheckc(private)) == -1)
 		cpu_pause();
 	return (c);
+}
+
+static int
+pl011_open(struct dev_open_args *ap __unused)
+{
+	return (0);
+}
+
+static int
+pl011_close(struct dev_close_args *ap __unused)
+{
+	return (0);
+}
+
+/*
+ * Return whatever input is available, waiting for at least one
+ * character.  Polls the receiver from a sleep loop.
+ */
+static int
+pl011_read(struct dev_read_args *ap)
+{
+	struct uio *uio = ap->a_uio;
+	char ch;
+	int c;
+	int error = 0;
+	int got = 0;
+
+	while (uio->uio_resid > 0 && error == 0) {
+		c = pl011_cncheckc(NULL);
+		if (c == -1) {
+			if (got)
+				break;
+			error = tsleep(&uart, PCATCH, "ttyin", hz / 50 + 1);
+			if (error == EWOULDBLOCK)
+				error = 0;
+			continue;
+		}
+		ch = (c == '\r') ? '\n' : c;
+		error = uiomove(&ch, 1, uio);
+		++got;
+		if (ch == '\n')
+			break;
+	}
+	return (error);
+}
+
+static int
+pl011_write(struct dev_write_args *ap)
+{
+	struct uio *uio = ap->a_uio;
+	char buf[128];
+	size_t n, i;
+	int error = 0;
+
+	while (uio->uio_resid > 0) {
+		n = szmin(uio->uio_resid, sizeof(buf));
+		error = uiomove(buf, n, uio);
+		if (error)
+			break;
+		for (i = 0; i < n; ++i)
+			cnputc_early(buf[i]);
+	}
+	return (error);
 }

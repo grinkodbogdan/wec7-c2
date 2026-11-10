@@ -20,17 +20,35 @@
 /*
  * Synchronous exception handling.
  *
- * Only exceptions taken from the kernel itself are handled: kernel
- * page faults (pageable kernel memory, and user addresses touched by
- * the copyin/copyout family) and fatal conditions.  The user-mode half
- * of trap() on pc64 (system calls via syscall2(), user faults, signal
- * delivery through userret(), FP traps) has no counterpart here yet.
+ * Kernel side: page faults on pageable kernel memory and on user
+ * addresses touched by the copyin/copyout family; everything else is
+ * fatal.
+ *
+ * User side: system calls, page faults, and the work done on every
+ * return to user mode (userret/userexit, following pc64's trap.c).
+ * Other user exceptions are turned into signals.  Not handled yet:
+ * FP/SIMD use by user programs (FP access traps, so the process gets
+ * SIGILL), signal handlers (stubs.c: sendsig), single stepping and
+ * breakpoints for debuggers.
+ *
+ * System call convention: number in x8, arguments in x0-x7, further
+ * arguments on the stack; results in x0 and x1.  On failure the carry
+ * flag is set in the saved PSTATE and x0 holds the errno value.
  */
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/proc.h>
+#include <sys/signalvar.h>
+#include <sys/pioctl.h>
+#include <sys/signal2.h>
+#include <sys/sysent.h>
+#include <sys/sysmsg.h>
+#include <sys/syscall.h>
+#include <sys/usched.h>
+#include <sys/ucred.h>
+#include <sys/spinlock2.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -43,6 +61,7 @@
 
 #include <cpu/armreg.h>
 #include <cpu/frame.h>
+#include <machine/cpu.h>
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/pcb.h>
@@ -180,28 +199,323 @@ trap_fatal(struct trapframe *frame, int from_el1)
 }
 
 /*
- * A forked process tried to return to user mode.
+ * The three steps that bracket every excursion into the kernel on
+ * behalf of a user process; see pc64's trap.c for the full story.
+ *
+ * userenter() - called on entry from user mode.  Arrange for our LWKT
+ * priority to be raised lazily if we block, and pick up any change of
+ * the process credentials.
+ */
+static __inline void
+userenter(struct thread *curtd, struct proc *curp)
+{
+	struct ucred *ocred;
+	struct ucred *ncred;
+
+	curtd->td_release = lwkt_passive_release;
+
+	if (__predict_false(curtd->td_ucred != curp->p_ucred)) {
+		spin_lock(&curp->p_spin);
+		ncred = crhold(curp->p_ucred);
+		spin_unlock(&curp->p_spin);
+		ocred = curtd->td_ucred;
+		curtd->td_ucred = ncred;
+		if (ocred)
+			crfree(ocred);
+	}
+}
+
+/*
+ * userret() - handle signals, stops and other pending conditions
+ * before going back to user mode.
+ */
+static void
+userret(struct lwp *lp, struct trapframe *frame __unused)
+{
+	struct proc *p = lp->lwp_proc;
+	int sig;
+	int ptok;
+
+recheck:
+	/* Post any pending upcalls, cpu migration requests and the like. */
+	if (lp->lwp_mpflags & LWP_MP_URETMASK)
+		lwpuserret(lp);
+
+	/* Block here if we are in a stopped state. */
+	if (__predict_false(STOPLWP(p, lp))) {
+		lwkt_gettoken(&p->p_token);
+		tstop();
+		lwkt_reltoken(&p->p_token);
+		goto recheck;
+	}
+
+	/* Post any pending signals. */
+	if (__predict_false((sig = CURSIG_LCK_TRACE(lp, &ptok)) != 0)) {
+		postsig(sig, ptok);
+		goto recheck;
+	}
+
+	/* A sigsuspend-style temporary mask is restored on the way out. */
+	if (__predict_false(lp->lwp_flags & LWP_OLDMASK)) {
+		lp->lwp_flags &= ~LWP_OLDMASK;
+		lp->lwp_sigmask = lp->lwp_oldsigmask;
+		goto recheck;
+	}
+}
+
+/*
+ * userexit() - the last thing before returning to user mode: drop the
+ * kernel priority boost and (re)acquire the right to run as the
+ * current user process on this cpu, which is where the user scheduler
+ * gets to switch us out.
+ */
+static void
+userexit(struct lwp *lp)
+{
+	struct thread *td = lp->lwp_thread;
+
+	while (__predict_false(STOPLWP(lp->lwp_proc, lp))) {
+		lwkt_gettoken(&lp->lwp_proc->p_token);
+		tstop();
+		lwkt_reltoken(&lp->lwp_proc->p_token);
+	}
+	lwkt_passive_recover(td);
+	lp->lwp_proc->p_usched->acquire_curproc(lp);
+}
+
+/*
+ * A system call from user mode.
+ */
+static void
+syscall2(struct trapframe *frame)
+{
+	struct thread *td = curthread;
+	struct proc *p = td->td_proc;
+	struct lwp *lp = td->td_lwp;
+	struct sysent *callp;
+	struct sysmsg sysmsg;
+	union sysunion *argp;
+	const int regcnt = 8;	/* number of args passed in registers */
+	int crit_count = td->td_critcount;
+	u_int code;
+	int error;
+	int narg;
+
+	mycpu->gd_cnt.v_syscall++;
+	userenter(td, p);	/* lazy raise our priority */
+
+	KASSERT(lp->lwp_md.md_regs == frame,
+		("Frame mismatch %p %p", lp->lwp_md.md_regs, frame));
+
+	code = (u_int)frame->tf_x[8];
+	if (code >= p->p_sysent->sv_size)
+		code = SYS___nosys;
+	callp = &p->p_sysent->sv_table[code];
+	narg = callp->sy_narg;
+
+	/*
+	 * The first eight arguments are already laid out as an array of
+	 * registers in the trapframe; any more are on the user stack.
+	 */
+	argp = (union sysunion *)&frame->tf_x[0];
+	if (__predict_false(narg > regcnt)) {
+		register_t *argsdst = (void *)&sysmsg.extargs;
+
+		bcopy(argp, argsdst, sizeof(register_t) * regcnt);
+		error = copyin((caddr_t)frame->tf_sp, &argsdst[regcnt],
+			       (narg - regcnt) * sizeof(register_t));
+		argp = (void *)argsdst;
+		if (error)
+			goto bad;
+	}
+
+	/*
+	 * Default return value is 0 (will be copied to x0), with x1
+	 * preserved for calls that only return one value.
+	 */
+	sysmsg.sysmsg_fds[0] = 0;
+	sysmsg.sysmsg_fds[1] = frame->tf_x[1];
+	sysmsg.sysmsg_frame = frame;
+
+	STOPEVENT(p, S_SCE, narg);	/* MP aware */
+
+	error = (*callp->sy_call)(&sysmsg, argp);
+
+	if (__predict_true(error == 0)) {
+		/* The process and lwp may have changed across vfork/exec. */
+		p = curproc;
+		lp = curthread->td_lwp;
+		frame->tf_x[0] = sysmsg.sysmsg_fds[0];
+		frame->tf_x[1] = sysmsg.sysmsg_fds[1];
+		frame->tf_spsr &= ~PSR_C;
+	} else if (error == ERESTART) {
+		/* Back up over the 4-byte SVC so it is executed again. */
+		frame->tf_elr -= 4;
+	} else if (error == EJUSTRETURN) {
+		/* do nothing */
+	} else {
+bad:
+		frame->tf_x[0] = error;
+		frame->tf_spsr |= PSR_C;
+	}
+
+	userret(lp, frame);
+	STOPEVENT(p, S_SCX, code);
+	userexit(lp);
+
+	KASSERT(crit_count == td->td_critcount,
+		("syscall: critical section count mismatch! %d/%d in %s "
+		 "sysno=%d", crit_count, td->td_critcount, td->td_comm, code));
+	KASSERT(&td->td_toks_base == td->td_toks_stop,
+		("syscall: %ld extra tokens held after trap! syscall %p",
+		 td->td_toks_stop - &td->td_toks_base, callp->sy_call));
+}
+
+/*
+ * A page fault from user mode.  Returns the signal to deliver, or 0
+ * if the fault was resolved.
+ */
+static int
+user_pfault(struct trapframe *frame, u_int ec)
+{
+	struct lwp *lp = curthread->td_lwp;
+	vm_offset_t va = trunc_page(frame->tf_far);
+	vm_prot_t ftype;
+	int rv;
+
+	if (ec == EXCP_INSN_ABORT_L)
+		ftype = VM_PROT_EXECUTE;
+	else if (frame->tf_esr & ISS_DATA_WnR)
+		ftype = VM_PROT_WRITE;
+	else
+		ftype = VM_PROT_READ;
+
+	if (va >= VM_MAX_USER_ADDRESS)
+		return (SIGSEGV);
+	rv = vm_fault(&lp->lwp_vmspace->vm_map, va, ftype,
+	    (ftype & VM_PROT_WRITE) ? VM_FAULT_DIRTY : VM_FAULT_NORMAL);
+	if (rv == KERN_SUCCESS)
+		return (0);
+	return (rv == KERN_PROTECTION_FAILURE ? SIGBUS : SIGSEGV);
+}
+
+/*
+ * Synchronous exception from user mode, called from the vector with
+ * interrupts masked.
  */
 void
-arm64_usermode_unimplemented(struct trapframe *frame)
+trap_el0(struct trapframe *frame)
 {
-	kprintf("\nReturn to user mode requested (pc 0x%jx)\n",
-	    (uintmax_t)frame->tf_elr);
-	panic("arm64: user mode is not implemented yet");
+	struct thread *td = curthread;
+	struct lwp *lp = td->td_lwp;
+	u_int ec = ESR_ELx_EC(frame->tf_esr);
+	int sig = 0;
+	int code = 0;
+
+	cpu_enable_intr();
+
+	if (ec == EXCP_SVC64) {
+		syscall2(frame);
+		return;
+	}
+
+	userenter(td, td->td_proc);
+	switch (ec) {
+	case EXCP_DATA_ABORT_L:
+	case EXCP_INSN_ABORT_L:
+		sig = user_pfault(frame, ec);
+		code = (sig == SIGBUS) ? BUS_ADRERR : SEGV_MAPERR;
+		break;
+	case EXCP_PC_ALIGN:
+	case EXCP_SP_ALIGN:
+		sig = SIGBUS;
+		code = BUS_ADRALN;
+		break;
+	case EXCP_BRK:
+	case EXCP_BRKPT_EL0:
+	case EXCP_SOFTSTP_EL0:
+		sig = SIGTRAP;
+		code = TRAP_BRKPT;
+		break;
+	case EXCP_FP_SIMD:
+		/* XXX no FP/SIMD state management for user mode yet */
+		kprintf("pid %d (%s): FP/SIMD is not supported yet\n",
+		    td->td_proc->p_pid, td->td_proc->p_comm);
+		/* FALLTHROUGH */
+	default:
+		sig = SIGILL;
+		code = ILL_ILLOPC;
+		break;
+	}
+	if (sig != 0) {
+		if (bootverbose || sig != SIGTRAP) {
+			kprintf("pid %d (%s): %s at pc 0x%jx, addr 0x%jx, "
+			    "signal %d\n", td->td_proc->p_pid,
+			    td->td_proc->p_comm, esr_class_name(ec),
+			    (uintmax_t)frame->tf_elr,
+			    (uintmax_t)frame->tf_far, sig);
+		}
+		trapsignal(lp, sig, code);
+	}
+	userret(lp, frame);
+	userexit(lp);
+}
+
+/*
+ * Last stop before the vector code restores the trapframe and returns
+ * to user mode: service asynchronous requests (ASTs) that were posted
+ * against this cpu while we were in the kernel, and come back with
+ * interrupts masked once there are none left.  This is what pc64 does
+ * in doreti.
+ */
+void
+arm64_user_return(struct trapframe *frame)
+{
+	struct thread *td = curthread;
+	struct lwp *lp = td->td_lwp;
+	struct globaldata *gd;
+
+	for (;;) {
+		cpu_disable_intr();
+		gd = td->td_gd;
+		if ((gd->gd_reqflags & RQF_AST_MASK) == 0)
+			break;
+		atomic_clear_int(&gd->gd_reqflags,
+		    RQF_AST_SIGNAL | RQF_AST_OWEUPC);
+		cpu_enable_intr();
+
+		userenter(td, lp->lwp_proc);
+		if (lwkt_resched_wanted())
+			lwkt_switch();
+		userret(lp, frame);
+		userexit(lp);
+	}
 }
 
 /*
  * Called from fork_trampoline in a newly created lwp, just before it
- * would enter user mode for the first time.
- *
- * XXX The pc64 version goes through userenter()/userret() here to
- * deliver pending signals and ASTs; that machinery belongs to the
- * user-mode half of this file and is still missing.
+ * enters user mode for the first time.
  */
 void
-generic_lwp_return(struct lwp *lp __unused, struct trapframe *frame __unused)
+generic_lwp_return(struct lwp *lp, struct trapframe *frame)
 {
+	struct proc *p = lp->lwp_proc;
+
+	/*
+	 * Check for exit-race.  If one lwp exits the process concurrent
+	 * with another lwp creating a new thread, the two operations
+	 * may cross each other resulting in the newly-created lwp not
+	 * receiving a KILL signal.
+	 */
+	if (p->p_flags & P_WEXIT)
+		lwpsignal(p, lp, SIGKILL);
+
 	lwkt_setpri_self(TDPRI_USER_NORM);
+	userenter(lp->lwp_thread, p);
+	userret(lp, frame);
+	lp->lwp_flags |= LWP_PASSIVE_ACQ;
+	userexit(lp);
+	lp->lwp_flags &= ~LWP_PASSIVE_ACQ;
 }
 
 /*

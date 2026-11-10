@@ -36,6 +36,7 @@
 #include <sys/thread2.h>
 
 #include <machine/cpu.h>
+#include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/pcb.h>
 #include <machine/pmap.h>
@@ -126,6 +127,28 @@ cpu_prepare_lwp(struct lwp *lp, struct lwp_params *params)
 	cpu_set_fork_handler(lp,
 	    (void (*)(void *, struct trapframe *))generic_lwp_return, lp);
 	return (0);
+}
+
+/*
+ * Reset the registers of the current lwp for a freshly exec'd image:
+ * start at (entry) in user mode on (stack), which the image activator
+ * has filled with the argument and environment vectors.
+ */
+void
+exec_setregs(u_long entry, u_long stack, u_long ps_strings)
+{
+	struct thread *td = curthread;
+	struct trapframe *regs = td->td_lwp->lwp_md.md_regs;
+
+	bzero(regs, sizeof(*regs));
+	regs->tf_elr = entry;
+	regs->tf_sp = stack & ~0xFUL;	/* the ABI wants 16 byte alignment */
+	regs->tf_x[0] = stack;		/* argument block, for crt0 */
+	regs->tf_x[1] = ps_strings;
+	regs->tf_spsr = PSR_M_EL0t;	/* user mode, interrupts enabled */
+
+	td->td_pcb->pcb_tpidr_el0 = 0;
+	WRITE_SPECIALREG(tpidr_el0, 0);
 }
 
 /*

@@ -56,6 +56,8 @@ struct arm64_bootinfo {
 	int		bi_timer_irq;		/* virtual timer INTID */
 	int		bi_psci;		/* 0 none, 1 hvc, 2 smc */
 	u_int		bi_fdt_size;
+	vm_paddr_t	bi_initrd_start;	/* /chosen linux,initrd-* */
+	vm_paddr_t	bi_initrd_end;
 };
 
 extern struct arm64_bootinfo arm64_bootinfo;
@@ -76,7 +78,8 @@ struct thread;
 u_long	initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys);
 int	bootinfo_selftest(void);
 void	arm64_selftest(void);
-void	arm64_usermode_unimplemented(struct trapframe *frame);
+void	trap_el0(struct trapframe *frame);
+void	arm64_user_return(struct trapframe *frame);
 
 int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
 

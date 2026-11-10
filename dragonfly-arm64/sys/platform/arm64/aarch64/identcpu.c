@@ -23,6 +23,8 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/kernel.h>
+#include <sys/sysctl.h>
 #include <cpu/armreg.h>
 #include <machine/md_var.h>
 
@@ -75,6 +77,14 @@ cpu_impl_name(u_int impl)
 	}
 }
 
+char	machine[] = MACHINE;
+SYSCTL_STRING(_hw, HW_MACHINE, machine, CTLFLAG_RD,
+    machine, 0, "Machine class");
+
+static char cpu_model[64] = "unknown";
+SYSCTL_STRING(_hw, HW_MODEL, model, CTLFLAG_RD,
+    cpu_model, 0, "Machine model");
+
 void
 identify_cpu(void)
 {
@@ -94,6 +104,8 @@ identify_cpu(void)
 			break;
 		}
 	}
+	ksnprintf(cpu_model, sizeof(cpu_model), "%s %s",
+	    cpu_impl_name(MIDR_IMPLEMENTER(midr)), name);
 	kprintf("CPU: %s %s r%lup%lu (midr 0x%08lx)\n",
 	    cpu_impl_name(MIDR_IMPLEMENTER(midr)), name,
 	    MIDR_VARIANT(midr), MIDR_REVISION(midr), midr);

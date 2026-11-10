@@ -165,16 +165,9 @@ set_vkernel_fp(struct trapframe *frame __unused)
 }
 
 /*
- * User mode.  None of this can be reached before a process runs in
- * user mode, which needs the exception entry and return paths first.
+ * User mode features beyond the basics: signal handlers, the
+ * machine-dependent system calls and thread-local storage setup.
  */
-void
-exec_setregs(u_long entry __unused, u_long stack __unused,
-	     u_long ps_strings __unused)
-{
-	NOT_YET("exec (user register setup)");
-}
-
 void
 sendsig(sig_t catcher __unused, int sig __unused, sigset_t *mask __unused,
 	u_long code __unused)

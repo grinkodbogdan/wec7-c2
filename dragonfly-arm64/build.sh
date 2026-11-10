@@ -2,9 +2,9 @@
 #
 # Build the DragonFly/arm64 kernel and optionally boot it in QEMU.
 #
-# Usage: ./build.sh [build|run|clean]
+# Usage: ./build.sh [build|ramdisk|run|clean]
 #
-# Needs: git, clang, ld.lld, llvm-objcopy, llvm-nm, awk;
+# Needs: git, clang, ld.lld, llvm-objcopy, llvm-nm, awk, genisoimage;
 # qemu-system-aarch64 for "run".
 #
 # The DragonFly source tree is not vendored.  It is fetched at a pinned
@@ -36,11 +36,20 @@ P=$S/platform/arm64
 
 # Platform sources, in link order (locore must come first).
 MD_SRCS="locore.S exception.S swtch.S support.S
-	machdep.c pmap.c trap.c vm_machdep.c intr_machdep.c gic.c clock.c
+	machdep.c pmap.c trap.c vm_machdep.c elf_machdep.c intr_machdep.c
+	gic.c clock.c
 	cons_pl011.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
 	udivti3.c"
 
-MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c"
+# "optional" files: what standard files depend on unconditionally, plus
+# the kernel configuration proper: a memory disk and the ISO 9660
+# filesystem, so there is something to mount as root.
+MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
+	dev/disk/md/md.c
+	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
+	vfs/isofs/cd9660/cd9660_node.c vfs/isofs/cd9660/cd9660_rrip.c
+	vfs/isofs/cd9660/cd9660_util.c vfs/isofs/cd9660/cd9660_vfsops.c
+	vfs/isofs/cd9660/cd9660_vnops.c"
 
 fetch() {
 	if [ ! -d "$DFLY_SRC/sys" ]; then
@@ -165,7 +174,6 @@ build() {
 
 	awk '$2 == "standard" && $1 ~ /^[a-z].*\.c$/ { print $1 }' \
 	    "$S/conf/files" > "$OBJ/mi.files"
-	# "optional" files something standard depends on unconditionally.
 	for f in $MI_EXTRA_SRCS; do
 		echo "$f"
 	done >> "$OBJ/mi.files"
@@ -190,17 +198,35 @@ build() {
 	echo "built $OBJ/kernel.img ($(wc -c < "$OBJ/kernel.img") bytes)"
 }
 
+# A root filesystem holding one program, user/init.c, as /sbin/init.
+# There is no libc or cross toolchain for DragonFly/arm64 yet, so the
+# program is freestanding and makes system calls directly.
+ramdisk() {
+	mkdir -p "$OBJ/root/sbin" "$OBJ/root/dev"
+	$CC --target=aarch64-unknown-none-elf -O2 -ffreestanding -fno-pic \
+	    -mgeneral-regs-only -fno-stack-protector -Wall -Wextra -Werror \
+	    -fno-asynchronous-unwind-tables -nostdinc -c "$HERE/user/init.c" \
+	    -o "$OBJ/init.o"
+	$LD -nostdlib -static -e _start -Ttext=0x400000 \
+	    -o "$OBJ/root/sbin/init" "$OBJ/init.o"
+	genisoimage -quiet -R -o "$OBJ/root.iso" "$OBJ/root"
+	echo "built $OBJ/root.iso"
+}
+
 run() {
 	[ -f "$OBJ/kernel.img" ] || build
+	[ -f "$OBJ/root.iso" ] || ramdisk
 	exec qemu-system-aarch64 -M virt -cpu ${QEMU_CPU:-cortex-a72} \
 	    -m ${QEMU_MEM:-1G} -smp ${QEMU_SMP:-1} -nographic -nic none \
-	    -kernel "$OBJ/kernel.img" ${QEMU_APPEND:+-append "$QEMU_APPEND"} \
+	    -kernel "$OBJ/kernel.img" -initrd "$OBJ/root.iso" \
+	    -append "vfs.root.mountfrom=cd9660:md0 $QEMU_APPEND" \
 	    $QEMU_EXTRA
 }
 
 case "${1:-build}" in
-build)	build ;;
+build)	build; ramdisk ;;
+ramdisk) ramdisk ;;
 run)	run ;;
 clean)	rm -rf "$OBJ" ;;
-*)	echo "usage: $0 [build|run|clean]" >&2; exit 1 ;;
+*)	echo "usage: $0 [build|ramdisk|run|clean]" >&2; exit 1 ;;
 esac

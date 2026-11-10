@@ -297,6 +297,12 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 			} else if (in_chosen && depth == 1 &&
 				   streq(pname, "stdout-path")) {
 				bi->bi_stdout = data;
+			} else if (in_chosen && depth == 1 &&
+				   streq(pname, "linux,initrd-start")) {
+				bi->bi_initrd_start = fdt_cells(data, len / 4);
+			} else if (in_chosen && depth == 1 &&
+				   streq(pname, "linux,initrd-end")) {
+				bi->bi_initrd_end = fdt_cells(data, len / 4);
 			}
 			break;
 		}
