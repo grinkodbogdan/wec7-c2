@@ -58,10 +58,7 @@
 #define	PSCI_SYSTEM_OFF		0x84000008UL
 #define	PSCI_SYSTEM_RESET	0x84000009UL
 
-/* Fallback when the device tree names no UART: QEMU virt's PL011. */
-#define	FALLBACK_UART		0x09000000UL
-
-#define	PHYS_AVAIL_ENTRIES	(2 * ARM64_MAXMEMREGIONS + 4)
+#define	PHYS_AVAIL_ENTRIES	(2 * (ARM64_MAXMEMREGIONS + ARM64_MAXRESERVED) + 8)
 
 #define	MAXBUFSTRUCTSIZE	((size_t)512 * 1024 * 1024)
 
@@ -236,7 +233,7 @@ u_long
 initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 {
 	struct arm64_bootinfo *bi = &arm64_bootinfo;
-	struct arm64_memregion reserved[3];
+	static struct arm64_memregion reserved[ARM64_MAXRESERVED + 4];
 	int nreserved = 2;
 	struct mdglobaldata *gd;
 	vm_paddr_t firstaddr;
@@ -258,7 +255,8 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 */
 	bi->bi_timer_irq = 27;
 	fdt_ok = (fdt_scan((void *)PHYS_TO_DMAP(fdt_pa), bi) == 0);
-	cninit_early(bi->bi_uart_base ? bi->bi_uart_base : FALLBACK_UART);
+	cninit_early(bi->bi_uart_base);
+	fbcons_init(bi);
 	if (!fdt_ok || bi->bi_nmem == 0) {
 		cnputs_early("\nDragonFly/arm64: no usable device tree, "
 		    "cannot determine memory layout\n");
@@ -284,10 +282,10 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 * Physical memory.  Everything the firmware reports is usable
 	 * except the kernel image (plus what pmap_bootstrap() carves
 	 * off right behind it), the device tree blob, which
-	 * arm64_bootinfo keeps pointers into, and the initial ramdisk.
-	 *
-	 * XXX /memreserve/ entries and /reserved-memory nodes are not
-	 * honoured yet.  QEMU has none; real firmware does.
+	 * arm64_bootinfo keeps pointers into, the initial ramdisk, a
+	 * firmware framebuffer, and whatever the device tree marks as
+	 * reserved (on a phone: memory owned by the modem, the secure
+	 * world and other firmware).
 	 */
 	firstaddr = round_page(kernphys + (_end - kernbase));
 	pmap_bootstrap(&firstaddr, kernphys);
@@ -299,9 +297,17 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	if (bi->bi_initrd_end > bi->bi_initrd_start) {
 		reserved[2].mr_start = bi->bi_initrd_start;
 		reserved[2].mr_size = bi->bi_initrd_end - bi->bi_initrd_start;
-		nreserved = 3;
+		++nreserved;
 		preload_initrd(bi->bi_initrd_start, bi->bi_initrd_end);
 	}
+	if (bi->bi_fb_base != 0) {
+		reserved[nreserved].mr_start = bi->bi_fb_base;
+		reserved[nreserved].mr_size =
+		    (vm_size_t)bi->bi_fb_stride * bi->bi_fb_height;
+		++nreserved;
+	}
+	for (i = 0; i < bi->bi_nresv; ++i)
+		reserved[nreserved++] = bi->bi_resv[i];
 	n = 0;
 	for (i = 0; i < bi->bi_nmem; ++i) {
 		Realmem += bi->bi_mem[i].mr_size;
@@ -353,6 +359,15 @@ cpu_startup(void *dummy __unused)
 	kprintf("Machine: %s\n", bi->bi_model ? bi->bi_model :
 	    (bi->bi_compatible ? bi->bi_compatible : "unknown"));
 	identify_cpu();
+	if (bi->bi_fb_base != 0) {
+		kprintf("fb0: %ux%u, %u bpp framebuffer at 0x%jx\n",
+		    bi->bi_fb_width, bi->bi_fb_height, bi->bi_fb_bpp,
+		    (uintmax_t)bi->bi_fb_base);
+	}
+	if (bi->bi_nresv != 0) {
+		kprintf("%d reserved memory region(s) from the device tree\n",
+		    bi->bi_nresv);
+	}
 	kprintf("real memory  = %ju (%ju MB)\n", (intmax_t)Realmem,
 	    (intmax_t)Realmem / 1024 / 1024);
 	if (bootverbose) {

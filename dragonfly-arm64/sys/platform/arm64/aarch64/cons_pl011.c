@@ -18,15 +18,20 @@
  */
 
 /*
- * Polled console on an ARM PL011 UART.
+ * The system console: an ARM PL011 UART, a firmware framebuffer, or
+ * both at once.
  *
  * The kernel console half (kprintf, the mountroot prompt) polls the
- * data register directly.  The device node, /dev/ttyu0 and through it
- * /dev/console, is a real tty: line discipline, termios, job control
- * signals from ^C and ^Z, window size.  Transmit is synchronous and
- * receive is polled from a callout 50 times a second rather than
- * interrupt driven, which keeps the driver independent of how a given
- * board wires the UART's interrupt.
+ * UART's data register directly and mirrors output to the framebuffer
+ * (fbcons.c) when there is one.  The device node, /dev/ttyu0 and
+ * through it /dev/console, is a real tty: line discipline, termios,
+ * job control signals from ^C and ^Z, window size.  Transmit is
+ * synchronous and receive is polled from a callout 50 times a second
+ * rather than interrupt driven, which keeps the driver independent of
+ * how a given board wires the UART's interrupt.
+ *
+ * A machine with only a framebuffer (a phone) gets output and no
+ * input: there is no keyboard driver.
  *
  * The UART is assumed to have been configured (baud rate, enabled) by
  * the firmware, and to sit in the low 1GB that locore maps as device
@@ -90,7 +95,8 @@ static struct tty *pl011_tty;
 void
 cninit_early(vm_paddr_t uart_base)
 {
-	uart = (volatile uint32_t *)PHYS_TO_DMAP(uart_base);
+	if (uart_base != 0)
+		uart = (volatile uint32_t *)PHYS_TO_DMAP(uart_base);
 }
 
 /*
@@ -100,13 +106,15 @@ cninit_early(vm_paddr_t uart_base)
 void
 cnputc_early(int c)
 {
-	if (uart == NULL)
-		return;
-	if (c == '\n')
-		cnputc_early('\r');
-	while (uart[UART_FR / 4] & UART_FR_TXFF)
-		;
-	uart[UART_DR / 4] = (uint32_t)c;
+	if (uart != NULL) {
+		if (c == '\n')
+			cnputc_early('\r');
+		while (uart[UART_FR / 4] & UART_FR_TXFF)
+			;
+		uart[UART_DR / 4] = (uint32_t)c;
+	}
+	if (c != '\r' || uart == NULL)
+		fbcons_putc(c);
 }
 
 void
@@ -119,7 +127,7 @@ cnputs_early(const char *s)
 static void
 pl011_cnprobe(struct consdev *cp)
 {
-	if (uart == NULL) {
+	if (uart == NULL && !fbcons_present()) {
 		cp->cn_pri = CN_DEAD;
 		return;
 	}
@@ -148,7 +156,7 @@ pl011_cnputc(void *private __unused, int c)
 static int
 pl011_cncheckc(void *private __unused)
 {
-	if (uart[UART_FR / 4] & UART_FR_RXFE)
+	if (uart == NULL || (uart[UART_FR / 4] & UART_FR_RXFE))
 		return (-1);
 	return (uart[UART_DR / 4] & 0xff);
 }
@@ -181,9 +189,12 @@ pl011_tty_start(struct tty *tp)
 	tp->t_state |= TS_BUSY;
 	while ((n = clist_qtob(&tp->t_outq, buf, sizeof(buf))) > 0) {
 		for (i = 0; i < n; ++i) {
-			while (uart[UART_FR / 4] & UART_FR_TXFF)
-				;
-			uart[UART_DR / 4] = (uint32_t)(u_char)buf[i];
+			if (uart != NULL) {
+				while (uart[UART_FR / 4] & UART_FR_TXFF)
+					;
+				uart[UART_DR / 4] = (uint32_t)(u_char)buf[i];
+			}
+			fbcons_putc((u_char)buf[i]);
 		}
 	}
 	tp->t_state &= ~TS_BUSY;

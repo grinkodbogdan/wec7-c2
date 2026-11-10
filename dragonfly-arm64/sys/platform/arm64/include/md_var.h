@@ -32,6 +32,7 @@
 struct trapframe;
 
 #define	ARM64_MAXMEMREGIONS	16
+#define	ARM64_MAXRESERVED	48
 
 struct arm64_memregion {
 	vm_paddr_t	mr_start;
@@ -58,6 +59,15 @@ struct arm64_bootinfo {
 	u_int		bi_fdt_size;
 	vm_paddr_t	bi_initrd_start;	/* /chosen linux,initrd-* */
 	vm_paddr_t	bi_initrd_end;
+	/* /memreserve/ entries and /reserved-memory nodes */
+	struct arm64_memregion bi_resv[ARM64_MAXRESERVED];
+	int		bi_nresv;
+	/* simple-framebuffer node, or the fb= boot argument */
+	vm_paddr_t	bi_fb_base;
+	u_int		bi_fb_width;
+	u_int		bi_fb_height;
+	u_int		bi_fb_stride;		/* bytes per line */
+	u_int		bi_fb_bpp;		/* 32 or 16 */
 };
 
 extern struct arm64_bootinfo arm64_bootinfo;
@@ -86,6 +96,9 @@ int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
 void	cninit_early(vm_paddr_t uart_base);
 void	cnputc_early(int c);
 void	cnputs_early(const char *s);
+void	fbcons_init(struct arm64_bootinfo *bi);
+void	fbcons_putc(int c);
+int	fbcons_present(void);
 
 void	identify_cpu(void);
 

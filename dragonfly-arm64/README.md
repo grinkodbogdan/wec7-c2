@@ -38,6 +38,7 @@ and lays this directory's `sys/` tree over it.
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
 | `user/` | Test userland: a mini C library (`libc.c`, not a port of DragonFly's), an `init` that tests the kernel, and a small shell |
 | `build.sh` | Fetch, overlay, build the kernel and ramdisk, and run them in QEMU |
+| `tools/mkbootimg.py` | Packs kernel, device tree and ramdisk into an Android boot image for `fastboot boot` |
 | `tools/mi-coverage.sh` | Compiles only the shared kernel sources for aarch64 and reports failures |
 
 The naming follows DragonFly's existing split: `cpu/x86_64` + `platform/pc64`
@@ -136,7 +137,7 @@ at both a 2MB-aligned and an unaligned address. One CPU only. The 14 checks
   interrupts, and the ARM generic timer as both the system timebase and the
   scheduler's interrupt source. Uptime advances and timeouts fire.
 - **Console.** DragonFly's own `kprintf` and console layer on a PL011 serial
-  port, output and polled input.
+  port, on a firmware framebuffer, or both at once.
 - **Root filesystem.** A ramdisk handed over the Linux way (QEMU `-initrd`, or
   the ramdisk slot of an Android boot image) becomes memory disk `md0` and is
   mounted as an ISO 9660 root.
@@ -168,7 +169,7 @@ Roughly in the order it blocks progress:
 | Debugging | None | The in-kernel debugger backend, crash dumps, `ptrace` register access |
 | Build system | Bypassed | Teaching `config(8)` and the kernel makefiles about arm64 |
 | Boot loader | QEMU `-kernel` only | A UEFI or U-Boot loader that can read HAMMER2 and pass modules |
-| Real hardware | Untested | Memory reservations from the device tree are ignored, the UART is assumed to be a PL011 below 1GB, and nothing has run outside QEMU |
+| Real hardware | Untested | Nothing has run outside QEMU. Serial console only on a PL011; peripherals assumed below 1GB |
 
 `sys/platform/arm64/aarch64/stubs.c` is the precise list of missing kernel
 entry points: each one either fails with an error or panics with a message
@@ -193,8 +194,9 @@ naming what is missing, so hitting one is obvious.
 2. ~~A root filesystem and a first user process.~~ Done.
 3. ~~Signals, floating point, a terminal and a shell.~~ Done, against a
    stand-in C library.
-4. **Mi 5 first boot.** A framebuffer console, a boot image, and the fixes the
-   first attempt on hardware turns up. See below.
+4. **Mi 5 first boot.** The pieces are in place (framebuffer console, boot
+   image tool, reserved memory); what remains is trying it on the phone and
+   fixing what that turns up. See below.
 5. **Real userland.** Cross toolchain, DragonFly's libc and runtime linker,
    thread-local storage. This is the largest step.
 6. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
@@ -215,32 +217,67 @@ In place and tested in QEMU:
   the kernel at a fixed offset from the start of RAM instead of honouring the
   image header, so the kernel no longer needs a 2MB-aligned load address.
 - **Ramdisk root.** Arrives the same way an Android boot image's ramdisk does.
+- **Reserved memory.** Memory the device tree sets aside (`/memreserve/` and
+  `/reserved-memory`, which on a phone covers the modem and firmware) is kept
+  out of the kernel's hands.
+- **A console on the screen.** Text is drawn into the framebuffer the
+  bootloader leaves running; `screenshot-fbcons.png` shows a full boot
+  rendered on a simulated 1080x1920 panel. Output only: there is no keyboard,
+  so the shell prompt appears but cannot be typed at.
+- **Boot image tool.** `tools/mkbootimg.py` packs kernel, device tree and
+  ramdisk into an Android boot image.
 - **PSCI** for reboot and power-off.
 
-Not done, in the order a first boot needs them:
+### Trying it on the phone
 
-1. **A way to see anything.** The kernel's only console is a PL011 serial
-   port. The Mi 5's debug serial port is a different (Qualcomm) UART and is
-   only reachable by opening the phone. The practical console is the display:
-   a driver that draws text into the framebuffer the bootloader leaves set up.
-   Neither exists yet.
-2. **A boot image.** The kernel and the phone's device tree packed in the
-   Android boot image format so `fastboot boot` can load it without flashing.
-3. **Device tree memory reservations.** The kernel currently treats all RAM as
-   free. On a phone, parts of it belong to the modem and firmware; using them
-   will crash. This must be fixed before the first attempt.
-4. **Everything after first boot.** Storage (UFS), USB, touch, display
-   control, power management and the modem each need a driver written for this
-   chip. None of DragonFly's existing drivers apply.
+This has **not been run on a Mi 5**. The steps below are what a first attempt
+looks like; expect it to fail in some way that needs a fix.
 
-`fastboot boot` loads an image into RAM for one boot without writing to the
-phone's storage, which is the safe way to experiment. Keep a backup of the
-phone's partitions regardless.
+1. Unlock the bootloader (already done) and back up the phone's partitions.
+2. Get the phone's current boot image, which carries its device tree. From a
+   LineageOS or stock ROM zip it is `boot.img`; from a running rooted phone,
+   `dd` the `boot` partition.
+3. Build, then pack:
 
-For scale: FreeBSD's arm64 port was a funded, multi-year effort before it first
-shipped in FreeBSD 11.0, and DragonFly's kernel differs enough from FreeBSD's
-(LWKT threading, its own pmap and VM) that little of that code transfers
-directly.
+   ```sh
+   ./build.sh build
+   tools/mkbootimg.py --kernel work/obj/kernel.img --ramdisk work/obj/root.iso \
+       --stock boot.img -o dragonfly-boot.img \
+       --cmdline "vfs.root.mountfrom=cd9660:md0 fb=0x83401000,1080,1920"
+   ```
+
+4. With the phone in fastboot mode: `fastboot boot dragonfly-boot.img`. This
+   loads the image into RAM for one boot and writes nothing to storage; a
+   reboot returns to Android.
+
+If it works, the screen shows the same text as the screenshot, ending at a
+shell prompt.
+
+Things that are assumptions and may be wrong:
+
+- **The framebuffer address in `fb=`.** `0x83401000` is the usual splash
+  framebuffer location on this chip, from memory, not read from this phone's
+  device tree. If the device tree has a `simple-framebuffer` node the argument
+  is unnecessary; if the address is wrong the screen simply stays as the
+  bootloader left it. The right value is the `reg` of the splash region under
+  `/reserved-memory` in the phone's device tree (`tools/mkbootimg.py --info`
+  and `dtc` will show it).
+- **Pixel format and stride.** 32 bits per pixel with no padding is assumed.
+- **That the bootloader accepts the image.** Some verify a signature or want
+  a specific header version even when unlocked.
+- **Peripherals below 1GB.** The early page tables assume device registers
+  sit below 1GB and RAM above, which matches this chip.
+
+Not done:
+
+1. **Input.** No touch, keys or USB, so nothing can be typed on the phone.
+   The debug serial port is a Qualcomm UART (no driver here) and needs the
+   phone opened to reach.
+2. **Everything after first boot.** Storage (UFS), USB, touch, display
+   control, power management, charging and the modem each need a driver
+   written for this chip. Where one exists in FreeBSD's ARM64 port it can be
+   adapted; for most of this chip there is none, and Linux's drivers (GPL) can
+   only be used as documentation.
 
 ## Design notes
 
@@ -266,3 +303,13 @@ directly.
   this is safe and what it costs.
 - **Known shortcuts:** the single-pass device tree scanner, the byte-loop
   `memcpy`/`memset`/`copyin` in `support.S`, and the console's polled input.
+
+## Borrowing from other BSDs
+
+Where writing a DragonFly-native version of something is not practical, the
+plan is to adapt it from FreeBSD's ARM64 port, which has the same license
+family, keeping its copyright notices. Nothing has been imported yet: so far
+everything here was either written for this port or already in DragonFly's
+tree (the console font, for example). The candidates are the per-CPU parts of
+libc and the runtime linker, the device-tree bus, and drivers such as
+virtio and SD/MMC.

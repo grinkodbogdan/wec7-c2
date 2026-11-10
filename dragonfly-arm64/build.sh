@@ -4,7 +4,8 @@
 #
 # Usage: ./build.sh [build|ramdisk|run|clean]
 #
-# Needs: git, clang, ld.lld, llvm-objcopy, llvm-nm, awk, genisoimage;
+# Needs: git, clang, ld.lld, llvm-objcopy, llvm-nm, awk, python3,
+# genisoimage;
 # qemu-system-aarch64 for "run".
 #
 # The DragonFly source tree is not vendored.  It is fetched at a pinned
@@ -39,7 +40,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 	machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c
-	cons_pl011.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
+	cons_pl011.c fbcons.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
 	udivti3.c"
 
 # "optional" files: what standard files depend on unconditionally, plus
@@ -114,6 +115,32 @@ configure() {
 	#include <sys/bus_private.h>
 	struct config_device config_devtab[] = { { 0 } };
 	int devtab_count = 0;
+	EOG
+
+	# The framebuffer console's font: DragonFly's own cp437 8x16
+	# console font, shipped uuencoded, as a C array.
+	python3 - "$DFLY_SRC/share/syscons/fonts/cp437-8x16.fnt" \
+	    > "$OBJ/opt/fbcons_font.h" <<-'EOG'
+	import sys
+	data = bytearray()
+	for line in open(sys.argv[1], "rb").read().split(b"\n")[1:]:
+	    line = line.rstrip(b"\r")
+	    if line in (b"", b"end", b"`"):
+	        continue
+	    count = (line[0] - 32) & 63
+	    v = [(c - 32) & 63 for c in line[1:]] + [0, 0, 0, 0]
+	    out = bytearray()
+	    for i in range(0, len(v) - 3, 4):
+	        out += bytes(((v[i] << 2 | v[i + 1] >> 4) & 255,
+	                      (v[i + 1] << 4 | v[i + 2] >> 2) & 255,
+	                      (v[i + 2] << 6 | v[i + 3]) & 255))
+	    data += out[:count]
+	assert len(data) == 256 * 16, len(data)
+	print("/* generated from share/syscons/fonts/cp437-8x16.fnt */")
+	print("static const unsigned char fbcons_font[256 * 16] = {")
+	for i in range(0, len(data), 16):
+	    print("\t" + " ".join("0x%02x," % b for b in data[i:i + 16]))
+	print("};")
 	EOG
 
 	reldate=$(awk '/^#define[[:space:]]+__DragonFly_version/ { print $3 }' \

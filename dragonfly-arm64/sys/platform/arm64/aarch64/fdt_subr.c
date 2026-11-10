@@ -23,6 +23,11 @@
  * the structure block and records the handful of facts the kernel needs
  * to reach the console, the interrupt controller and physical memory.
  *
+ * Memory the firmware wants left alone is collected too: the header's
+ * /memreserve/ map and every child of /reserved-memory that has a
+ * fixed "reg".  (Dynamically placed regions, which only give a size,
+ * exist for Linux's allocator to place and reserve nothing here.)
+ *
  * Limitations (all acceptable for bring-up, none for the final port):
  *   - "reg" is decoded using the root node's #address-cells/#size-cells,
  *     so devices must sit directly under the root or under a bus with
@@ -69,8 +74,13 @@ struct fdt_node {
 	uint32_t	intr_len;
 	const char	*device_type;
 	const char	*method;
+	const char	*format;
+	uint32_t	width, height, stride;
 	int		done;
 };
+
+/* Set while the walk is inside the /reserved-memory node. */
+static int fdt_in_reserved;
 
 static uint32_t
 fdt32(const uint32_t *p)
@@ -164,8 +174,33 @@ fdt_node_done(struct fdt_node *n, int depth, int acells, int scells,
 	if (n->device_type != NULL && streq(n->device_type, "cpu"))
 		++bi->bi_ncpus;
 
+	/* A child of /reserved-memory with a fixed location. */
+	if (depth == 2 && n->reg != NULL && fdt_in_reserved) {
+		for (off = 0; off + cells <= n->reg_len / 4; off += cells) {
+			if (bi->bi_nresv == ARM64_MAXRESERVED)
+				break;
+			bi->bi_resv[bi->bi_nresv].mr_start =
+			    fdt_cells(n->reg + off, acells);
+			bi->bi_resv[bi->bi_nresv].mr_size =
+			    fdt_cells(n->reg + off + acells, scells);
+			++bi->bi_nresv;
+		}
+	}
+
 	if (n->compat == NULL)
 		return;
+
+	/* A framebuffer the firmware left running. */
+	if (bi->bi_fb_base == 0 && n->reg != NULL && n->width != 0 &&
+	    fdt_is_compatible(n, "simple-framebuffer")) {
+		bi->bi_fb_base = fdt_cells(n->reg, acells);
+		bi->bi_fb_width = n->width;
+		bi->bi_fb_height = n->height;
+		bi->bi_fb_bpp = (n->format != NULL &&
+		    streq(n->format, "r5g6b5")) ? 16 : 32;
+		bi->bi_fb_stride = n->stride ? n->stride :
+		    n->width * bi->bi_fb_bpp / 8;
+	}
 
 	if (bi->bi_uart_base == 0 && n->reg != NULL &&
 	    fdt_is_compatible(n, "arm,pl011"))
@@ -226,10 +261,23 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 	int acells = 2;
 	int scells = 1;
 	int in_chosen = 0;
+	const uint32_t *rsv;
 
 	if (fdt32(&hdr->magic) != FDT_MAGIC)
 		return (-1);
 	bi->bi_fdt_size = fdt32(&hdr->totalsize);
+
+	/* The memory reservation map: (address, size) pairs, 0/0 ends. */
+	rsv = (const uint32_t *)((const char *)fdt +
+	    fdt32(&hdr->off_mem_rsvmap));
+	while (bi->bi_nresv < ARM64_MAXRESERVED &&
+	    (fdt_cells(rsv, 2) != 0 || fdt_cells(rsv + 2, 2) != 0)) {
+		bi->bi_resv[bi->bi_nresv].mr_start = fdt_cells(rsv, 2);
+		bi->bi_resv[bi->bi_nresv].mr_size = fdt_cells(rsv + 2, 2);
+		++bi->bi_nresv;
+		rsv += 4;
+	}
+	fdt_in_reserved = 0;
 	p = (const uint32_t *)((const char *)fdt + fdt32(&hdr->off_dt_struct));
 	end = (const uint32_t *)((const char *)p + fdt32(&hdr->size_dt_struct));
 	strings = (const char *)fdt + fdt32(&hdr->off_dt_strings);
@@ -251,8 +299,11 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 				bzero(n, sizeof(*n));
 				n->name = name;
 			}
-			if (depth == 1)
+			if (depth == 1) {
 				in_chosen = streq(name, "chosen");
+				fdt_in_reserved =
+				    streq(name, "reserved-memory");
+			}
 			p += (slen(name) + 1 + 3) / 4;
 			break;
 		}
@@ -261,8 +312,10 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 				fdt_node_done(&nodes[depth], depth, acells,
 					      scells, bi);
 			}
-			if (depth == 1)
+			if (depth == 1) {
 				in_chosen = 0;
+				fdt_in_reserved = 0;
+			}
 			--depth;
 			break;
 		case FDT_PROP: {
@@ -289,6 +342,14 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 				n->device_type = data;
 			} else if (streq(pname, "method")) {
 				n->method = data;
+			} else if (streq(pname, "format")) {
+				n->format = data;
+			} else if (streq(pname, "width") && len == 4) {
+				n->width = fdt32(data);
+			} else if (streq(pname, "height") && len == 4) {
+				n->height = fdt32(data);
+			} else if (streq(pname, "stride") && len == 4) {
+				n->stride = fdt32(data);
 			} else if (depth == 0 && streq(pname, "model")) {
 				bi->bi_model = data;
 			} else if (depth == 0 &&
