@@ -20,11 +20,13 @@
 /*
  * Polled console on an ARM PL011 UART.
  *
- * Everything is polled.  The device node (/dev/ttyu0, reached through
- * /dev/console) supports plain read and write, which is enough for a
- * program to print and to read keystrokes, but it is not a tty: there
- * is no line discipline, no termios and no interrupt driven input, so
- * a real getty/login/shell cannot use it yet.
+ * The kernel console half (kprintf, the mountroot prompt) polls the
+ * data register directly.  The device node, /dev/ttyu0 and through it
+ * /dev/console, is a real tty: line discipline, termios, job control
+ * signals from ^C and ^Z, window size.  Transmit is synchronous and
+ * receive is polled from a callout 50 times a second rather than
+ * interrupt driven, which keeps the driver independent of how a given
+ * board wires the UART's interrupt.
  *
  * The UART is assumed to have been configured (baud rate, enabled) by
  * the firmware, and to sit in the low 1GB that locore maps as device
@@ -38,6 +40,12 @@
 #include <sys/cons.h>
 #include <sys/device.h>
 #include <sys/uio.h>
+#include <sys/tty.h>
+#include <sys/ttydefaults.h>
+#include <sys/callout.h>
+#include <sys/fcntl.h>
+#include <sys/proc.h>
+#include <sys/caps.h>
 
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
@@ -61,16 +69,20 @@ CONS_DRIVER(pl011, pl011_cnprobe, pl011_cninit, pl011_cninit_fini, NULL,
 
 static d_open_t		pl011_open;
 static d_close_t	pl011_close;
-static d_read_t		pl011_read;
-static d_write_t	pl011_write;
+static d_ioctl_t	pl011_ioctl;
 
 static struct dev_ops pl011_ops = {
-	{ "pl011", 0, 0 },
+	{ "pl011", 0, D_TTY },
 	.d_open =	pl011_open,
 	.d_close =	pl011_close,
-	.d_read =	pl011_read,
-	.d_write =	pl011_write,
+	.d_read =	ttyread,
+	.d_write =	ttywrite,
+	.d_ioctl =	pl011_ioctl,
+	.d_kqfilter =	ttykqfilter
 };
+
+static struct callout pl011_poll_callout;
+static struct tty *pl011_tty;
 
 /*
  * Called from initarm() before anything else can print.
@@ -151,65 +163,133 @@ pl011_cngetc(void *private)
 	return (c);
 }
 
-static int
-pl011_open(struct dev_open_args *ap __unused)
+/*
+ * Start output: drain the tty's output queue into the transmitter.
+ */
+static void
+pl011_tty_start(struct tty *tp)
 {
-	return (0);
+	char buf[64];
+	int n, i;
+
+	lwkt_gettoken(&tp->t_token);
+	if (tp->t_state & (TS_TIMEOUT | TS_TTSTOP)) {
+		ttwwakeup(tp);
+		lwkt_reltoken(&tp->t_token);
+		return;
+	}
+	tp->t_state |= TS_BUSY;
+	while ((n = clist_qtob(&tp->t_outq, buf, sizeof(buf))) > 0) {
+		for (i = 0; i < n; ++i) {
+			while (uart[UART_FR / 4] & UART_FR_TXFF)
+				;
+			uart[UART_DR / 4] = (uint32_t)(u_char)buf[i];
+		}
+	}
+	tp->t_state &= ~TS_BUSY;
+	lwkt_reltoken(&tp->t_token);
+	ttwwakeup(tp);
 }
 
+/* The firmware configured the line; accept whatever is asked for. */
 static int
-pl011_close(struct dev_close_args *ap __unused)
+pl011_tty_param(struct tty *tp, struct termios *tio)
 {
+	lwkt_gettoken(&tp->t_token);
+	tp->t_ispeed = tio->c_ispeed;
+	tp->t_ospeed = tio->c_ospeed;
+	tp->t_cflag = tio->c_cflag;
+	lwkt_reltoken(&tp->t_token);
 	return (0);
 }
 
 /*
- * Return whatever input is available, waiting for at least one
- * character.  Polls the receiver from a sleep loop.
+ * Feed received characters to the line discipline.
  */
-static int
-pl011_read(struct dev_read_args *ap)
+static void
+pl011_poll(void *arg __unused)
 {
-	struct uio *uio = ap->a_uio;
-	char ch;
+	struct tty *tp = pl011_tty;
 	int c;
-	int error = 0;
-	int got = 0;
 
-	while (uio->uio_resid > 0 && error == 0) {
-		c = pl011_cncheckc(NULL);
-		if (c == -1) {
-			if (got)
-				break;
-			error = tsleep(&uart, PCATCH, "ttyin", hz / 50 + 1);
-			if (error == EWOULDBLOCK)
-				error = 0;
-			continue;
+	if (tp != NULL) {
+		lwkt_gettoken(&tp->t_token);
+		if (tp->t_state & TS_ISOPEN) {
+			while ((c = pl011_cncheckc(NULL)) != -1)
+				(*linesw[tp->t_line].l_rint)(c, tp);
 		}
-		ch = (c == '\r') ? '\n' : c;
-		error = uiomove(&ch, 1, uio);
-		++got;
-		if (ch == '\n')
-			break;
+		lwkt_reltoken(&tp->t_token);
 	}
+	callout_reset(&pl011_poll_callout, hz / 50 + 1, pl011_poll, NULL);
+}
+
+static int
+pl011_open(struct dev_open_args *ap)
+{
+	cdev_t dev = ap->a_head.a_dev;
+	struct tty *tp;
+	int error;
+
+	tp = ttymalloc(&dev->si_tty);
+	lwkt_gettoken(&tp->t_token);
+	if ((tp->t_state & TS_ISOPEN) == 0) {
+		tp->t_oproc = pl011_tty_start;
+		tp->t_param = pl011_tty_param;
+		tp->t_stop = nottystop;
+		tp->t_dev = dev;
+
+		tp->t_state |= TS_CARR_ON | TS_CONNECTED;
+		ttychars(tp);
+		tp->t_iflag = TTYDEF_IFLAG;
+		tp->t_oflag = TTYDEF_OFLAG;
+		tp->t_cflag = TTYDEF_CFLAG | CLOCAL;
+		tp->t_lflag = TTYDEF_LFLAG;
+		tp->t_ispeed = TTYDEF_SPEED;
+		tp->t_ospeed = TTYDEF_SPEED;
+		tp->t_winsize.ws_row = 24;
+		tp->t_winsize.ws_col = 80;
+		ttsetwater(tp);
+	} else if ((tp->t_state & TS_XCLUDE) &&
+		   caps_priv_check(ap->a_cred, SYSCAP_RESTRICTEDROOT)) {
+		lwkt_reltoken(&tp->t_token);
+		return (EBUSY);
+	}
+	error = (*linesw[tp->t_line].l_open)(dev, tp);
+	if (error == 0 && pl011_tty == NULL) {
+		pl011_tty = tp;
+		callout_init_mp(&pl011_poll_callout);
+		callout_reset(&pl011_poll_callout, hz / 50 + 1, pl011_poll,
+		    NULL);
+	}
+	lwkt_reltoken(&tp->t_token);
 	return (error);
 }
 
 static int
-pl011_write(struct dev_write_args *ap)
+pl011_close(struct dev_close_args *ap)
 {
-	struct uio *uio = ap->a_uio;
-	char buf[128];
-	size_t n, i;
-	int error = 0;
+	cdev_t dev = ap->a_head.a_dev;
+	struct tty *tp = dev->si_tty;
 
-	while (uio->uio_resid > 0) {
-		n = szmin(uio->uio_resid, sizeof(buf));
-		error = uiomove(buf, n, uio);
-		if (error)
-			break;
-		for (i = 0; i < n; ++i)
-			cnputc_early(buf[i]);
-	}
-	return (error);
+	lwkt_gettoken(&tp->t_token);
+	(*linesw[tp->t_line].l_close)(tp, ap->a_fflag);
+	ttyclose(tp);
+	lwkt_reltoken(&tp->t_token);
+	return (0);
+}
+
+static int
+pl011_ioctl(struct dev_ioctl_args *ap)
+{
+	cdev_t dev = ap->a_head.a_dev;
+	struct tty *tp = dev->si_tty;
+	int error;
+
+	lwkt_gettoken(&tp->t_token);
+	error = (*linesw[tp->t_line].l_ioctl)(tp, ap->a_cmd, ap->a_data,
+					      ap->a_fflag, ap->a_cred);
+	if (error == ENOIOCTL)
+		error = ttioctl(tp, ap->a_cmd, ap->a_data, ap->a_fflag);
+	lwkt_reltoken(&tp->t_token);
+	return (error == ENOIOCTL ? ENOTTY : error);
 }

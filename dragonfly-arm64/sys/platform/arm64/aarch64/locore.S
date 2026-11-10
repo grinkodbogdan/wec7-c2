@@ -114,6 +114,14 @@ _start:
 
 in_el1:
 	msr	spsel, #1
+	/*
+	 * Do not trap FP/SIMD use.  The kernel itself is built without
+	 * FP; this is for user programs, whose state swtch.S saves and
+	 * restores.
+	 */
+	mov	x1, #(3 << 20)		/* CPACR_EL1.FPEN */
+	msr	cpacr_el1, x1
+	isb
 	adr	x20, _start		/* x20 = kernel physical base */
 
 	/* Zero the BSS; the bootstrap page tables and stack live in it. */

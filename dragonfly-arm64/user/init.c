@@ -18,173 +18,43 @@
  */
 
 /*
- * The first user program for DragonFly/arm64.
+ * /sbin/init for the DragonFly/arm64 test ramdisk.
  *
- * There is no libc, runtime linker or cross toolchain for this port
- * yet, so this is a freestanding static executable that makes system
- * calls directly.  It runs as /sbin/init, exercises the parts of the
- * kernel a user process touches first (exec, system calls, demand
- * paging, fork, exit status, signals as a cause of death) and then
- * offers a tiny command prompt on the console.
- *
- * System call convention (see sys/platform/arm64/aarch64/trap.c):
- * number in x8, arguments in x0-x7, result in x0; on failure the carry
- * flag is set and x0 holds errno.  The wrapper below turns a failure
- * into a negative return value.
+ * Sets up the console as the controlling terminal, mounts a tmpfs on
+ * /tmp, runs a self-test of what a user process needs from the kernel,
+ * then keeps a shell running on the console.  Built against the mini
+ * C library in this directory (see libc.h for why).
  */
 
-#define	SYS_exit	1
-#define	SYS_fork	2
-#define	SYS_read	3
-#define	SYS_write	4
-#define	SYS_open	5
-#define	SYS_wait4	7
-#define	SYS_getpid	20
-#define	SYS_reboot	55
-#define	SYS_mmap	197
-#define	SYS___sysctl	202
-#define	SYS_clock_gettime 232
+#include "libc.h"
 
-#define	O_RDWR		2
-#define	PROT_RW		3
-#define	MAP_PRIVATE	0x0002
-#define	MAP_ANON	0x1000
-#define	RB_AUTOBOOT	0
-#define	RB_POWEROFF	0x4000
-#define	CLOCK_MONOTONIC	4
+#define	TIOCSCTTY	0x20007461UL	/* _IO('t', 97) */
 
-typedef unsigned long size_t;
-
-/*
- * Mark the executable as a native DragonFly binary; the kernel's ELF
- * loader looks for this note.
- */
-__attribute__((section(".note.tag"), used, aligned(4)))
-static const struct {
-	int	namesz, descsz, type;
-	char	name[12];
-	int	desc;
-} dragonfly_note = { 10, 4, 1, "DragonFly", 600522 };
-
-static long
-syscall(long num, long a0, long a1, long a2, long a3, long a4, long a5)
-{
-	register long x6 __asm__("x6") = 0;	/* seventh argument, if any */
-	register long x8 __asm__("x8") = num;
-	register long x0 __asm__("x0") = a0;
-	register long x1 __asm__("x1") = a1;
-	register long x2 __asm__("x2") = a2;
-	register long x3 __asm__("x3") = a3;
-	register long x4 __asm__("x4") = a4;
-	register long x5 __asm__("x5") = a5;
-
-	__asm__ volatile(
-	    "svc	#0\n"
-	    "csneg	x0, x0, x0, cc"
-	    : "+r" (x0), "+r" (x1)
-	    : "r" (x8), "r" (x2), "r" (x3), "r" (x4), "r" (x5), "r" (x6)
-	    : "memory", "cc");
-	return (x0);
-}
-
-#define	sys1(n, a)		syscall(n, (long)(a), 0, 0, 0, 0, 0)
-#define	sys2(n, a, b)		syscall(n, (long)(a), (long)(b), 0, 0, 0, 0)
-#define	sys3(n, a, b, c)	syscall(n, (long)(a), (long)(b), (long)(c), 0, 0, 0)
-
-static size_t
-strlen(const char *s)
-{
-	size_t n = 0;
-
-	while (s[n] != '\0')
-		++n;
-	return (n);
-}
-
-static int
-streq(const char *a, const char *b)
-{
-	while (*a != '\0' && *a == *b) {
-		++a;
-		++b;
-	}
-	return (*a == *b);
-}
-
-static void
-puts(const char *s)
-{
-	sys3(SYS_write, 1, s, strlen(s));
-}
-
-static void
-putnum(long v)
-{
-	char buf[24];
-	int i = sizeof(buf);
-	unsigned long u = v < 0 ? -(unsigned long)v : (unsigned long)v;
-
-	buf[--i] = '\0';
-	do {
-		buf[--i] = '0' + u % 10;
-		u /= 10;
-	} while (u != 0);
-	if (v < 0)
-		buf[--i] = '-';
-	puts(&buf[i]);
-}
+static int failures;
+static int counter = 41;		/* in .data: tests copy-on-write */
+static volatile int got_signal;
+static volatile double handler_fp;
 
 static void
 check(const char *what, int ok)
 {
-	puts(ok ? "  ok      " : "  FAILED  ");
-	puts(what);
-	puts("\n");
+	printf("  %s  %s\n", ok ? "ok    " : "FAILED", what);
+	if (!ok)
+		++failures;
 }
 
-/* Fetch a string sysctl by its two-level numeric name. */
-static void
-print_sysctl(int top, int second)
-{
-	int mib[2] = { top, second };
-	char buf[64];
-	size_t len = sizeof(buf) - 1;
-
-	if (syscall(SYS___sysctl, (long)mib, 2, (long)buf, (long)&len, 0, 0) < 0) {
-		puts("?");
-		return;
-	}
-	buf[len] = '\0';
-	puts(buf);
-}
-
-static long
-uptime_seconds(void)
-{
-	long ts[2] = { 0, 0 };
-
-	sys2(SYS_clock_gettime, CLOCK_MONOTONIC, ts);
-	return (ts[0]);
-}
-
-static int counter = 41;	/* lives in .data: tests copy-on-write */
-
-/*
- * Fork a child that runs fn(), and return its wait status.
- */
+/* Fork a child that runs fn(), and return its wait status. */
 static int
 run_child(void (*fn)(void))
 {
 	int status = -1;
-	long pid = sys1(SYS_fork, 0);
+	pid_t pid = fork();
 
 	if (pid == 0) {
 		fn();
-		sys1(SYS_exit, 0);
+		_exit(0);
 	}
-	if (pid < 0)
-		return (-1);
-	if (syscall(SYS_wait4, pid, (long)&status, 0, 0, 0, 0) != pid)
+	if (pid < 0 || waitpid(pid, &status, 0) != pid)
 		return (-1);
 	return (status);
 }
@@ -193,7 +63,7 @@ static void
 child_exit7(void)
 {
 	counter = 1000;			/* must not be seen by the parent */
-	sys1(SYS_exit, 7);
+	_exit(7);
 }
 
 static void
@@ -202,104 +72,149 @@ child_null_deref(void)
 	*(volatile int *)8 = 1;		/* dies of SIGSEGV */
 }
 
+/* Keeps the FP registers busy with values the parent does not use. */
+static void
+child_fp_noise(void)
+{
+	volatile double x = 12345.678;
+	long end = uptime_ms() + 150;
+
+	while (uptime_ms() < end)
+		x = x * 1.000001 + 0.5;
+}
+
+static void
+on_usr1(int sig)
+{
+	/* Use FP in the handler: the interrupted code's must survive. */
+	handler_fp = (double)sig * 2.5;
+	got_signal = sig;
+}
+
 static void
 selftest(void)
 {
 	volatile char *p;
+	volatile double sum = 0.0;
+	char buf[32];
 	int expect = counter + 1;
-	int status;
+	int status, fd, i;
+	pid_t pid;
 
-	check("getpid() == 1", sys1(SYS_getpid, 0) == 1);
-
+	failures = 0;
 	++counter;
 	check("write to .data", counter == expect);
 
-	p = (volatile char *)syscall(SYS_mmap, 0, 3 * 4096, PROT_RW,
-	    MAP_PRIVATE | MAP_ANON, -1, 0);
-	check("mmap anonymous memory", (long)p > 0);
-	if ((long)p > 0) {
+	p = mmap_anon(3 * 4096);
+	check("mmap anonymous memory", p != NULL);
+	if (p != NULL) {
 		check("demand-zero page reads 0", p[4096] == 0);
 		p[2 * 4096 + 5] = 'x';
 		check("page fault on write", p[2 * 4096 + 5] == 'x');
 	}
 
 	status = run_child(child_exit7);
-	check("fork, child exit status 7", status == (7 << 8));
+	check("fork, child exit status 7",
+	    WIFEXITED(status) && WEXITSTATUS(status) == 7);
 	check("copy-on-write after fork", counter == expect);
 
 	status = run_child(child_null_deref);
-	check("child killed by SIGSEGV", (status & 0x7f) == 11);
-}
+	check("child killed by SIGSEGV",
+	    WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
 
-static void
-readline(char *buf, size_t size)
-{
-	size_t n = 0;
-	char c;
+	/* A handler runs and the interrupted code carries on. */
+	got_signal = 0;
+	signal(SIGUSR1, on_usr1);
+	sum = 1.25;
+	kill(getpid(), SIGUSR1);
+	check("signal handler ran", got_signal == SIGUSR1);
+	check("handler could use floating point", handler_fp == 75.0);
+	check("floating point intact after handler", sum == 1.25);
+	signal(SIGUSR1, SIG_DFL);
 
-	while (n < size - 1) {
-		if (sys3(SYS_read, 0, &c, 1) != 1)
-			continue;
-		if (c == '\n')
-			break;
-		if (c == 0x7f || c == '\b') {
-			if (n > 0) {
-				--n;
-				puts("\b \b");
-			}
-			continue;
-		}
-		buf[n++] = c;
-		sys3(SYS_write, 1, &c, 1);	/* echo */
+	/*
+	 * Floating point state is per process: run a long computation
+	 * while a child scribbles on the same registers, with sleeps to
+	 * force switches between the two.
+	 */
+	pid = fork();
+	if (pid == 0) {
+		child_fp_noise();
+		_exit(0);
 	}
-	buf[n] = '\0';
-	puts("\n");
+	sum = 0.0;
+	for (i = 0; i < 100; ++i) {
+		int j;
+
+		for (j = 0; j < 2000; ++j)
+			sum += 0.5;
+		sleep_ms(1);
+	}
+	waitpid(pid, &status, 0);
+	check("floating point across context switches", sum == 100000.0);
+
+	/* A writable filesystem. */
+	fd = open("/tmp/selftest", O_RDWR | O_CREAT | O_TRUNC, 0644);
+	check("create a file on tmpfs", fd >= 0);
+	if (fd >= 0) {
+		write(fd, "dragonfly", 9);
+		close(fd);
+		fd = open("/tmp/selftest", O_RDONLY);
+		memset(buf, 0, sizeof(buf));
+		check("read it back",
+		    read(fd, buf, sizeof(buf)) == 9 &&
+		    strcmp(buf, "dragonfly") == 0);
+		close(fd);
+		check("remove it", unlink("/tmp/selftest") == 0);
+	}
+
+	if (failures == 0)
+		printf("All checks passed.\n");
+	else
+		printf("%d check(s) FAILED.\n", failures);
 }
 
-static void
+int
 main(void)
 {
-	char line[64];
+	char ostype[32], machine[32];
+	char *sh_argv[] = { "sh", NULL };
+	int status;
+	pid_t pid;
 
-	/* init starts with no open files: console as stdin/out/err. */
-	sys2(SYS_open, "/dev/console", O_RDWR);
-	sys2(SYS_open, "/dev/console", O_RDWR);
-	sys2(SYS_open, "/dev/console", O_RDWR);
+	if (getpid() != 1) {
+		/* Run by hand from the shell: just the tests. */
+		selftest();
+		return (failures != 0);
+	}
 
-	puts("\nHello from user mode on ");
-	print_sysctl(1, 1);		/* kern.ostype */
-	puts("/");
-	print_sysctl(6, 1);		/* hw.machine */
-	puts(" (pid ");
-	putnum(sys1(SYS_getpid, 0));
-	puts(")\n\n");
+	/* init starts with no open files and no terminal. */
+	setsid();
+	open("/dev/console", O_RDWR);
+	dup2(0, 1);
+	dup2(0, 2);
+	ioctl(0, TIOCSCTTY, NULL);
+
+	sysctl_string(1, 1, ostype, sizeof(ostype));	/* kern.ostype */
+	sysctl_string(6, 1, machine, sizeof(machine));	/* hw.machine */
+	printf("\nHello from user mode on %s/%s\n\n", ostype, machine);
+
+	if (mount("tmpfs", "/tmp", 0, NULL) != 0)
+		printf("init: cannot mount tmpfs on /tmp (errno %d)\n", errno);
 
 	selftest();
 
-	puts("\nCommands: test, uptime, reboot, poweroff\n");
+	/* Keep a shell running; reap whatever else exits. */
 	for (;;) {
-		puts("init> ");
-		readline(line, sizeof(line));
-		if (streq(line, "test")) {
-			selftest();
-		} else if (streq(line, "uptime")) {
-			putnum(uptime_seconds());
-			puts(" seconds\n");
-		} else if (streq(line, "reboot")) {
-			sys1(SYS_reboot, RB_AUTOBOOT);
-		} else if (streq(line, "poweroff")) {
-			sys1(SYS_reboot, RB_POWEROFF);
-		} else if (line[0] != '\0') {
-			puts("unknown command\n");
+		pid = fork();
+		if (pid == 0) {
+			execve("/bin/sh", sh_argv, environ);
+			printf("init: cannot exec /bin/sh (errno %d)\n", errno);
+			_exit(127);
 		}
+		while (waitpid(-1, &status, 0) != pid)
+			;
+		printf("init: shell exited, starting another\n");
+		sleep_ms(500);
 	}
-}
-
-void
-_start(void)
-{
-	main();
-	sys1(SYS_exit, 0);
-	for (;;)
-		;
 }

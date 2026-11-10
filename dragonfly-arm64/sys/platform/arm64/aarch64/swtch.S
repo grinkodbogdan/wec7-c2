@@ -44,6 +44,10 @@
 
 #define	SWF_SIZE	112
 
+/* The kernel is built without FP; this file saves user FP state. */
+	.arch_extension fp
+	.arch_extension simd
+
 .macro	save_switch_frame restore
 	sub	sp, sp, #SWF_SIZE
 	stp	x19, x20, [sp, #16]
@@ -118,6 +122,70 @@
 .endm
 
 /*
+ * Save and load the FP/SIMD registers to and from the struct savefpu
+ * at \base.  Clobbers x10.
+ */
+.macro	fp_save base
+	stp	q0, q1, [\base, #(0 * 32)]
+	stp	q2, q3, [\base, #(1 * 32)]
+	stp	q4, q5, [\base, #(2 * 32)]
+	stp	q6, q7, [\base, #(3 * 32)]
+	stp	q8, q9, [\base, #(4 * 32)]
+	stp	q10, q11, [\base, #(5 * 32)]
+	stp	q12, q13, [\base, #(6 * 32)]
+	stp	q14, q15, [\base, #(7 * 32)]
+	stp	q16, q17, [\base, #(8 * 32)]
+	stp	q18, q19, [\base, #(9 * 32)]
+	stp	q20, q21, [\base, #(10 * 32)]
+	stp	q22, q23, [\base, #(11 * 32)]
+	stp	q24, q25, [\base, #(12 * 32)]
+	stp	q26, q27, [\base, #(13 * 32)]
+	stp	q28, q29, [\base, #(14 * 32)]
+	stp	q30, q31, [\base, #(15 * 32)]
+	mrs	x10, fpsr
+	str	w10, [\base, #512]
+	mrs	x10, fpcr
+	str	w10, [\base, #516]
+.endm
+
+.macro	fp_restore base
+	ldp	q0, q1, [\base, #(0 * 32)]
+	ldp	q2, q3, [\base, #(1 * 32)]
+	ldp	q4, q5, [\base, #(2 * 32)]
+	ldp	q6, q7, [\base, #(3 * 32)]
+	ldp	q8, q9, [\base, #(4 * 32)]
+	ldp	q10, q11, [\base, #(5 * 32)]
+	ldp	q12, q13, [\base, #(6 * 32)]
+	ldp	q14, q15, [\base, #(7 * 32)]
+	ldp	q16, q17, [\base, #(8 * 32)]
+	ldp	q18, q19, [\base, #(9 * 32)]
+	ldp	q20, q21, [\base, #(10 * 32)]
+	ldp	q22, q23, [\base, #(11 * 32)]
+	ldp	q24, q25, [\base, #(12 * 32)]
+	ldp	q26, q27, [\base, #(13 * 32)]
+	ldp	q28, q29, [\base, #(14 * 32)]
+	ldp	q30, q31, [\base, #(15 * 32)]
+	ldr	w10, [\base, #512]
+	msr	fpsr, x10
+	ldr	w10, [\base, #516]
+	msr	fpcr, x10
+.endm
+
+/*
+ * void fpu_save(struct savefpu *)
+ * void fpu_restore(const struct savefpu *)
+ */
+ENTRY(fpu_save)
+	fp_save x0
+	ret
+END(fpu_save)
+
+ENTRY(fpu_restore)
+	fp_restore x0
+	ret
+END(fpu_restore)
+
+/*
  * thread_t cpu_lwkt_switch(thread_t ntd)
  *
  * Switch between kernel threads.
@@ -137,8 +205,10 @@ END(cpu_lwkt_restore)
  *
  * Switch away from a thread that has a user process context.
  *
- * TODO: save the FP/SIMD state here once the kernel lets userland use
- * it; the kernel itself is built without FP.
+ * The FP/SIMD state is saved and restored on every such switch.  The
+ * kernel never uses FP, so kernel threads leave it alone, and whatever
+ * is in the registers always belongs to the last user thread that ran.
+ * (pc64 does this lazily, on first use after a switch.)
  */
 ENTRY(cpu_heavy_switch)
 	save_switch_frame cpu_heavy_restore
@@ -148,6 +218,8 @@ ENTRY(cpu_heavy_switch)
 	ldr	x11, [x11, #TD_PCB]
 	mrs	x12, tpidr_el0
 	str	x12, [x11, #PCB_TPIDR_EL0]
+	add	x11, x11, #PCB_SAVEFPU
+	fp_save	x11
 	switch_stacks
 END(cpu_heavy_switch)
 
@@ -162,6 +234,8 @@ ENTRY(cpu_heavy_restore)
 	load_ttbr0 x10, x11
 	ldr	x10, [x9, #PCB_TPIDR_EL0]
 	msr	tpidr_el0, x10
+	add	x9, x9, #PCB_SAVEFPU
+	fp_restore x9
 	restore_switch_frame
 END(cpu_heavy_restore)
 

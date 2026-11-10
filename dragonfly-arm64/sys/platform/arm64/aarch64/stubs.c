@@ -165,23 +165,9 @@ set_vkernel_fp(struct trapframe *frame __unused)
 }
 
 /*
- * User mode features beyond the basics: signal handlers, the
- * machine-dependent system calls and thread-local storage setup.
+ * User mode features beyond the basics: the machine-dependent system
+ * calls and thread-local storage setup.
  */
-void
-sendsig(sig_t catcher __unused, int sig __unused, sigset_t *mask __unused,
-	u_long code __unused)
-{
-	NOT_YET("signal delivery");
-}
-
-int
-sys_sigreturn(struct sysmsg *sysmsg __unused,
-	      const struct sigreturn_args *uap __unused)
-{
-	return (ENOSYS);
-}
-
 int
 sys_sysarch(struct sysmsg *sysmsg __unused,
 	    const struct sysarch_args *uap __unused)

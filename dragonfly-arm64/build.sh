@@ -36,20 +36,24 @@ P=$S/platform/arm64
 
 # Platform sources, in link order (locore must come first).
 MD_SRCS="locore.S exception.S swtch.S support.S
-	machdep.c pmap.c trap.c vm_machdep.c elf_machdep.c intr_machdep.c
+	machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
+	intr_machdep.c
 	gic.c clock.c
 	cons_pl011.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
 	udivti3.c"
 
 # "optional" files: what standard files depend on unconditionally, plus
 # the kernel configuration proper: a memory disk and the ISO 9660
-# filesystem, so there is something to mount as root.
+# filesystem, so there is something to mount as root, and tmpfs for
+# somewhere to write.
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
 	dev/disk/md/md.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
 	vfs/isofs/cd9660/cd9660_node.c vfs/isofs/cd9660/cd9660_rrip.c
 	vfs/isofs/cd9660/cd9660_util.c vfs/isofs/cd9660/cd9660_vfsops.c
-	vfs/isofs/cd9660/cd9660_vnops.c"
+	vfs/isofs/cd9660/cd9660_vnops.c
+	vfs/tmpfs/tmpfs_fifoops.c vfs/tmpfs/tmpfs_subr.c
+	vfs/tmpfs/tmpfs_vfsops.c vfs/tmpfs/tmpfs_vnops.c"
 
 fetch() {
 	if [ ! -d "$DFLY_SRC/sys" ]; then
@@ -198,18 +202,25 @@ build() {
 	echo "built $OBJ/kernel.img ($(wc -c < "$OBJ/kernel.img") bytes)"
 }
 
-# A root filesystem holding one program, user/init.c, as /sbin/init.
-# There is no libc or cross toolchain for DragonFly/arm64 yet, so the
-# program is freestanding and makes system calls directly.
+# A root filesystem with the test programs under user/: an init that
+# checks the kernel and a small shell.  There is no libc or cross
+# toolchain for DragonFly/arm64 yet, so they are freestanding and link
+# against the mini C library in user/libc.c.
 ramdisk() {
-	mkdir -p "$OBJ/root/sbin" "$OBJ/root/dev"
-	$CC --target=aarch64-unknown-none-elf -O2 -ffreestanding -fno-pic \
-	    -mgeneral-regs-only -fno-stack-protector -Wall -Wextra -Werror \
-	    -fno-asynchronous-unwind-tables -nostdinc -c "$HERE/user/init.c" \
-	    -o "$OBJ/init.o"
-	$LD -nostdlib -static -e _start -Ttext=0x400000 \
-	    -o "$OBJ/root/sbin/init" "$OBJ/init.o"
-	genisoimage -quiet -R -o "$OBJ/root.iso" "$OBJ/root"
+	root="${OBJ:?}/root"
+	mkdir -p "$root/sbin" "$root/bin" "$root/dev" "$root/tmp" "$root/etc"
+	ucflags="--target=aarch64-unknown-none-elf -O2 -ffreestanding
+	    -fno-pic -fno-stack-protector -fno-builtin
+	    -fno-asynchronous-unwind-tables -Wall -Wextra -Werror -nostdinc"
+	$CC $ucflags -c "$HERE/user/libc.c" -o "$OBJ/ulibc.o"
+	for prog in sbin/init bin/sh; do
+		name=$(basename $prog)
+		$CC $ucflags -c "$HERE/user/$name.c" -o "$OBJ/u$name.o"
+		$LD -nostdlib -static -e _start -Ttext=0x400000 \
+		    -o "$root/$prog" "$OBJ/u$name.o" "$OBJ/ulibc.o"
+	done
+	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
+	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
 	echo "built $OBJ/root.iso"
 }
 

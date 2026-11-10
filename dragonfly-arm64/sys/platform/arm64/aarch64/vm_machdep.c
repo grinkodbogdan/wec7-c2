@@ -67,6 +67,10 @@ cpu_fork(struct lwp *lp1, struct lwp *lp2, int flags)
 	if ((flags & RFPROC) == 0)
 		return;
 
+	/* The live FP/SIMD registers are part of what the child inherits. */
+	if (lp1->lwp_thread == curthread)
+		fpu_save(&lp1->lwp_thread->td_pcb->pcb_save);
+
 	/* Copy lp1's pcb, the child's trapframe sits right below it. */
 	pcb2 = lp2->lwp_thread->td_pcb;
 	*pcb2 = *lp1->lwp_thread->td_pcb;
@@ -149,6 +153,10 @@ exec_setregs(u_long entry, u_long stack, u_long ps_strings)
 
 	td->td_pcb->pcb_tpidr_el0 = 0;
 	WRITE_SPECIALREG(tpidr_el0, 0);
+
+	/* A new image starts with clean FP/SIMD state. */
+	bzero(&td->td_pcb->pcb_save, sizeof(td->td_pcb->pcb_save));
+	fpu_restore(&td->td_pcb->pcb_save);
 }
 
 /*

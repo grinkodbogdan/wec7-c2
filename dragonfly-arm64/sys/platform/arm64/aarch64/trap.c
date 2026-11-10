@@ -27,9 +27,7 @@
  * User side: system calls, page faults, and the work done on every
  * return to user mode (userret/userexit, following pc64's trap.c).
  * Other user exceptions are turned into signals.  Not handled yet:
- * FP/SIMD use by user programs (FP access traps, so the process gets
- * SIGILL), signal handlers (stubs.c: sendsig), single stepping and
- * breakpoints for debuggers.
+ * single stepping and breakpoints for debuggers.
  *
  * System call convention: number in x8, arguments in x0-x7, further
  * arguments on the stack; results in x0 and x1.  On failure the carry
@@ -345,9 +343,16 @@ syscall2(struct trapframe *frame)
 		/* The process and lwp may have changed across vfork/exec. */
 		p = curproc;
 		lp = curthread->td_lwp;
-		frame->tf_x[0] = sysmsg.sysmsg_fds[0];
-		frame->tf_x[1] = sysmsg.sysmsg_fds[1];
-		frame->tf_spsr &= ~PSR_C;
+		/*
+		 * A successful execve() does not return: exec_setregs()
+		 * built a whole new frame, and x0, which would carry the
+		 * return value, is the new image's first argument.
+		 */
+		if (code != SYS_execve) {
+			frame->tf_x[0] = sysmsg.sysmsg_fds[0];
+			frame->tf_x[1] = sysmsg.sysmsg_fds[1];
+			frame->tf_spsr &= ~PSR_C;
+		}
 	} else if (error == ERESTART) {
 		/* Back up over the 4-byte SVC so it is executed again. */
 		frame->tf_elr -= 4;
@@ -437,18 +442,29 @@ trap_el0(struct trapframe *frame)
 		sig = SIGTRAP;
 		code = TRAP_BRKPT;
 		break;
-	case EXCP_FP_SIMD:
-		/* XXX no FP/SIMD state management for user mode yet */
-		kprintf("pid %d (%s): FP/SIMD is not supported yet\n",
-		    td->td_proc->p_pid, td->td_proc->p_comm);
-		/* FALLTHROUGH */
+	case EXCP_TRAP_FP:
+		sig = SIGFPE;
+		code = FPE_FLTINV;
+		break;
 	default:
 		sig = SIGILL;
 		code = ILL_ILLOPC;
 		break;
 	}
 	if (sig != 0) {
-		if (bootverbose || sig != SIGTRAP) {
+		static pid_t lastpid;
+		static int lastticks;
+
+		/*
+		 * Say why, but not over and over: a process that ignores
+		 * the signal (init, once its executable is gone during
+		 * shutdown) faults in a tight loop.
+		 */
+		if ((bootverbose || sig != SIGTRAP) &&
+		    (td->td_proc->p_pid != lastpid ||
+		     (u_int)(ticks - lastticks) > (u_int)(10 * hz))) {
+			lastpid = td->td_proc->p_pid;
+			lastticks = ticks;
 			kprintf("pid %d (%s): %s at pc 0x%jx, addr 0x%jx, "
 			    "signal %d\n", td->td_proc->p_pid,
 			    td->td_proc->p_comm, esr_class_name(ec),

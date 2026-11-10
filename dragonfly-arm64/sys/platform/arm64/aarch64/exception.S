@@ -236,20 +236,20 @@ psci_call:
 	ret
 
 /*
- * Signal trampoline, copied out to user space by exec.  The handler
- * returns here with sp pointing at the struct sigframe; sf_uc is passed
- * to sigreturn(2).
- *
- * TODO: untested, there is no user mode yet.  The offset of sf_uc and
- * the system call convention (number in x8) are provisional.
+ * Signal trampoline, copied out to user space by exec.  sendsig()
+ * points the pc here with sp at the struct sigframe and the handler's
+ * arguments already in x0-x3.  Call the handler, then hand the saved
+ * context back to the kernel with sigreturn(2).
  */
 	.globl	sigcode, esigcode
 	.balign	4
 sigcode:
-	add	x0, sp, #8		/* &sf->sf_uc */
+	ldr	x9, [sp, #SIGF_HANDLER]
+	blr	x9
+	add	x0, sp, #SIGF_UC
 	mov	x8, #344		/* SYS_sigreturn */
 	svc	#0
-	brk	#0xdead
+	brk	#0xdead			/* sigreturn does not return */
 esigcode:
 
 	.data

@@ -31,6 +31,7 @@
 #include <sys/errno.h>
 
 #include <cpu/frame.h>
+#include <machine/sigframe.h>
 #include <machine/globaldata.h>
 #include <machine/pcb.h>
 #include <machine/vmparam.h>
@@ -51,6 +52,7 @@ ASSYM(PCB_X19, __offsetof(struct pcb, pcb_x[0]));
 ASSYM(PCB_X20, __offsetof(struct pcb, pcb_x[1]));
 ASSYM(PCB_TTBR0, __offsetof(struct pcb, pcb_ttbr0));
 ASSYM(PCB_TPIDR_EL0, __offsetof(struct pcb, pcb_tpidr_el0));
+ASSYM(PCB_SAVEFPU, __offsetof(struct pcb, pcb_save));
 ASSYM(PCB_ONFAULT, __offsetof(struct pcb, pcb_onfault));
 ASSYM(PCB_ONFAULT_SP, __offsetof(struct pcb, pcb_onfault_sp));
 
@@ -62,6 +64,9 @@ ASSYM(TF_ESR, __offsetof(struct trapframe, tf_esr));
 ASSYM(TF_FAR, __offsetof(struct trapframe, tf_far));
 ASSYM(TF_X, __offsetof(struct trapframe, tf_x));
 ASSYM(TF_SIZE, sizeof(struct trapframe));
+
+ASSYM(SIGF_HANDLER, __offsetof(struct sigframe, sf_ahu.sf_handler));
+ASSYM(SIGF_UC, __offsetof(struct sigframe, sf_uc));
 
 ASSYM(EFAULT, EFAULT);
 ASSYM(ENAMETOOLONG, ENAMETOOLONG);
