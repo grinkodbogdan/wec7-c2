@@ -85,6 +85,23 @@ static struct cputimer_intr arm_cputimer_intr = {
 	.priv		= NULL
 };
 
+/*
+ * Frequency of the generic timer's counter.  The firmware is supposed
+ * to program it into CNTFRQ_EL0; where it does not, the device tree's
+ * timer node carries it instead.
+ */
+uint64_t
+arm64_timer_freq(void)
+{
+	uint64_t freq = READ_SPECIALREG(cntfrq_el0);
+
+	if (freq == 0)
+		freq = arm64_bootinfo.bi_timer_freq;
+	if (freq == 0)
+		freq = 19200000;	/* better than dividing by zero */
+	return (freq);
+}
+
 static sysclock_t
 arm_cputimer_count(void)
 {
@@ -161,7 +178,7 @@ clock_intr(struct intrframe *frame)
 static void
 cpu_initclocks(void *arg __unused)
 {
-	uint64_t freq = READ_SPECIALREG(cntfrq_el0);
+	uint64_t freq = arm64_timer_freq();
 
 	tsc_frequency = freq;
 	tsc_oneus_approx = freq / 1000000 ? freq / 1000000 : 1;
@@ -184,7 +201,7 @@ SYSINIT(clocksarm, SI_BOOT2_CLOCKREG, SI_ORDER_FIRST, cpu_initclocks, NULL);
 void
 DELAY(int n)
 {
-	uint64_t freq = READ_SPECIALREG(cntfrq_el0);
+	uint64_t freq = arm64_timer_freq();
 	uint64_t end;
 
 	end = cpu_cntvct() + (uint64_t)n * freq / 1000000 + 1;

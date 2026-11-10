@@ -59,6 +59,21 @@ static struct {
 	u_int		col, row;
 } fb;
 
+/* Set by board code whose panel needs an explicit refresh. */
+void	(*fbcons_flush_hook)(void);
+
+/*
+ * Make what has been drawn visible.  Called at the end of each line and
+ * whenever the terminal's output queue drains, not per character: on a
+ * command-mode panel every flush is a whole frame transfer.
+ */
+void
+fbcons_flush(void)
+{
+	if (fb.base != NULL && fbcons_flush_hook != NULL)
+		fbcons_flush_hook();
+}
+
 int
 fbcons_present(void)
 {
@@ -151,6 +166,7 @@ fbcons_putc(int c)
 	switch (c) {
 	case '\n':
 		fb_newline();
+		fbcons_flush();
 		break;
 	case '\r':
 		fb.col = 0;
@@ -206,7 +222,7 @@ parse_num(const char **pp)
  * Look for fb=ADDRESS,WIDTH,HEIGHT[,STRIDE[,BPP]] in the boot
  * arguments.  It overrides the device tree.
  */
-static void
+void
 fbcons_bootarg(struct arm64_bootinfo *bi)
 {
 	const char *p = bi->bi_bootargs;
@@ -231,13 +247,14 @@ fbcons_bootarg(struct arm64_bootinfo *bi)
 }
 
 /*
- * Called from initarm().  The bootstrap direct map covers the low 4GB
+ * Called from initarm(), after fbcons_bootarg() and any board code
+ * have had their say about where the framebuffer is.  The bootstrap
+ * direct map covers the low 4GB
  * of physical memory, which is where firmware puts framebuffers.
  */
 void
 fbcons_init(struct arm64_bootinfo *bi)
 {
-	fbcons_bootarg(bi);
 	if (bi->bi_fb_base == 0 || bi->bi_fb_width < 64 ||
 	    bi->bi_fb_height < 64 ||
 	    bi->bi_fb_base + (vm_paddr_t)bi->bi_fb_stride * bi->bi_fb_height >

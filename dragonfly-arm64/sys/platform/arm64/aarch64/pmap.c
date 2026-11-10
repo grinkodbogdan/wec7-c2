@@ -271,6 +271,95 @@ boot_alloc(vm_paddr_t *firstaddr, int npages)
 }
 
 /*
+ * Remove [start, end) from the direct map.
+ *
+ * Memory the device tree marks "no-map" belongs to firmware (the
+ * secure world, the modem).  It must not merely go unused: while it is
+ * mapped as ordinary memory the cpu may read it speculatively, and on
+ * some platforms a stray access to protected memory resets the machine.
+ *
+ * The direct map is made of 1GB blocks, so this splits the affected
+ * ones into 2MB blocks and, at ragged edges, 4KB pages.  Each split
+ * replaces a live block with a table that maps the same thing, which
+ * has to go through an invalid entry (break-before-make); the new
+ * table is therefore completed before the swap, and nothing in between
+ * touches the direct map.  Returns the number of pages unmapped.
+ */
+static u_long
+dmap_unmap(vm_paddr_t *firstaddr, vm_paddr_t start, vm_paddr_t end)
+{
+	pt_entry_t *l1e, *l2, *l2e, *l3, attrs;
+	vm_paddr_t pa, tpa;
+	u_long count = 0;
+	int i;
+
+	start = trunc_page(start);
+	end = round_page(end);
+	for (pa = start; pa < end; ) {
+		if (pa >= Ln_ENTRIES * L1_SIZE)
+			break;
+		l1e = &boot_l1_dmap[L1_IDX(pa)];
+		if (!PTE_IS_VALID(*l1e)) {
+			pa = (pa + L1_SIZE) & ~(L1_SIZE - 1);
+			continue;
+		}
+		if (!PTE_IS_TABLE(*l1e)) {
+			/* 1GB block -> table of 512 2MB blocks */
+			attrs = *l1e & ~(PG_FRAME | ATTR_DESCR_MASK);
+			tpa = boot_alloc(firstaddr, 1);
+			l2 = (pt_entry_t *)PHYS_TO_DMAP(tpa);
+			for (i = 0; i < Ln_ENTRIES; ++i) {
+				l2[i] = ((pa & ~(L1_SIZE - 1)) +
+				    (vm_paddr_t)i * L2_SIZE) | L2_BLOCK | attrs;
+			}
+			*l1e = 0;
+			tlb_inval_all();
+			*l1e = tpa | L1_TABLE;
+			pte_sync();
+		}
+		l2e = &pte_to_table(*l1e)[L2_IDX(pa)];
+		if ((pa & (L2_SIZE - 1)) == 0 && end - pa >= L2_SIZE) {
+			/* a whole 2MB entry goes */
+			if (PTE_IS_VALID(*l2e)) {
+				*l2e = 0;
+				count += L2_SIZE / PAGE_SIZE;
+			}
+			pa += L2_SIZE;
+			continue;
+		}
+		if (!PTE_IS_VALID(*l2e)) {
+			pa = (pa + L2_SIZE) & ~(L2_SIZE - 1);
+			continue;
+		}
+		if (!PTE_IS_TABLE(*l2e)) {
+			/* 2MB block -> table of 512 pages */
+			attrs = *l2e & ~(PG_FRAME | ATTR_DESCR_MASK);
+			tpa = boot_alloc(firstaddr, 1);
+			l3 = (pt_entry_t *)PHYS_TO_DMAP(tpa);
+			for (i = 0; i < Ln_ENTRIES; ++i) {
+				l3[i] = ((pa & ~(L2_SIZE - 1)) +
+				    (vm_paddr_t)i * PAGE_SIZE) | L3_PAGE | attrs;
+			}
+			*l2e = 0;
+			tlb_inval_all();
+			*l2e = tpa | L2_TABLE;
+			pte_sync();
+		}
+		l3 = pte_to_table(*l2e);
+		if (PTE_IS_VALID(l3[L3_IDX(pa)])) {
+			l3[L3_IDX(pa)] = 0;
+			++count;
+		}
+		pa += PAGE_SIZE;
+	}
+	tlb_inval_all();
+	return (count);
+}
+
+/* Pages of firmware-owned memory removed from the direct map. */
+u_long	arm64_nomap_pages;
+
+/*
  * Bootstrap the system enough to run with virtual memory.
  *
  * On entry the kernel runs on locore's tables: the kernel image is
@@ -317,6 +406,15 @@ pmap_bootstrap(vm_paddr_t *firstaddr, vm_paddr_t kernel_pa)
 	}
 	pte_sync();
 	DMapMaxAddress = DMAP_MIN_ADDRESS + maxpa;
+
+	for (i = 0; i < arm64_bootinfo.bi_nresv; ++i) {
+		if (!arm64_bootinfo.bi_resv_nomap[i])
+			continue;
+		arm64_nomap_pages += dmap_unmap(firstaddr,
+		    arm64_bootinfo.bi_resv[i].mr_start,
+		    arm64_bootinfo.bi_resv[i].mr_start +
+		    arm64_bootinfo.bi_resv[i].mr_size);
+	}
 
 	/*
 	 * The kernel pmap is locore's TTBR1 table.

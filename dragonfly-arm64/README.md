@@ -194,9 +194,8 @@ naming what is missing, so hitting one is obvious.
 2. ~~A root filesystem and a first user process.~~ Done.
 3. ~~Signals, floating point, a terminal and a shell.~~ Done, against a
    stand-in C library.
-4. **Mi 5 first boot.** The pieces are in place (framebuffer console, boot
-   image tool, reserved memory); what remains is trying it on the phone and
-   fixing what that turns up. See below.
+4. **Mi 5 first boot.** A test image builds (`./build.sh mi5`); what remains
+   is trying it on the phone and fixing what that turns up. See below.
 5. **Real userland.** Cross toolchain, DragonFly's libc and runtime linker,
    thread-local storage. This is the largest step.
 6. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
@@ -205,79 +204,67 @@ naming what is missing, so hitting one is obvious.
 
 ## Xiaomi Mi 5
 
-The Mi 5 (codename gemini, Snapdragon 820 / MSM8996) is the target phone. This
-section separates what the port already does from what is assumed about the
-phone and not yet checked against its device tree.
+The Mi 5 (codename gemini, Snapdragon 820 / MSM8996) is the target phone.
+**This kernel has not been run on one yet.** What follows is ready to try.
 
-In place and tested in QEMU:
+The phone-specific facts used here (where the bootloader loads things, the
+watchdog it leaves running, how to find and refresh the display, the RAM log
+area) come from the [rpiios](https://github.com/grinkodbogdan/rpiios) project's
+Mi 5 port, which established them on a real phone, and from the phone's device
+trees in LineageOS's kernel. The kernel's device tree reader was run against
+those device trees on a PC and gives the expected answers.
 
-- **64-bit ARMv8 CPU support.** The Kryo cores are identified by name.
-- **GICv3.** The interrupt controller family this chip uses.
-- **Loading at an unaligned address.** Qualcomm's bootloader of that era puts
-  the kernel at a fixed offset from the start of RAM instead of honouring the
-  image header, so the kernel no longer needs a 2MB-aligned load address.
-- **Ramdisk root.** Arrives the same way an Android boot image's ramdisk does.
-- **Reserved memory.** Memory the device tree sets aside (`/memreserve/` and
-  `/reserved-memory`, which on a phone covers the modem and firmware) is kept
-  out of the kernel's hands.
-- **A console on the screen.** Text is drawn into the framebuffer the
-  bootloader leaves running; `screenshot-fbcons.png` shows a full boot
-  rendered on a simulated 1080x1920 panel. Output only: there is no keyboard,
-  so the shell prompt appears but cannot be typed at.
-- **Boot image tool.** `tools/mkbootimg.py` packs kernel, device tree and
-  ramdisk into an Android boot image.
-- **PSCI** for reboot and power-off.
+### Build and boot
 
-### Trying it on the phone
+```sh
+./build.sh build     # kernel and ramdisk
+./build.sh mi5       # -> work/obj/dragonfly-mi5-boot.img (needs cpp and dtc)
+fastboot boot work/obj/dragonfly-mi5-boot.img
+```
 
-This has **not been run on a Mi 5**. The steps below are what a first attempt
-looks like; expect it to fail in some way that needs a fix.
+`fastboot boot` loads the image into RAM for one boot and writes **nothing**
+to the phone's storage. Holding the power button until the phone restarts
+returns to Android. Hold volume down + power to reach fastboot mode.
 
-1. Unlock the bootloader (already done) and back up the phone's partitions.
-2. Get the phone's current boot image, which carries its device tree. From a
-   LineageOS or stock ROM zip it is `boot.img`; from a running rooted phone,
-   `dd` the `boot` partition.
-3. Build, then pack:
+If it works, the bootloader's logo is replaced by white-on-black boot text
+ending in the 14 self-test lines, `All checks passed.` and a `#` prompt, as in
+`screenshot-fbcons.png`. The prompt cannot be used: there is no touch or key
+driver. `MI5_APPEND="..." ./build.sh mi5` adds boot arguments (`-v` for a
+verbose boot).
 
-   ```sh
-   ./build.sh build
-   tools/mkbootimg.py --kernel work/obj/kernel.img --ramdisk work/obj/root.iso \
-       --stock boot.img -o dragonfly-boot.img \
-       --cmdline "vfs.root.mountfrom=cd9660:md0 fb=0x83401000,1080,1920"
-   ```
+### If the screen shows nothing
 
-4. With the phone in fastboot mode: `fastboot boot dragonfly-boot.img`. This
-   loads the image into RAM for one boot and writes nothing to storage; a
-   reboot returns to Android.
+The kernel also writes its console output to the RAM log Android uses
+(ramoops, at 0x92920000), which survives a restart that does not cut power.
+To read it: hold power until the phone restarts, boot TWRP for gemini with
+`fastboot boot twrp.img`, and read `/sys/fs/pstore/console-ramoops-0`
+(`adb shell cat ...`). Whatever is there shows how far the kernel got.
 
-If it works, the screen shows the same text as the screenshot, ending at a
-shell prompt.
+### What the kernel does on this phone
 
-Things that are assumptions and may be wrong:
+- Stops the watchdog the bootloader leaves running, which would otherwise
+  reset the phone seconds into boot.
+- Finds the framebuffer the bootloader is displaying by reading the display
+  controller, and refreshes the panel itself after each line of text (the
+  Mi 5's panels do not refresh on their own).
+- Keeps the six memory regions the device tree reserves out of use, and
+  removes the three marked as firmware-only (155 MB) from its address space.
+- Takes the timer frequency from the device tree if the firmware did not
+  program it.
+- Uses the GICv3 interrupt controller under the `soc` bus, PSCI over SMC,
+  and both memory banks (3 GB and 4 GB models).
 
-- **The framebuffer address in `fb=`.** `0x83401000` is the usual splash
-  framebuffer location on this chip, from memory, not read from this phone's
-  device tree. If the device tree has a `simple-framebuffer` node the argument
-  is unnecessary; if the address is wrong the screen simply stays as the
-  bootloader left it. The right value is the `reg` of the splash region under
-  `/reserved-memory` in the phone's device tree (`tools/mkbootimg.py --info`
-  and `dtc` will show it).
-- **Pixel format and stride.** 32 bits per pixel with no padding is assumed.
-- **That the bootloader accepts the image.** Some verify a signature or want
-  a specific header version even when unlocked.
-- **Peripherals below 1GB.** The early page tables assume device registers
-  sit below 1GB and RAM above, which matches this chip.
+### What is untested or missing
 
-Not done:
-
-1. **Input.** No touch, keys or USB, so nothing can be typed on the phone.
-   The debug serial port is a Qualcomm UART (no driver here) and needs the
-   phone opened to reach.
-2. **Everything after first boot.** Storage (UFS), USB, touch, display
-   control, power management, charging and the modem each need a driver
-   written for this chip. Where one exists in FreeBSD's ARM64 port it can be
-   adapted; for most of this chip there is none, and Linux's drivers (GPL) can
-   only be used as documentation.
+- **Everything above on real hardware.** It works on emulated machines and on
+  the phone's device tree, not on the phone.
+- **The display path.** The register layout is taken from rpiios's working
+  loader; this kernel's code for it has never driven a real panel. If the
+  text is garbled rather than absent, the pixel format guess is wrong.
+- **Input.** No touch, keys or USB.
+- **Everything after first boot.** Storage (UFS), USB, touch, display
+  control, power management, charging and the modem each need a driver for
+  this chip. One CPU core is used out of four.
 
 ## Design notes
 

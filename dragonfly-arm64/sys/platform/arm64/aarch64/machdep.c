@@ -256,6 +256,9 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	bi->bi_timer_irq = 27;
 	fdt_ok = (fdt_scan((void *)PHYS_TO_DMAP(fdt_pa), bi) == 0);
 	cninit_early(bi->bi_uart_base);
+	fbcons_bootarg(bi);
+	if (msm8996_early_init(bi))
+		fbcons_flush_hook = msm8996_fb_flush;
 	fbcons_init(bi);
 	if (!fdt_ok || bi->bi_nmem == 0) {
 		cnputs_early("\nDragonFly/arm64: no usable device tree, "
@@ -365,8 +368,9 @@ cpu_startup(void *dummy __unused)
 		    (uintmax_t)bi->bi_fb_base);
 	}
 	if (bi->bi_nresv != 0) {
-		kprintf("%d reserved memory region(s) from the device tree\n",
-		    bi->bi_nresv);
+		kprintf("%d reserved memory region(s) from the device tree, "
+		    "%lu MB of them unmapped\n", bi->bi_nresv,
+		    arm64_nomap_pages >> (20 - PAGE_SHIFT));
 	}
 	kprintf("real memory  = %ju (%ju MB)\n", (intmax_t)Realmem,
 	    (intmax_t)Realmem / 1024 / 1024);

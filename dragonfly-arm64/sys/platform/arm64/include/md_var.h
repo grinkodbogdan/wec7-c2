@@ -44,7 +44,8 @@ struct arm64_memregion {
  */
 struct arm64_bootinfo {
 	const char	*bi_model;		/* root "model" */
-	const char	*bi_compatible;		/* root "compatible" (first) */
+	const char	*bi_compatible;		/* root "compatible" list */
+	u_int		bi_compatible_len;
 	const char	*bi_bootargs;		/* /chosen bootargs */
 	const char	*bi_stdout;		/* /chosen stdout-path */
 	struct arm64_memregion bi_mem[ARM64_MAXMEMREGIONS];
@@ -56,6 +57,8 @@ struct arm64_bootinfo {
 	int		bi_gic_version;		/* 0 = none found */
 	u_int		bi_gicr_stride;		/* v3: bytes per cpu, 0 = default */
 	int		bi_timer_irq;		/* virtual timer INTID */
+	u_int		bi_timer_freq;		/* timer node clock-frequency */
+	vm_paddr_t	bi_wdt_base;		/* qcom,msm-watchdog */
 	int		bi_psci;		/* 0 none, 1 hvc, 2 smc */
 	u_int		bi_fdt_size;
 	vm_paddr_t	bi_initrd_start;	/* /chosen linux,initrd-* */
@@ -63,6 +66,7 @@ struct arm64_bootinfo {
 	/* /memreserve/ entries and /reserved-memory nodes */
 	struct arm64_memregion bi_resv[ARM64_MAXRESERVED];
 	int		bi_nresv;
+	u_char		bi_resv_nomap[ARM64_MAXRESERVED]; /* "no-map" */
 	/* simple-framebuffer node, or the fb= boot argument */
 	vm_paddr_t	bi_fb_base;
 	u_int		bi_fb_width;
@@ -73,6 +77,7 @@ struct arm64_bootinfo {
 
 extern struct arm64_bootinfo arm64_bootinfo;
 extern uint64_t	arm64_ttbr0_kernel;
+extern u_long	arm64_nomap_pages;
 
 extern	char	sigcode[];
 extern	int	szsigcode;
@@ -97,8 +102,15 @@ int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
 void	cninit_early(vm_paddr_t uart_base);
 void	cnputc_early(int c);
 void	cnputs_early(const char *s);
+void	fbcons_bootarg(struct arm64_bootinfo *bi);
 void	fbcons_init(struct arm64_bootinfo *bi);
 void	fbcons_putc(int c);
+void	fbcons_flush(void);
+extern void	(*fbcons_flush_hook)(void);
+int	msm8996_early_init(struct arm64_bootinfo *bi);
+void	msm8996_fb_flush(void);
+void	arm64_ramlog_putc(int c);
+uint64_t arm64_timer_freq(void);
 int	fbcons_present(void);
 
 void	identify_cpu(void);

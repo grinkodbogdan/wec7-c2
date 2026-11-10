@@ -2,7 +2,7 @@
 #
 # Build the DragonFly/arm64 kernel and optionally boot it in QEMU.
 #
-# Usage: ./build.sh [build|ramdisk|run|clean]
+# Usage: ./build.sh [build|ramdisk|mi5|run|clean]
 #
 # Needs: git, clang, ld.lld, llvm-objcopy, llvm-nm, awk, python3,
 # genisoimage;
@@ -40,7 +40,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 	machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c
-	cons_pl011.c fbcons.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
+	cons_pl011.c fbcons.c qcom_msm8996.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
 	udivti3.c"
 
 # "optional" files: what standard files depend on unconditionally, plus
@@ -251,6 +251,47 @@ ramdisk() {
 	echo "built $OBJ/root.iso"
 }
 
+# A boot image for the Xiaomi Mi 5 (gemini), to run with
+#	fastboot boot work/obj/dragonfly-mi5-boot.img
+# which loads it into RAM for one boot and writes nothing to the phone.
+#
+# The phone's device trees are compiled from LineageOS's kernel sources
+# (Xiaomi's board files a1-*.dts); the bootloader picks the one that
+# matches the board and fills in memory, command line and ramdisk.
+# This follows the recipe proven on a real Mi 5 by the rpiios project
+# (mi5/dtb.sh, shim/build-mi5.sh).  Needs cpp and dtc.
+MI5_KERNEL_REPO=https://github.com/LineageOS/android_kernel_xiaomi_msm8996
+MI5_KERNEL_SHA=535079d2fa367e4a4ea2111e5903c62dced89cd2	# lineage-22.2
+
+mi5() {
+	[ -f "$OBJ/kernel.img" ] || build
+	[ -f "$OBJ/root.iso" ] || ramdisk
+	K="$OBJ/mi5-lineage-kernel"
+	if [ ! -d "$K/.git" ]; then
+		git init -q "$K"
+		git -C "$K" sparse-checkout set --no-cone \
+		    /arch/arm64/boot/dts/ /arch/arm/boot/dts/qcom/ \
+		    /include/dt-bindings/ /scripts/dtc/include-prefixes/
+		git -C "$K" fetch -q --depth 1 --filter=blob:none \
+		    "$MI5_KERNEL_REPO" "$MI5_KERNEL_SHA"
+		git -C "$K" checkout -q FETCH_HEAD
+	fi
+	mkdir -p "$OBJ/mi5-dtbs"
+	dtbargs=""
+	for d in "$K"/arch/arm64/boot/dts/qcom/a1-*.dts; do
+		n=$(basename "$d" .dts)
+		(cd "$K" && cpp -nostdinc -undef -D__DTS__ \
+		    -x assembler-with-cpp -I arch/arm64/boot/dts/qcom \
+		    -I arch/arm64/boot/dts -I include "$d" |
+		    dtc -q -I dts -O dtb -o "$OBJ/mi5-dtbs/$n.dtb" -)
+		dtbargs="$dtbargs --dtb $OBJ/mi5-dtbs/$n.dtb"
+	done
+	python3 "$HERE/tools/mkbootimg.py" --kernel "$OBJ/kernel.img" \
+	    --ramdisk "$OBJ/root.iso" $dtbargs \
+	    --cmdline "vfs.root.mountfrom=cd9660:md0 $MI5_APPEND" \
+	    -o "$OBJ/dragonfly-mi5-boot.img"
+}
+
 run() {
 	[ -f "$OBJ/kernel.img" ] || build
 	[ -f "$OBJ/root.iso" ] || ramdisk
@@ -264,7 +305,8 @@ run() {
 case "${1:-build}" in
 build)	build; ramdisk ;;
 ramdisk) ramdisk ;;
+mi5)	mi5 ;;
 run)	run ;;
 clean)	rm -rf "$OBJ" ;;
-*)	echo "usage: $0 [build|ramdisk|run|clean]" >&2; exit 1 ;;
+*)	echo "usage: $0 [build|ramdisk|mi5|run|clean]" >&2; exit 1 ;;
 esac

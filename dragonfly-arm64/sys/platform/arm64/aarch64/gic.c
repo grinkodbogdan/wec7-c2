@@ -51,7 +51,12 @@
 #define	GICC_EOIR		0x010
 
 /* GICv3 distributor additions */
-#define	GICD_CTLR_ENGRP1NS	0x02
+/*
+ * Enable bits as Linux sets them: which of bits 0 and 1 is "group 1,
+ * non-secure" depends on whether the GIC has two security states (real
+ * hardware, seen from the non-secure side) or one (QEMU by default).
+ */
+#define	GICD_CTLR_ENABLE	0x03
 #define	GICD_CTLR_ARE_NS	0x10
 #define	GICD_IGROUPR(n)		(0x080 + 4 * ((n) / 32))
 #define	GICD_IROUTER(n)		(0x6000 + 8 * (n))
@@ -148,7 +153,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 		*(volatile uint64_t *)(gicd + GICD_IROUTER(irq)) =
 		    mpidr & MPIDR_AFF_MASK;
 	}
-	gic_write(gicd, GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENGRP1NS);
+	gic_write(gicd, GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE);
 
 	/* The cpu interface. */
 	WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);

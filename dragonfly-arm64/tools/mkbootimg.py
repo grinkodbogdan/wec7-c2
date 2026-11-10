@@ -22,12 +22,13 @@
 #
 # Usage:
 #	mkbootimg.py --kernel kernel.img --ramdisk root.iso \
-#	    (--stock stock-boot.img | --dtb phone.dtb) \
+#	    (--stock stock-boot.img | --dtb phone.dtb [--dtb ...]) \
 #	    [--cmdline "..."] -o boot.img
 #	mkbootimg.py --info boot.img
 #
 import argparse
 import gzip
+import hashlib
 import struct
 import sys
 
@@ -93,26 +94,48 @@ def build(args):
 		      "page size %d" % (len(dtbs), stock["kernel_addr"],
 					 stock["page_size"]))
 		print("stock cmdline: %s" % stock["cmdline"].decode("ascii", "replace"))
-	if args.dtb:
-		dtbs = find_dtbs(open(args.dtb, "rb").read())
+	for path in args.dtb or []:
+		dtbs += find_dtbs(open(path, "rb").read())
 	if not dtbs:
 		sys.exit("no device tree: give --stock with the phone's own "
 			 "boot image, or --dtb")
 
-	kernel = gzip.compress(open(args.kernel, "rb").read(), 9, mtime=0)
+	image = open(args.kernel, "rb").read()
+	kernel = gzip.compress(image, 9, mtime=0)
 	kernel += b"".join(dtbs)
-	ramdisk = open(args.ramdisk, "rb").read() if args.ramdisk else b""
+	# These bootloaders insist on a ramdisk, even an unused one.
+	ramdisk = open(args.ramdisk, "rb").read() if args.ramdisk else bytes(4096)
+
+	# The kernel needs more memory than its file: the arm64 Image
+	# header says how much (image_size, which includes the BSS).  A
+	# bootloader that loads the ramdisk and device tree at fixed
+	# addresses will put them inside it if it is too big.
+	if image[56:60] == b"ARM\x64":
+		need = struct.unpack_from("<Q", image, 16)[0] + (1 << 20)
+		for what, addr in (("ramdisk", geometry["ramdisk_addr"]),
+				   ("device tree", args.dtb_addr)):
+			room = addr - args.load_addr
+			if 0 < room < need:
+				sys.exit("kernel needs %d bytes from 0x%x but the %s "
+					 "is loaded at 0x%x" % (need, args.load_addr,
+								 what, addr))
 	cmdline = args.cmdline.encode("ascii")
 	if len(cmdline) >= 512 + 1024:
 		sys.exit("command line too long")
 
 	page = geometry["page_size"]
+	# The id field: SHA-1 over each payload and its length, as AOSP's
+	# mkbootimg computes it.
+	sha = hashlib.sha1()
+	for part in (kernel, ramdisk, b""):
+		sha.update(part)
+		sha.update(struct.pack("<I", len(part)))
 	header = struct.pack(HEADER, MAGIC,
 	    len(kernel), geometry["kernel_addr"],
 	    len(ramdisk), geometry["ramdisk_addr"],
 	    0, geometry["second_addr"],
 	    geometry["tags_addr"], page, 0, 0,
-	    b"dragonfly", cmdline[:511], b"", cmdline[511:])
+	    b"dragonfly", cmdline[:511], sha.digest(), cmdline[511:])
 
 	def pad(data):
 		return data + b"\0" * (-len(data) % page)
@@ -147,8 +170,17 @@ def main():
 	ap.add_argument("--kernel")
 	ap.add_argument("--ramdisk")
 	ap.add_argument("--stock", help="the phone's existing boot image")
-	ap.add_argument("--dtb", help="device tree blob(s) to append")
+	ap.add_argument("--dtb", action="append",
+			help="device tree blob to append (repeatable)")
 	ap.add_argument("--cmdline", default="")
+	ap.add_argument("--load-addr", type=lambda v: int(v, 0),
+			default=0x80080000,
+			help="where the bootloader really puts the kernel "
+			     "(MSM8996 LK: 0x80080000 whatever the header says)")
+	ap.add_argument("--dtb-addr", type=lambda v: int(v, 0),
+			default=0x82000000,
+			help="where the bootloader puts the device tree "
+			     "(MSM8996 LK: 0x82000000)")
 	ap.add_argument("-o", "--output")
 	args = ap.parse_args()
 	if args.info:

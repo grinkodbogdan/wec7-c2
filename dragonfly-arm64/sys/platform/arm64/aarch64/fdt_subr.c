@@ -79,6 +79,8 @@ struct fdt_node {
 	const char	*format;
 	uint32_t	width, height, stride;
 	uint32_t	rdist_stride;
+	uint32_t	clock_freq;
+	int		nomap;
 	int		acells, scells;		/* for this node's children */
 	int		done;
 };
@@ -190,6 +192,7 @@ fdt_node_done(struct fdt_node *nodes, int depth, struct arm64_bootinfo *bi)
 			    fdt_cells(n->reg + off, acells);
 			bi->bi_resv[bi->bi_nresv].mr_size =
 			    fdt_cells(n->reg + off + acells, scells);
+			bi->bi_resv_nomap[bi->bi_nresv] = n->nomap;
 			++bi->bi_nresv;
 		}
 	}
@@ -247,7 +250,14 @@ fdt_node_done(struct fdt_node *nodes, int depth, struct arm64_bootinfo *bi)
 	    n->intr_len >= 9 * 4) {
 		bi->bi_timer_irq = fdt32(n->intr + 7) +
 		    (fdt32(n->intr + 6) == 1 ? 16 : 32);
+		/* For firmware that leaves CNTFRQ_EL0 unprogrammed. */
+		bi->bi_timer_freq = n->clock_freq;
 	}
+
+	if (bi->bi_wdt_base == 0 && n->reg != NULL &&
+	    (fdt_is_compatible(n, "qcom,msm-watchdog") ||
+	     fdt_is_compatible(n, "qcom,kpss-wdt")))
+		bi->bi_wdt_base = fdt_cells(n->reg, acells);
 
 	if (n->method != NULL && (fdt_is_compatible(n, "arm,psci-0.2") ||
 	    fdt_is_compatible(n, "arm,psci-1.0") ||
@@ -340,8 +350,10 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 			if (streq(pname, "compatible")) {
 				n->compat = data;
 				n->compat_len = len;
-				if (depth == 0)
+				if (depth == 0) {
 					bi->bi_compatible = data;
+					bi->bi_compatible_len = len;
+				}
 			} else if (streq(pname, "reg")) {
 				n->reg = data;
 				n->reg_len = len;
@@ -366,6 +378,10 @@ fdt_scan(const void *fdt, struct arm64_bootinfo *bi)
 				n->acells = fdt32(data);
 			} else if (streq(pname, "#size-cells")) {
 				n->scells = fdt32(data);
+			} else if (streq(pname, "no-map")) {
+				n->nomap = 1;
+			} else if (streq(pname, "clock-frequency") && len == 4) {
+				n->clock_freq = fdt32(data);
 			} else if (streq(pname, "redistributor-stride")) {
 				n->rdist_stride = fdt_cells(data, len / 4);
 			} else if (in_chosen && depth == 1 &&

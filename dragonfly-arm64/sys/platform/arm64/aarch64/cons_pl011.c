@@ -115,6 +115,7 @@ cnputc_early(int c)
 	}
 	if (c != '\r' || uart == NULL)
 		fbcons_putc(c);
+	arm64_ramlog_putc(c);
 }
 
 void
@@ -195,9 +196,11 @@ pl011_tty_start(struct tty *tp)
 				uart[UART_DR / 4] = (uint32_t)(u_char)buf[i];
 			}
 			fbcons_putc((u_char)buf[i]);
+			arm64_ramlog_putc((u_char)buf[i]);
 		}
 	}
 	tp->t_state &= ~TS_BUSY;
+	fbcons_flush();			/* a prompt has no newline */
 	lwkt_reltoken(&tp->t_token);
 	ttwwakeup(tp);
 }
