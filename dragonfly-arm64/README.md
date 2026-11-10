@@ -291,12 +291,26 @@ To read it: hold power until the phone restarts, boot TWRP for gemini with
 - **Known shortcuts:** the single-pass device tree scanner, the byte-loop
   `memcpy`/`memset`/`copyin` in `support.S`, and the console's polled input.
 
-## Borrowing from other BSDs
+## Project decisions
 
-Where writing a DragonFly-native version of something is not practical, the
-plan is to adapt it from FreeBSD's ARM64 port, which has the same license
-family, keeping its copyright notices. Nothing has been imported yet: so far
-everything here was either written for this port or already in DragonFly's
-tree (the console font, for example). The candidates are the per-CPU parts of
-libc and the runtime linker, the device-tree bus, and drivers such as
-virtio and SD/MMC.
+- **Code from other BSDs.** Where writing a DragonFly-native version of
+  something is not practical, adapt it from FreeBSD's ARM64 port, keeping its
+  copyright notices. Candidates: the per-CPU parts of libc and the runtime
+  linker, the device-tree bus, virtio and SD/MMC drivers.
+- **Drivers from Linux.** Where no BSD has a driver (most of this phone's
+  chip: display, GPU, storage, touch, power), port the Linux one. Two things
+  follow from that. Linux drivers are GPL-2.0, so a kernel that includes them
+  can only be distributed under the GPL; they should live in their own
+  directory, as DragonFly's existing Linux-derived graphics drivers do
+  (`sys/dev/drm`), so the BSD-licensed parts stay separable. And they are
+  written against Linux's kernel interfaces, so each needs the compatibility
+  layer DragonFly already has for its graphics drivers, extended to cover
+  clocks, regulators, GPIO and the device tree.
+- **Arcan as the display server.** The UI will be built on
+  [Arcan](https://arcan-fe.com/). Arcan draws through the kernel's
+  mode-setting interface and OpenGL ES, so it needs, in order: a real
+  userland (libc, C++ runtime, Lua), the phone's display driver, the GPU
+  driver with Mesa's freedreno, and touch input delivered as evdev events.
+
+Nothing has been imported from another project yet: so far everything here
+was either written for this port or already in DragonFly's tree.
