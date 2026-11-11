@@ -61,6 +61,8 @@ MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
 	vfs/ext2fs/ext2_htree.c vfs/ext2fs/ext2_ihash.c vfs/ext2fs/ext2_inode.c
 	vfs/ext2fs/ext2_inode_cnv.c vfs/ext2fs/ext2_lookup.c
 	vfs/ext2fs/ext2_subr.c vfs/ext2fs/ext2_vfsops.c vfs/ext2fs/ext2_vnops.c
+	vfs/msdosfs/msdosfs_conv.c vfs/msdosfs/msdosfs_denode.c vfs/msdosfs/msdosfs_fat.c
+	vfs/msdosfs/msdosfs_lookup.c vfs/msdosfs/msdosfs_vfsops.c vfs/msdosfs/msdosfs_vnops.c
 	vfs/hammer2/hammer2_admin.c vfs/hammer2/hammer2_inode.c vfs/hammer2/hammer2_subr.c vfs/hammer2/hammer2_bulkfree.c vfs/hammer2/hammer2_io.c vfs/hammer2/hammer2_synchro.c vfs/hammer2/hammer2_iocom.c vfs/hammer2/hammer2_vfsops.c vfs/hammer2/hammer2_chain.c vfs/hammer2/hammer2_ioctl.c vfs/hammer2/hammer2_vnops.c vfs/hammer2/hammer2_cluster.c vfs/hammer2/hammer2_lz4.c vfs/hammer2/hammer2_xops.c vfs/hammer2/hammer2_flush.c vfs/hammer2/hammer2_msgops.c vfs/hammer2/hammer2_freemap.c vfs/hammer2/hammer2_strategy.c vfs/hammer2/hammer2_ondisk.c vfs/hammer2/xxhash/xxhash.c vfs/hammer2/zlib/hammer2_zlib_adler32.c vfs/hammer2/zlib/hammer2_zlib_inflate.c vfs/hammer2/zlib/hammer2_zlib_deflate.c vfs/hammer2/zlib/hammer2_zlib_zutil.c vfs/hammer2/zlib/hammer2_zlib_inftrees.c vfs/hammer2/zlib/hammer2_zlib_inffast.c vfs/hammer2/zlib/hammer2_zlib_trees.c"
 
 fetch() {
@@ -298,6 +300,7 @@ ramdisk() {
 		fi
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
 		cp "$HERE/user/touchtest.sh" "$root/etc/touchtest.sh"
+		cp "$HERE/user/gpufw.sh" "$root/etc/gpufw.sh"
 		[ -n "${ARCAN_AUTORUN:-}" ] &&
 		    echo "$ARCAN_AUTORUN" > "$root/etc/arcan.autorun"
 		llvm-strip "$root"/bin/* "$root"/sbin/* "$root"/usr/bin/* \

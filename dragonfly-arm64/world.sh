@@ -491,11 +491,11 @@ hello() {
 
 # The libraries and programs the ramdisk carries.  ls is built without
 # colour and sh without line editing until ncurses and libedit are.
-LIBS="lib/libdmsg lib/libutil lib/libcrypt lib/libm lib/libkvm lib/libkinfo"
+LIBS="lib/libdmsg lib/libutil lib/libcrypt lib/libm lib/libkvm lib/libkinfo lib/libkiconv"
 PROGS="bin/cat bin/chmod bin/cp bin/date bin/dd bin/df bin/echo bin/hostname
 	bin/kill bin/ln bin/mkdir bin/mv bin/ps bin/pwd bin/rm bin/sleep
 	bin/stty bin/test sbin/dmesg sbin/init sbin/mount sbin/umount sbin/mount_tmpfs sbin/reboot
-	sbin/sysctl sbin/mount_ext2fs usr.sbin/vnconfig usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname
+	sbin/sysctl sbin/mount_ext2fs sbin/mount_msdos usr.sbin/vnconfig usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname
 	usr.bin/wc usr.bin/tr usr.bin/cmp bin/sync sbin/newfs_hammer2 sbin/mount_hammer2"
 progs() {
 	for l in $LIBS; do lib "$l"; done

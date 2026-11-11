@@ -649,6 +649,15 @@ driver lists it as `alt_mem_iface_clk`), releases any GPU block reset
 still asserted, and no longer reads GPU registers at boot:
 `sysctl hw.mi5.gpu_read=1` does, one at a time, naming each first.
 
+**Thirty-third boot.** The GPU answers: RBBM_STATUS 0 (idle),
+RBBM_STATUS3 1, RBBM_INT_0_STATUS 0, CP_PROTECT_STATUS 0. Reading
+RBBM_SECVID_TRUST_CNTL stalls the cpu: the GPU is in secure mode, and
+only the secure world may change that. Linux takes it out with the
+signed zap shader (`a530_zap.*`, loaded through the secure monitor's
+PAS calls), which lives on the phone's own partitions. The thirty-fourth
+image adds FAT (msdosfs and `mount_msdos`) and `/etc/gpufw.sh`, which
+looks for the zap shader on every partition, read-only.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the
