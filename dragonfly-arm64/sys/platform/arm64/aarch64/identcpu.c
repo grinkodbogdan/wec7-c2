@@ -52,6 +52,10 @@ static const struct cpu_part cpu_parts[] = {
 	{ CPU_IMPL_ARM,		0xd47,	"Cortex-A710" },
 	{ CPU_IMPL_ARM,		0xd48,	"Cortex-X2" },
 	{ CPU_IMPL_ARM,		0xd49,	"Neoverse-N2" },
+	/* Snapdragon 820/821: the 0x2xx part numbers are Kryo cores */
+	{ CPU_IMPL_QUALCOMM,	0x201,	"Kryo (Silver)" },
+	{ CPU_IMPL_QUALCOMM,	0x205,	"Kryo (Gold)" },
+	{ CPU_IMPL_QUALCOMM,	0x211,	"Kryo (Gold)" },
 	{ CPU_IMPL_QUALCOMM,	0x800,	"Kryo 2xx Gold" },
 	{ CPU_IMPL_QUALCOMM,	0x801,	"Kryo 2xx Silver" },
 	{ CPU_IMPL_QUALCOMM,	0x802,	"Kryo 3xx Gold" },

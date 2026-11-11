@@ -292,10 +292,22 @@ third image skips the register on this chip, leaves the physical timer
 alone, and prints a `boot:` line before each early step, so a hang shows
 where it happened.
 
+**Third boot.** Everything up to the memory manager now works on the phone:
+interrupt controller, timer (19.2 MHz), framebuffer (1080x1920, 24 bits per
+pixel, found by reading the display controller), watchdog, the nine reserved
+regions and the 209 MB of firmware memory. The kernel entered `mi_startup`
+and stopped while sizing its table of RAM pages, printing a range whose start
+was above its end. The bootloader lists the bank above 4 GB first
+(`100000000-15eb50000`, then `80000000-e0000000`), and DragonFly's VM takes
+the first free-memory entry as the lowest address and the last as the
+highest. The free-memory list is now sorted. The boot argument `memrev`
+presents QEMU's RAM in the same order: the old kernel faults at the same
+step, the fixed one boots to the shell.
+
 ### What is untested or missing
 
-- **Anything after the copyright notice on real hardware.** The third test
-  image has both interrupt fixes and step-by-step progress lines.
+- **Anything after the memory manager's first step on real hardware.** The
+  fourth test image sorts the memory banks.
 - **Input.** No touch, keys or USB.
 - **Everything after first boot.** Storage (UFS), USB, touch, display
   control, power management, charging and the modem each need a driver for

@@ -304,6 +304,51 @@ SYSINIT(stage_crit, SI_BOOT2_LEAVE_CRIT, SI_ORDER_ANY, boot_stage,
 SYSINIT(stage_presmp, SI_BOOT2_PRESMP, SI_ORDER_ANY, boot_stage, "presmp");
 
 /*
+ * Sort a table of physical ranges by start address, in place.  The
+ * machine-independent VM (vm_page_startup()) takes phys_avail[0] as
+ * the lowest memory and the last entry as the highest, but firmware
+ * lists memory banks in whatever order it likes: the Xiaomi Mi 5's
+ * bootloader puts the bank above 4GB first.
+ */
+static void
+sort_phys(vm_phystable_t *tab, int n)
+{
+	vm_phystable_t t;
+	int i, j;
+
+	for (i = 1; i < n; ++i) {
+		t = tab[i];
+		for (j = i; j > 0 && tab[j - 1].phys_beg > t.phys_beg; --j)
+			tab[j] = tab[j - 1];
+		tab[j] = t;
+	}
+}
+
+/*
+ * Boot argument "memrev": present memory as two banks split at 4GB,
+ * upper bank first, the way the Mi 5's bootloader does.  QEMU always
+ * describes its RAM as one bank, so this is how that layout gets
+ * tested in the emulator.
+ */
+static void
+simulate_bank_order(struct arm64_bootinfo *bi)
+{
+	struct arm64_memregion *m = &bi->bi_mem[0];
+	vm_paddr_t split = 0x100000000UL;
+
+	if (bi->bi_bootargs == NULL || strstr(bi->bi_bootargs, "memrev") == NULL)
+		return;
+	if (bi->bi_nmem != 1 || m->mr_start >= split ||
+	    m->mr_start + m->mr_size <= split)
+		return;
+	bi->bi_mem[1].mr_start = m->mr_start;
+	bi->bi_mem[1].mr_size = split - m->mr_start;
+	m->mr_size = m->mr_start + m->mr_size - split;
+	m->mr_start = split;
+	bi->bi_nmem = 2;
+}
+
+/*
  * C entry point, reached from locore.S with the MMU on and the kernel
  * running at KERNBASE on a temporary stack.  This is the counterpart
  * of pc64's hammer_time(): it sets up everything mi_startup() takes
@@ -377,6 +422,8 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 * reserved (on a phone: memory owned by the modem, the secure
 	 * world and other firmware).
 	 */
+	simulate_bank_order(bi);
+
 	firstaddr = round_page(kernphys + (_end - kernbase));
 	boot_mark("boot: page tables\n");
 	pmap_bootstrap(&firstaddr, kernphys);
@@ -410,6 +457,8 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 		    bi->bi_mem[i].mr_start + bi->bi_mem[i].mr_size,
 		    reserved, nreserved, &n);
 	}
+	sort_phys(phys_avail, n);
+	sort_phys(dump_avail, bi->bi_nmem);
 	avail_start = phys_avail[0].phys_beg;
 	avail_end = phys_avail[n - 1].phys_end;
 
