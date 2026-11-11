@@ -658,6 +658,20 @@ PAS calls), which lives on the phone's own partitions. The thirty-fourth
 image adds FAT (msdosfs and `mount_msdos`) and `/etc/gpufw.sh`, which
 looks for the zap shader on every partition, read-only.
 
+**Thirty-fourth boot.** `/etc/gpufw.sh` found the GPU's firmware on
+the phone itself: the signed zap shader (`a530_zap.mdt`, `.b00`-`.b02`,
+`.elf`), the command-processor microcode (`a530_pm4.fw`, `a530_pfp.fw`)
+and the power-management firmware (`a530v3_gpmu.fw2`, sequences). The
+GPU's SMMU reads back too (sCR0 0x00200626: enabled, faulting unmatched
+streams, so the GPU needs a translation context before it can reach
+memory). The thirty-fifth image adds `qcom_scm.c`, Qualcomm secure
+monitor calls (SMC64, owner SiP, after Linux's `qcom_scm-smc.c`), and a
+zap shader loader after Linux's `mdt_loader.c`: metadata to
+PAS_INIT_IMAGE, PAS_MEM_SETUP for a relocatable image, segments into
+the reserved region at 0x90f00000 (mapped only for the copy, since it is
+left out of the direct map), PAS_AUTH_AND_RESET. `sysctl
+hw.mi5.gpu_zap=1` runs it.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the

@@ -375,7 +375,7 @@ main(void)
 	if (access("/etc/arcan.sh", R_OK) == 0 &&
 	    access("/dev/fb0", R_OK) == 0 &&
 	    access("/dev/input/event0", R_OK) == 0) {
-		static char autorun[512] = "autorun=clear; sh /etc/gpufw.sh; sysctl hw.mi5.gpu_read=1";
+		static char autorun[512] = "autorun=clear; sh /etc/gpufw.sh >/dev/null; sysctl hw.mi5.gpu_zap=1";
 		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term", autorun, NULL };
 		int afd, n;
 

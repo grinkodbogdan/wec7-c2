@@ -125,6 +125,11 @@ int	msm8996_spmi_read(int sid, uint16_t addr, uint8_t *val);
 int	msm8996_spmi_write(int sid, uint16_t addr, uint8_t val);
 int	msm8996_spmi_update(int sid, uint16_t addr, uint8_t mask, uint8_t val);
 
+/* Qualcomm secure monitor calls (qcom_scm.c) */
+int	qcom_scm_call(int svc, int cmd, uint32_t arginfo, const uint64_t *args,
+	    int nargs, uint64_t *res, int fast);
+int	qcom_scm_is_available(int svc, int cmd);
+
 /* MSM8996 BLSP QUP as an I2C master (qcom_qup_i2c.c) */
 struct qup_i2c;
 struct qup_i2c *qup_i2c_bus(int n);	/* 9 or 12, as the device tree names them */

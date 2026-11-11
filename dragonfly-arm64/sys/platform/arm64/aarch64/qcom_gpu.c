@@ -44,6 +44,16 @@
 #include <sys/kernel.h>
 #include <sys/kthread.h>
 #include <sys/sysctl.h>
+#include <sys/malloc.h>
+#include <sys/nlookup.h>
+#include <sys/vnode.h>
+#include <sys/fcntl.h>
+#include <sys/proc.h>
+#include <sys/elf32.h>
+
+#include <vm/vm.h>
+#include <vm/pmap.h>
+#include <machine/pat.h>
 
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
@@ -375,6 +385,301 @@ sysctl_gpu_read(SYSCTL_HANDLER_ARGS)
 }
 SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_read, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
     sysctl_gpu_read, "I", "read GPU registers (may hang the caller)");
+
+
+/* ---- the zap shader ---- */
+
+/*
+ * The Adreno's secure-mode exit: a signed shader that the secure world
+ * authenticates and runs on the GPU.  Loaded the way Linux's
+ * zap_shader_load_mdt() / qcom_mdt_load() do (drivers/gpu/drm/msm/
+ * adreno/adreno_gpu.c, drivers/soc/qcom/mdt_loader.c): the .mdt file's
+ * ELF header and hash segment go to PAS_INIT_IMAGE as metadata; a
+ * relocatable image is placed with PAS_MEM_SETUP; the loadable segments
+ * (from the .mdt itself or the .bNN files beside it) are copied into
+ * the reserved region; PAS_AUTH_AND_RESET hands it to the secure world.
+ * Files come from /tmp/fw (where /etc/gpufw.sh copies them).
+ */
+#define	ZAP_PAS_ID		13
+#define	ZAP_BASE		0x90f00000UL	/* Linux's gpu_mem */
+#define	ZAP_SIZE		0x100000UL
+#define	PERIPH_START		0x8fe00000UL	/* the Mi 5's peripheral_region */
+#define	PERIPH_END		(0x8fe00000UL + 0x2b00000UL)
+#define	MDT_TYPE_MASK		(7U << 24)
+#define	MDT_TYPE_HASH		(2U << 24)
+#define	MDT_RELOCATABLE		(1U << 27)
+#define	SCM_SVC_PIL		2
+#define	PAS_INIT_IMAGE		1
+#define	PAS_MEM_SETUP		2
+#define	PAS_AUTH_AND_RESET	5
+#define	PAS_IS_SUPPORTED	7
+
+MALLOC_DEFINE(M_GPUFW, "gpufw", "GPU firmware");
+
+static int
+fw_read(const char *path, uint8_t **bufp, size_t *lenp)
+{
+	struct nlookupdata nd;
+	struct vattr va;
+	struct vnode *vp;
+	uint8_t *buf;
+	int error, resid;
+
+	error = nlookup_init(&nd, path, UIO_SYSSPACE, NLC_FOLLOW | NLC_LOCKVP);
+	if (error == 0)
+		error = vn_open(&nd, NULL, FREAD, 0);
+	if (error) {
+		nlookup_done(&nd);
+		return (error);
+	}
+	vp = nd.nl_open_vp;
+	nd.nl_open_vp = NULL;
+	nlookup_done(&nd);
+	error = VOP_GETATTR(vp, &va);
+	if (error == 0 && (va.va_size == 0 || va.va_size > 16 * 1024 * 1024))
+		error = EFBIG;
+	if (error == 0) {
+		buf = kmalloc(va.va_size, M_GPUFW, M_WAITOK);
+		error = vn_rdwr(UIO_READ, vp, (caddr_t)buf, va.va_size, 0,
+		    UIO_SYSSPACE, IO_NODELOCKED, curthread->td_ucred, &resid);
+		if (error == 0 && resid != 0)
+			error = EIO;
+		if (error)
+			kfree(buf, M_GPUFW);
+		else {
+			*bufp = buf;
+			*lenp = va.va_size;
+		}
+	}
+	vn_unlock(vp);
+	vn_close(vp, FREAD, NULL);
+	return (error);
+}
+
+/* Clean and invalidate the data cache over [p, p + len). */
+static void
+dcache_wbinv(void *p, size_t len)
+{
+	vm_offset_t a = (vm_offset_t)p & ~63UL, end = (vm_offset_t)p + len;
+
+	for (; a < end; a += 64)
+		__asm __volatile("dc civac, %0" : : "r" (a) : "memory");
+	__asm __volatile("dsb sy" : : : "memory");
+}
+
+/* Segment (seg) of the image: from the .mdt, or from a530_zap.bNN. */
+static int
+zap_segment(const uint8_t *mdt, size_t mdtlen, const Elf32_Phdr *ph, int seg,
+    uint8_t *dst)
+{
+	char path[64];
+	uint8_t *b;
+	size_t blen;
+	int error;
+
+	if (ph->p_filesz == 0)
+		return (0);
+	if ((size_t)ph->p_offset + ph->p_filesz <= mdtlen) {
+		memcpy(dst, mdt + ph->p_offset, ph->p_filesz);
+		return (0);
+	}
+	ksnprintf(path, sizeof(path), "/tmp/fw/a530_zap.b%02d", seg);
+	if ((error = fw_read(path, &b, &blen)) != 0) {
+		status("zap: %s: error %d", path, error);
+		return (error);
+	}
+	if (blen != ph->p_filesz) {
+		status("zap: %s is %zu bytes, segment %d wants %u", path,
+		    blen, seg, ph->p_filesz);
+		kfree(b, M_GPUFW);
+		return (EINVAL);
+	}
+	memcpy(dst, b, blen);
+	kfree(b, M_GPUFW);
+	return (0);
+}
+
+static int
+zap_load(void)
+{
+	uint8_t *mdt = NULL, *meta = NULL, *region = NULL;
+	size_t mdtlen, ehsz, hsz;
+	const Elf32_Ehdr *eh;
+	const Elf32_Phdr *ph;
+	uint64_t args[3], res[3];
+	vm_paddr_t meta_pa, minpa = ~0UL, maxpa = 0, reloc, size;
+	int error, i, hash = 0, relocatable = 0, rc;
+
+	rc = qcom_scm_is_available(SCM_SVC_PIL, PAS_INIT_IMAGE);
+	args[0] = ZAP_PAS_ID;
+	error = qcom_scm_call(SCM_SVC_PIL, PAS_IS_SUPPORTED, 1, args, 1, res, 0);
+	status("zap: scm: PAS init_image available %d; PAS %d supported: "
+	    "status %d result %ju", rc, ZAP_PAS_ID, error, (uintmax_t)res[0]);
+	if (error || res[0] == 0)
+		return (ENXIO);
+
+	if ((error = fw_read("/tmp/fw/a530_zap.mdt", &mdt, &mdtlen)) != 0) {
+		status("zap: /tmp/fw/a530_zap.mdt: error %d (run gpufw.sh)",
+		    error);
+		return (error);
+	}
+	eh = (const Elf32_Ehdr *)mdt;
+	if (mdtlen < sizeof(*eh) || !IS_ELF(*eh) ||
+	    eh->e_ident[EI_CLASS] != ELFCLASS32 || eh->e_phnum < 2 ||
+	    eh->e_phoff + (size_t)eh->e_phnum * sizeof(*ph) > mdtlen) {
+		status("zap: a530_zap.mdt is not a 32-bit ELF image");
+		error = EINVAL;
+		goto out;
+	}
+	ph = (const Elf32_Phdr *)(mdt + eh->e_phoff);
+	for (i = 0; i < eh->e_phnum; ++i) {
+		status("zap: phdr %d type %u flags 0x%08x paddr 0x%08x "
+		    "off 0x%x filesz 0x%x memsz 0x%x", i, ph[i].p_type,
+		    ph[i].p_flags, ph[i].p_paddr, ph[i].p_offset,
+		    ph[i].p_filesz, ph[i].p_memsz);
+		if (i > 0 && hash == 0 &&
+		    (ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH)
+			hash = i;
+		if (ph[i].p_type != PT_LOAD || ph[i].p_memsz == 0 ||
+		    (ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH)
+			continue;
+		if (ph[i].p_flags & MDT_RELOCATABLE)
+			relocatable = 1;
+		if (ph[i].p_paddr < minpa)
+			minpa = ph[i].p_paddr;
+		if (ph[i].p_paddr + ph[i].p_memsz > maxpa)
+			maxpa = roundup2(ph[i].p_paddr + ph[i].p_memsz, 4096);
+	}
+	if (hash == 0 || ph[0].p_type == PT_LOAD || minpa >= maxpa) {
+		status("zap: no hash segment or no loadable segment");
+		error = EINVAL;
+		goto out;
+	}
+
+	/* 1. the metadata: ELF header (segment 0) and hash segment */
+	ehsz = ph[0].p_filesz;
+	hsz = ph[hash].p_filesz;
+	meta = contigmalloc(ehsz + hsz, M_GPUFW, M_WAITOK | M_ZERO, 0,
+	    0xffffffffUL, PAGE_SIZE, 0);
+	memcpy(meta, mdt, ehsz);
+	if (ehsz + hsz == mdtlen)
+		memcpy(meta + ehsz, mdt + ehsz, hsz);
+	else if ((error = zap_segment(mdt, mdtlen, &ph[hash], hash,
+	    meta + ehsz)) != 0)
+		goto out;
+	dcache_wbinv(meta, ehsz + hsz);
+	meta_pa = vtophys(meta);
+	args[0] = ZAP_PAS_ID;
+	args[1] = meta_pa;
+	error = qcom_scm_call(SCM_SVC_PIL, PAS_INIT_IMAGE, 0x82, args, 2, res,
+	    0);
+	status("zap: init_image (metadata %zu bytes at 0x%jx): status %d "
+	    "result %ju", ehsz + hsz, (uintmax_t)meta_pa, error,
+	    (uintmax_t)res[0]);
+	if (error || res[0] != 0) {
+		error = EIO;
+		goto out;
+	}
+
+	/* 2. where it goes */
+	size = maxpa - minpa;
+	if (relocatable) {
+		reloc = minpa;
+		if (size > ZAP_SIZE) {
+			status("zap: image is %ju bytes, region %lu",
+			    (uintmax_t)size, ZAP_SIZE);
+			error = E2BIG;
+			goto out;
+		}
+		args[0] = ZAP_PAS_ID;
+		args[1] = ZAP_BASE;
+		args[2] = size;
+		error = qcom_scm_call(SCM_SVC_PIL, PAS_MEM_SETUP, 3, args, 3,
+		    res, 0);
+		status("zap: relocatable, mem_setup 0x%lx+0x%jx: status %d "
+		    "result %ju", ZAP_BASE, (uintmax_t)size, error,
+		    (uintmax_t)res[0]);
+		if (error || res[0] != 0) {
+			error = EIO;
+			goto out;
+		}
+	} else {
+		reloc = ZAP_BASE;
+		if (minpa < ZAP_BASE || maxpa > ZAP_BASE + ZAP_SIZE) {
+			status("zap: fixed at 0x%jx-0x%jx, outside 0x%lx+0x%lx",
+			    (uintmax_t)minpa, (uintmax_t)maxpa, ZAP_BASE,
+			    ZAP_SIZE);
+			if (minpa < PERIPH_START || maxpa > PERIPH_END) {
+				error = EINVAL;
+				goto out;
+			}
+			reloc = minpa;	/* inside the reserved region anyway */
+		}
+	}
+
+	/*
+	 * 3. the segments.  The region is left out of the direct map
+	 * (no-map); map it only for the copy, clean the cache over it,
+	 * and unmap it before the secure world takes it.
+	 */
+	{
+		vm_paddr_t base = relocatable ? ZAP_BASE : reloc;
+		vm_size_t msz = relocatable ? size : maxpa - reloc;
+
+		region = pmap_mapdev_attr(base, msz, PAT_WRITE_BACK);
+		memset(region, 0, msz);
+		for (i = 0; i < eh->e_phnum && error == 0; ++i) {
+			if (ph[i].p_type != PT_LOAD || ph[i].p_memsz == 0 ||
+			    (ph[i].p_flags & MDT_TYPE_MASK) == MDT_TYPE_HASH)
+				continue;
+			error = zap_segment(mdt, mdtlen, &ph[i], i,
+			    region + (ph[i].p_paddr - (relocatable ? minpa :
+			    reloc)));
+		}
+		dcache_wbinv(region, msz);
+		pmap_unmapdev((vm_offset_t)region, msz);
+		region = NULL;
+		if (error)
+			goto out;
+		status("zap: %ju bytes loaded at 0x%jx", (uintmax_t)msz,
+		    (uintmax_t)base);
+	}
+
+	/* 4. authenticate and start */
+	args[0] = ZAP_PAS_ID;
+	error = qcom_scm_call(SCM_SVC_PIL, PAS_AUTH_AND_RESET, 1, args, 1,
+	    res, 0);
+	status("zap: auth_and_reset: status %d result %ju", error,
+	    (uintmax_t)res[0]);
+	if (error || res[0] != 0)
+		error = EIO;
+	else
+		status("zap: loaded and authenticated");
+out:
+	if (meta != NULL)
+		contigfree(meta, ehsz + hsz, M_GPUFW);
+	if (mdt != NULL)
+		kfree(mdt, M_GPUFW);
+	return (error);
+}
+
+static int
+sysctl_gpu_zap(SYSCTL_HANDLER_ARGS)
+{
+	int v = 0, error;
+
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (!gpu_powered)
+		return (ENXIO);
+	error = zap_load();
+	uprintf("%s\n", gpu_status + (gpu_status_len > 1500 ?
+	    gpu_status_len - 1500 : 0));
+	return (error);
+}
+SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_zap, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
+    sysctl_gpu_zap, "I", "load the GPU's zap shader from /tmp/fw");
 
 static void
 gpu_thread(void *arg)
