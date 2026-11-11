@@ -1,0 +1,126 @@
+diff --git a/src/a12/CMakeLists.txt b/src/a12/CMakeLists.txt
+index 440de3d..1a32a6e 100644
+--- a/src/a12/CMakeLists.txt
++++ b/src/a12/CMakeLists.txt
+@@ -96,7 +96,7 @@ set(EXTERNAL_SOURCES
+ 	${ZSTD_SOURCES}
+ )
+ 
+-add_library(arcan_a12 SHARED ${A12_SOURCES} ${EXTERNAL_SOURCES})
++add_library(arcan_a12 ${ARCAN_SHMIF_LIBTYPE} ${A12_SOURCES} ${EXTERNAL_SOURCES})
+ target_compile_definitions(arcan_a12 PRIVATE ${DEFS})
+ 
+ set_target_properties(arcan_a12 PROPERTIES
+diff --git a/src/platform/agp/glshared.c b/src/platform/agp/glshared.c
+index 0641b59..4ba9c21 100644
+--- a/src/platform/agp/glshared.c
++++ b/src/platform/agp/glshared.c
+@@ -879,6 +879,12 @@ struct agp_rendertarget* agp_setup_rendertarget(
+ 
+ static void* lookup_fun(void* tag, const char* sym, bool req)
+ {
++#ifdef AGP_LOOKUP_GFXSYM
++/* static builds (no dlsym): the video platform resolves GL symbols */
++	void* sres = platform_video_gfxsym(sym);
++	if (sres)
++		return sres;
++#endif
+ 	dlerror();
+ 	void* res = dlsym(RTLD_DEFAULT, sym);
+ 	if (dlerror() != NULL && req){
+diff --git a/src/platform/cmake/CMakeLists.Video b/src/platform/cmake/CMakeLists.Video
+index 0d9d8bc..3461eb9 100644
+--- a/src/platform/cmake/CMakeLists.Video
++++ b/src/platform/cmake/CMakeLists.Video
+@@ -16,8 +16,18 @@
+ set(VIDEO_LIBRARIES "")
+ set(VIDEO_PLATFORM_SOURCES "")
+ 
++# plain framebuffer (/dev/fb0) with software GL through OSMesa, for
++# DragonFly on hardware whose GPU has no driver yet
++if(VIDEO_PLATFORM STREQUAL "fbmem")
++	if (NOT INPUT_PLATFORM)
++		set(INPUT_PLATFORM "evdev")
++	endif()
++	add_definitions(-DSHMIF_TUI_DISABLE_GPU -DAGP_LOOKUP_GFXSYM)
++	set(LWA_PLATFORM_STR "stub")
++	set(VIDEO_PLATFORM_SOURCES ${PLATFORM_ROOT}/fbmem/video.c)
++
+ # legacy platform for weaker platforms that don't have/support KMS
+-if(VIDEO_PLATFORM STREQUAL "egl-gles")
++elseif(VIDEO_PLATFORM STREQUAL "egl-gles")
+ 	if (NOT INPUT_PLATFORM)
+ 		set(INPUT_PLATFORM "evdev")
+ 	endif()
+diff --git a/src/platform/evdev/event.c b/src/platform/evdev/event.c
+index ff8328e..8a62f02 100644
+--- a/src/platform/evdev/event.c
++++ b/src/platform/evdev/event.c
+@@ -40,7 +40,7 @@ static struct xkb_context* xkb_context;
+ #include <xkbcommon/xkbcommon-compose.h>
+ #endif
+ 
+-#ifndef __FreeBSD__
++#if !defined(__FreeBSD__) && !defined(__DragonFly__)
+ #include <sys/inotify.h>
+ #endif
+ 
+@@ -707,7 +707,7 @@ void platform_event_process(struct arcan_evctx* ctx)
+ /* lovely little variable length field at end of struct here /sarcasm,
+  * could get away with running the notify polling less often than once
+  * every frame, somewhat excessive. */
+-#ifdef __FreeBSD__
++#if defined(__FreeBSD__) || defined(__DragonFly__)
+ #else
+ 	if (-1 != gstate.notify){
+ 		char inbuf[1024];
+diff --git a/src/shmif/CMakeLists.txt b/src/shmif/CMakeLists.txt
+index 9f4098b..ba0ed9d 100644
+--- a/src/shmif/CMakeLists.txt
++++ b/src/shmif/CMakeLists.txt
+@@ -166,12 +166,18 @@ if (NOT SHMIF_DISABLE_DEBUGIF)
+ 	list(APPEND SHMIF_SOURCES ${ASD}/shmif/arcan_shmif_debugif.c)
+ endif()
+ 
++# Library type for the shmif/tui libraries: SHARED, or STATIC on systems
++# without a runtime linker yet (DragonFly/arm64's first userland).
++if (NOT ARCAN_SHMIF_LIBTYPE)
++	set(ARCAN_SHMIF_LIBTYPE SHARED)
++endif()
++
+ add_library(arcan_shmif_int STATIC ${SHMIF_SOURCES} ${SHMIF_PLATFORM})
+ add_library(arcan_shmif_server_int STATIC ${SHMIF_SERVER_SOURCES})
+-add_library(arcan_shmif SHARED ${SHMIF_SOURCES} ${SHMIF_PLATFORM})
+-add_library(arcan_shmif_ext SHARED ${SHMIF_EXT_SOURCES})
+-add_library(arcan_shmif_intext SHARED ${SHMIF_EXT_SOURCES})
+-add_library(arcan_shmif_server SHARED ${SHMIF_SERVER_SOURCES} ${SHMIF_PLATFORM})
++add_library(arcan_shmif ${ARCAN_SHMIF_LIBTYPE} ${SHMIF_SOURCES} ${SHMIF_PLATFORM})
++add_library(arcan_shmif_ext ${ARCAN_SHMIF_LIBTYPE} ${SHMIF_EXT_SOURCES})
++add_library(arcan_shmif_intext ${ARCAN_SHMIF_LIBTYPE} ${SHMIF_EXT_SOURCES})
++add_library(arcan_shmif_server ${ARCAN_SHMIF_LIBTYPE} ${SHMIF_SERVER_SOURCES} ${SHMIF_PLATFORM})
+ 
+ add_sanitizers(arcan_shmif_int arcan_shmif arcan_shmif_ext arcan_shmif_intext	arcan_shmif_server)
+ 
+@@ -199,7 +205,7 @@ set(TUI_LIBRARIES arcan_shmif)
+ # version in the font, or miss control over ligature substitutions and other
+ # similar font features. Shape-break attribute is intended to mitigate that
+ # somewhat.
+-add_library(arcan_tui SHARED ${SHMIF_TUI_SOURCES})
++add_library(arcan_tui ${ARCAN_SHMIF_LIBTYPE} ${SHMIF_TUI_SOURCES})
+ if (NOT TUI_RASTER_NO_TTF)
+ 	list(APPEND TUI_LIBRARIES ${FREETYPE_LIBRARIES})
+ endif()
+@@ -267,6 +273,13 @@ set_target_properties(arcan_shmif_server PROPERTIES
+ 	VERSION ${ASHMIF_MAJOR}.${ASHMIF_MINOR}
+ )
+ 
++# Built static, the public libraries would collide with the _int ones.
++if (ARCAN_SHMIF_LIBTYPE STREQUAL "STATIC")
++	set_target_properties(arcan_shmif PROPERTIES OUTPUT_NAME arcan_shmif_pub)
++	set_target_properties(arcan_shmif_server PROPERTIES
++		OUTPUT_NAME arcan_shmif_server_pub)
++endif()
++
+ set(ARCAN_SHMIF_INCLUDE_DIR ${ASD}/shmif PARENT_SCOPE)
+ set(ARCAN_SHMIF_LIBRARY arcan_shmif_int ${STDLIB} PARENT_SCOPE)
+ 

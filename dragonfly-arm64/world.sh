@@ -417,6 +417,63 @@ mesa() {
 	echo "built $SYSROOT/usr/lib/libOSMesa.a"
 }
 
+# FreeType, for Arcan's text rendering.
+FREETYPE_VERSION=${FREETYPE_VERSION:-2.13.2}
+freetype() {
+	src=$HERE/work/freetype-$FREETYPE_VERSION
+	[ -d "$src" ] || curl -sSfL \
+	    "https://download.savannah.gnu.org/releases/freetype/freetype-$FREETYPE_VERSION.tar.xz" |
+	    tar xJf - -C "$HERE/work"
+	b=$WOBJ/freetype
+	cmake -G Ninja -S "$src" -B "$b" \
+	    -DCMAKE_TOOLCHAIN_FILE="$HERE/tools/aarch64-dragonfly.cmake" \
+	    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$SYSROOT/usr" \
+	    -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON \
+	    -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON >/dev/null
+	ninja -C "$b" install >/dev/null
+	echo "installed freetype in $SYSROOT/usr"
+}
+
+#
+# Arcan 0.7.0.1 (the last C release, OpenGL based) with the fbmem video
+# platform from ./arcan (OSMesa rendering, /dev/fb0 output), evdev input,
+# no audio, bundled Lua 5.1 and SQLite, all static.
+# patches/arcan/arcan-dragonfly.diff: the fbmem platform in the build,
+# GL symbols resolved through the platform (no dlsym in static
+# binaries), static shmif/tui/a12 libraries, DragonFly in evdev's BSD
+# paths.
+#
+ARCAN_TAG=${ARCAN_TAG:-0.7.0.1}
+arcan() {
+	src=$HERE/work/arcan-$ARCAN_TAG
+	if [ ! -d "$src" ]; then
+		git clone -q --depth 1 --branch "$ARCAN_TAG" \
+		    https://github.com/letoram/arcan.git "$src"
+		git -C "$src" apply "$HERE/patches/arcan/arcan-dragonfly.diff"
+	fi
+	cp -R "$HERE/arcan/src/." "$src/src/"
+	mkdir -p "$INC/linux"
+	printf '#include <dev/misc/evdev/input.h>\n' > "$INC/linux/input.h"
+	b=$WOBJ/arcan
+	cmake -G Ninja -S "$src/src" -B "$b" \
+	    -DCMAKE_TOOLCHAIN_FILE="$HERE/tools/aarch64-dragonfly.cmake" \
+	    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+	    -DVIDEO_PLATFORM=fbmem -DAGP_PLATFORM=gl21 -DAUDIO_PLATFORM=stub \
+	    -DBUILTIN_LUA=ON -DDISABLE_JIT=ON -DLUA_FOUND=TRUE \
+	    -DLUA_LIBRARY=lua51 -DLUA_INCLUDE_DIR="$src/external/lua" \
+	    -DSTATIC_SQLite3=ON -DENABLE_LWA=OFF -DDISABLE_WAYLAND=ON \
+	    -DSTATIC_LIBUVC=OFF -DDISABLE_FSRV_GAME=ON -DDISABLE_FSRV_DECODE=ON \
+	    -DDISABLE_FSRV_NET=ON -DDISABLE_FSRV_ENCODE=ON \
+	    -DDISABLE_FSRV_REMOTING=ON -DDISABLE_FSRV_AVFEED=ON \
+	    -DENABLE_SIMD=OFF -DARCAN_SHMIF_LIBTYPE=STATIC \
+	    -DOPENGL_gl_LIBRARY="$SYSROOT/usr/lib/libOSMesa.a" \
+	    -DOPENGL_opengl_LIBRARY="$SYSROOT/usr/lib/libOSMesa.a" \
+	    -DOPENGL_INCLUDE_DIR="$INC" -DOPENGL_GLX_INCLUDE_DIR="$INC" \
+	    -DDFLY_EXTRA_LIBS="-lOSMesa -lc++ -lc++abi -lunwind -lm" >/dev/null
+	ninja -C "$b" arcan arcan_frameserver afsrv_terminal >/dev/null
+	echo "built arcan, arcan_frameserver, afsrv_terminal in $b"
+}
+
 # A smoke test: a small program using stdio, malloc, TLS and threads.
 hello() {
 	o=$WOBJ/hello; mkdir -p "$o"
@@ -447,6 +504,8 @@ progs)		progs ;;
 csu)		csu ;;
 cxx)		cxx ;;
 mesa)		mesa ;;
+freetype)	freetype ;;
+arcan)		arcan ;;
 lib)		shift; lib "$@" ;;
 prog)		shift; prog "$@" ;;
 hello)		hello ;;

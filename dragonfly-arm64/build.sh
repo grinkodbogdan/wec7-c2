@@ -279,10 +279,27 @@ ramdisk() {
 			done
 		done
 		cp "$HERE/user/demo.sh" "$root/etc/demo.sh"
+		# Arcan (world.sh arcan): the engine, the terminal frameserver,
+		# the console appl, builtin scripts and the default font.
+		a=$HERE/work/wobj/arcan
+		asrc=$HERE/work/arcan-0.7.0.1
+		if [ -x "$a/arcan" ]; then
+			cp "$a/arcan" "$a/arcan_frameserver" "$a/afsrv_terminal" \
+			    "$root/usr/bin/"
+			mkdir -p "$root/usr/share/arcan/appl" \
+			    "$root/usr/share/arcan/resources/fonts"
+			cp -r "$asrc/data/appl/console" "$HERE/arcan/appl/hello" \
+			    "$root/usr/share/arcan/appl/"
+			cp -r "$asrc/data/scripts" "$root/usr/share/arcan/scripts"
+			cp "$asrc/data/resources/fonts/default.ttf" \
+			    "$root/usr/share/arcan/resources/fonts/"
+			cp "$HERE/user/arcan.sh" "$root/etc/arcan.sh"
+		fi
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
 		llvm-strip "$root"/bin/* "$root"/sbin/* "$root"/usr/bin/* \
 		    2>/dev/null || :
 	fi
+	ln -s tmp/var "$root/var"
 	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
 	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
 	# The phone's boot image carries it compressed (the kernel

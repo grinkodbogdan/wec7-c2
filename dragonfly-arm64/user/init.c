@@ -336,6 +336,12 @@ main(void)
 
 	if (mount("tmpfs", "/tmp", 0, NULL) != 0)
 		printf("init: cannot mount tmpfs on /tmp (errno %d)\n", errno);
+	/* /var is a link to /tmp/var on the read-only ramdisk. */
+	mkdir("/tmp/var", 0755);
+	mkdir("/tmp/var/run", 0755);
+	mkdir("/tmp/var/run/sem", 01777);
+	mkdir("/tmp/var/run/shm", 01777);
+	mkdir("/tmp/var/tmp", 01777);
 
 	selftest();
 

@@ -22,8 +22,11 @@ set(CMAKE_ASM_FLAGS_INIT "${_dfly} -nostdinc ${_inc}")
 # C++: libc++'s headers first (from the sysroot once installed), then C.
 set(CMAKE_CXX_FLAGS_INIT "${_dfly} -nostdinc -isystem ${DFLY_SYSROOT}/usr/include/c++/v1 ${_inc}")
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-fuse-ld=lld -nostdlib -static -Wl,--eh-frame-hdr ${DFLY_SYSROOT}/usr/lib/crt1.o ${DFLY_SYSROOT}/usr/lib/crti.o ${DFLY_SYSROOT}/usr/lib/crtbegin.o -L${DFLY_SYSROOT}/usr/lib")
-set(CMAKE_C_STANDARD_LIBRARIES "-Wl,--start-group -lc -lcompiler_rt -Wl,--end-group ${DFLY_SYSROOT}/usr/lib/crtend.o ${DFLY_SYSROOT}/usr/lib/crtn.o")
+set(CMAKE_C_STANDARD_LIBRARIES "-Wl,--start-group ${DFLY_EXTRA_LIBS} -lc -lcompiler_rt -Wl,--end-group ${DFLY_SYSROOT}/usr/lib/crtend.o ${DFLY_SYSROOT}/usr/lib/crtn.o")
 set(CMAKE_CXX_STANDARD_LIBRARIES "-Wl,--start-group -lc++ -lc++abi -lunwind -lm -lc -lcompiler_rt -Wl,--end-group ${DFLY_SYSROOT}/usr/lib/crtend.o ${DFLY_SYSROOT}/usr/lib/crtn.o")
+# Extra libraries for C links, e.g. -DDFLY_EXTRA_LIBS="-lOSMesa -lc++ -lc++abi
+# -lunwind -lm" for C programs that pull in C++ code.
+set(DFLY_EXTRA_LIBS "${DFLY_EXTRA_LIBS}" CACHE STRING "")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
