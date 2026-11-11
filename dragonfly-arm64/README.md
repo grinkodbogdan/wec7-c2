@@ -621,6 +621,16 @@ image sets the vibrator up as Xiaomi's own driver does (fixed calibration
 values, 240Hz LRA, rated 0x30 and overdrive 0x40, no auto-calibration)
 and reports each step of the key light's enable line.
 
+**Twenty-seventh boot.** The notification LED lights green for
+0x00ff00, the backlight follows `hw.mi5.backlight`, and the fuel gauge
+reads 13% and charging; but none of the GPU, vibrator or key-light
+messages reached `dmesg`. DragonFly's `kprintf()` only *tries* the
+console lock and drops the whole message when another cpu holds it;
+with a slow framebuffer console and several driver threads printing at
+once during boot, most of their lines were lost (the twenty-sixth boot
+lost some too). `patches/kprintf-smp.diff` makes it wait, for a bounded
+time and only outside interrupts.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the
