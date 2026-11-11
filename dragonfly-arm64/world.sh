@@ -327,10 +327,15 @@ prog() {
 	o=$WOBJ/$dir
 	cflags="$(cat "$o/cflags") -I$o $*"
 	compile_list "$o" "$cflags"
-	libs=$(bm "$dir" -V LDADD | tr ' ' '\n' | grep '^-l' | grep -v private | tr '\n' ' ')
+	# -lfoo as given; a path to some libfoo.a (a library built in the
+	# same tree, like GNU grep's) as -lfoo from the sysroot.
+	libs=$(bm "$dir" -V LDADD | tr ' ' '\n' | grep -v private |
+	    sed -n 's|^-l|-l|p; s|^.*/lib\([^/]*\)\.a$|-l\1|p' | tr '\n' ' ')
 	ldstatic "$o/$name" $(sed 's|$|.o|; s|^|'"$o"'/|' "$o/objs") $libs
-	mkdir -p "$SYSROOT/$(dirname "$dir" | sed 's|usr.bin|usr/bin|; s|usr.sbin|usr/sbin|')"
-	cp "$o/$name" "$SYSROOT/$(dirname "$dir" | sed 's|usr.bin|usr/bin|; s|usr.sbin|usr/sbin|')/"
+	bindir=$(bm "$dir" -V BINDIR)
+	[ -n "$bindir" ] || bindir=/$(dirname "$dir" | sed 's|usr.bin|usr/bin|; s|usr.sbin|usr/sbin|')
+	mkdir -p "$SYSROOT$bindir"
+	cp "$o/$name" "$SYSROOT$bindir/"
 	echo "built $dir"
 }
 
@@ -495,6 +500,8 @@ PROGS="bin/cat bin/chmod bin/cp bin/date bin/dd bin/df bin/echo bin/hostname
 progs() {
 	for l in $LIBS; do lib "$l"; done
 	for p in $PROGS; do prog "$p"; done
+	lib gnu/usr.bin/grep/libgreputils -Wno-incompatible-function-pointer-types
+	prog gnu/usr.bin/grep/grep
 	prog bin/ls -UCOLORLS
 	prog bin/sh -DNO_HISTORY
 }

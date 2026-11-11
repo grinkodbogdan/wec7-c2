@@ -375,7 +375,7 @@ main(void)
 	if (access("/etc/arcan.sh", R_OK) == 0 &&
 	    access("/dev/fb0", R_OK) == 0 &&
 	    access("/dev/input/event0", R_OK) == 0) {
-		static char autorun[512] = "autorun=uname -a; dmesg | grep touch";
+		static char autorun[512] = "autorun=dmesg | grep -E 'pmi8994|i2c9|vibrator|keylight|touch: ready'; sysctl hw.mi5";
 		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term", autorun, NULL };
 		int afd, n;
 

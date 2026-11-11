@@ -40,7 +40,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 	machdep.c mp_machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c
-	cons_pl011.c fbcons.c qcom_msm8996.c qcom_ufs.c qcom_pmic_keys.c qcom_touch.c fbmem.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
+	cons_pl011.c fbcons.c qcom_msm8996.c qcom_ufs.c qcom_pmic_keys.c qcom_spmi.c qcom_qup_i2c.c qcom_touch.c qcom_pmi8994.c qcom_i2c9.c fbmem.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c
 	udivti3.c"
 
 # "optional" files: what standard files depend on unconditionally, plus

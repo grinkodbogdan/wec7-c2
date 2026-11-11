@@ -585,13 +585,41 @@ segfaults: `cpu_fork()` copied the parent's saved thread pointer, which is
 only updated when the parent is switched out, so a child forked before
 that inherited a stale (zero) one and crashed on its first TLS access.
 
+### Backlight, LEDs, vibrator, battery
+
+The twenty-sixth image adds the phone's smaller parts, each behind a
+sysctl under `hw.mi5`:
+
+| sysctl | Part | Path |
+|---|---|---|
+| `backlight` (0-4095) | PMI8994 WLED | SPMI slave 3, 0xd800/0xd900 |
+| `led` (0xRRGGBB) | notification LED: PMI8994 LPG channels through the TRILED | SPMI slave 3, 0xb100-0xb300, 0xd000 |
+| `battery` (percent, read-only) | PMI8994 fuel gauge, monotonic state of charge | SPMI slave 2, 0x4009 |
+| `charger` (read-only) | PMI8994 SMBCHG: none, present, charging, full | SPMI slave 2, 0x1000, 0x1300 |
+| `vibrate` (milliseconds) | TI DRV2604 haptic driver, LRA, auto-calibrated at boot | I2C bus 9 at 0x5a, enable TLMM GPIO 93 |
+| `keylight` (0-255) | TI LP5562, the capacitive keys' backlight | I2C bus 9 at 0x30, enable PM8994 GPIO 7 |
+
+Underneath: `qcom_spmi.c` now writes as well as reads (Linux's
+`spmi-pmic-arb` sequence: data, then command, on the channel registers),
+and refuses writes to peripherals the arbiter's ownership table gives to
+another execution environment. The QUP I2C code moved out of the touch
+driver into `qcom_qup_i2c.c`, which serves both buses. The register
+sequences follow Linux's `qcom-wled`, `leds-qcom-lpg`, `drv260x` and
+`leds-lp5562` drivers and the Mi 5's downstream `qpnp-fg` and
+`qpnp-smbcharger`; the board settings come from the upstream Mi 5 device
+tree (`msm8996-xiaomi-gemini.dts`). The vibrator buzzes once and the key
+lights come on when their drivers are ready.
+
+GNU grep is now in the ramdisk (`world.sh` builds `gnu/usr.bin/grep`);
+the twenty-fourth image's `dmesg | grep touch` had no grep to run.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
   in two variants: all four cores, and `cpus=2` (the boot cluster only).
 - **Input.** Buttons work; touch is new and untested on the phone; no USB.
-- **Everything else.** USB, display control (backlight), the GPU, Wi-Fi,
-  audio, power management, charging and the modem each need a driver.
+- **Everything else.** USB, the GPU, Wi-Fi, audio, sensors, power
+  management, charge control and the modem each need a driver.
 
 ## Design notes
 
@@ -647,6 +675,7 @@ that inherited a stale (zero) one and crashed on its first TLS access.
 Imported so far: from FreeBSD/arm64, libc's `setjmp` and FP-control files,
 `crti.S`/`crtn.S`, and `<machine/ieeefp.h>`; from compiler-rt, the
 builtins library. Taken from Linux as register-level protocols, not code:
-the Kryo clock setup (`clk-cpu-8996`), the SPMI PMIC arbiter read sequence
+the Kryo clock setup (`clk-cpu-8996`), the SPMI PMIC arbiter
 (`spmi-pmic-arb`), the QUP I2C controller (`i2c-qup`), the Synaptics RMI4
-touch protocol (`drivers/input/rmi4`) and the GICv3 redistributor quirk.
+touch protocol (`drivers/input/rmi4`), the PMI8994 WLED, LPG, fuel gauge
+and charger, the DRV2604 and LP5562, and the GICv3 redistributor quirk.

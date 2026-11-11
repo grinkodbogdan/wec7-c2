@@ -117,6 +117,23 @@ int	msm8996_early_init(struct arm64_bootinfo *bi);
 void	msm8996_fb_flush(void);
 int	msm8996_cpu_clocks(void);
 int	msm8996_is_present(void);
+
+/* MSM8996 SPMI PMIC arbiter (qcom_spmi.c) */
+int	msm8996_spmi_apid(int sid, uint16_t addr);
+int	msm8996_spmi_owner(int sid, uint16_t addr);
+int	msm8996_spmi_read(int sid, uint16_t addr, uint8_t *val);
+int	msm8996_spmi_write(int sid, uint16_t addr, uint8_t val);
+int	msm8996_spmi_update(int sid, uint16_t addr, uint8_t mask, uint8_t val);
+
+/* MSM8996 BLSP QUP as an I2C master (qcom_qup_i2c.c) */
+struct qup_i2c;
+struct qup_i2c *qup_i2c_bus(int n);	/* 9 or 12, as the device tree names them */
+int	qup_i2c_xfer(struct qup_i2c *bus, int addr, int rd, uint8_t *buf, int len);
+int	qup_i2c_reset(struct qup_i2c *bus);
+int	qup_i2c_regread(struct qup_i2c *bus, int addr, uint8_t reg, uint8_t *v);
+int	qup_i2c_regwrite(struct qup_i2c *bus, int addr, uint8_t reg, uint8_t v);
+void	qup_i2c_lock(struct qup_i2c *bus);
+void	qup_i2c_unlock(struct qup_i2c *bus);
 void	arm64_ramlog_putc(int c);
 uint64_t arm64_timer_freq(void);
 int	fbcons_present(void);
