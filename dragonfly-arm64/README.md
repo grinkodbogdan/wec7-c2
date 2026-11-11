@@ -544,6 +544,14 @@ menu redraws in place.
   mode-setting interface and OpenGL ES, so it needs, in order: a real
   userland (libc, C++ runtime, Lua), the phone's display driver, the GPU
   driver with Mesa's freedreno, and touch input delivered as evdev events.
+- **Arcan adapted to this system.** Where it helps, change Arcan to make
+  full use of HAMMER2 and the BSD base rather than treating them as a
+  generic POSIX target: for example snapshots of application state and
+  settings, per-application PFSes, and DragonFly's own interfaces in place
+  of Linux ones.
 
-Nothing has been imported from another project yet: so far everything here
-was either written for this port or already in DragonFly's tree.
+Imported so far: from FreeBSD/arm64, libc's `setjmp` and FP-control files,
+`crti.S`/`crtn.S`, and `<machine/ieeefp.h>`; from compiler-rt, the
+builtins library. Taken from Linux as register-level protocols, not code:
+the Kryo clock setup (`clk-cpu-8996`), the SPMI PMIC arbiter read sequence
+(`spmi-pmic-arb`) and the GICv3 redistributor quirk.
