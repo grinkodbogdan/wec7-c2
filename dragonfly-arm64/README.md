@@ -690,6 +690,16 @@ system, config, peripheral, memory, aggregate and multimedia buses at
 their maximum, active and sleep sets, as Linux does; `sysctl hw.mi5.rpm`
 shows the steps. The zap loader waits for it.
 
+**Thirty-ninth boot.** The RPM link works: the channel opened, and the
+RPM accepted the crypto engine and every bus at their maximum. Reading
+Linux's secure-call code again showed why init_image seemed to hang: a
+long secure call (a signature check) is interrupted by the timer, and
+the secure world returns 1; Linux resumes it with x0 = 1 *and the x6 the
+secure world returned* (its context for the call;
+`ARM_SMCCC_QUIRK_QCOM_A6`). `qcom_scm.c` passed back the original x6, so
+the call could never resume, and it retried forever without yielding
+the cpu. The fortieth image passes x6 back and yields between attempts.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the

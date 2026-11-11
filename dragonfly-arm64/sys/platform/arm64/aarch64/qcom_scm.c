@@ -44,7 +44,7 @@
 static struct lock scm_lock = LOCK_INITIALIZER("qcomscm", 0, 0);
 
 static void
-smc(uint64_t a[8], uint64_t r[4])
+smc(uint64_t a[8], uint64_t r[7])
 {
 	register uint64_t x0 __asm("x0") = a[0];
 	register uint64_t x1 __asm("x1") = a[1];
@@ -65,6 +65,7 @@ smc(uint64_t a[8], uint64_t r[4])
 	r[1] = x1;
 	r[2] = x2;
 	r[3] = x3;
+	r[6] = x6;
 }
 
 /*
@@ -76,7 +77,7 @@ int
 qcom_scm_call(int svc, int cmd, uint32_t arginfo, const uint64_t *args,
     int nargs, uint64_t *res, int fast)
 {
-	uint64_t a[8], r[4];
+	uint64_t a[8], r[7];
 	int i, tries;
 
 	lockmgr(&scm_lock, LK_EXCLUSIVE);
@@ -87,11 +88,22 @@ qcom_scm_call(int svc, int cmd, uint32_t arginfo, const uint64_t *args,
 		a[1] = arginfo;
 		for (i = 0; i < nargs && i < 4; ++i)
 			a[2 + i] = args[i];
-		do {
+		/*
+		 * An interrupted call is resumed with x0 = 1 and, as Linux's
+		 * ARM_SMCCC_QUIRK_QCOM_A6 does, the x6 the secure world
+		 * returned (its context for the call); the other arguments
+		 * stay as they were.  Between attempts the cpu takes the
+		 * interrupt that stopped it and may run other threads.
+		 */
+		a[6] = 0;
+		for (;;) {
 			smc(a, r);
-			if (r[0] == SCM_INTERRUPTED)
-				a[0] = r[0];	/* resume */
-		} while (r[0] == SCM_INTERRUPTED);
+			if (r[0] != SCM_INTERRUPTED)
+				break;
+			a[0] = r[0];
+			a[6] = r[6];
+			lwkt_yield();
+		}
 		if ((int64_t)r[0] != SCM_V2_EBUSY)
 			break;
 		tsleep(&scm_lock, 0, "scmbusy", hz * 30 / 1000 + 1);
