@@ -3,7 +3,8 @@
 # Build DragonFly userland for arm64: headers, compiler support library,
 # C library, startup files and programs, installed into a sysroot.
 #
-# Usage: ./world.sh [sysroot|builtins|libc|csu|prog DIR...|all]
+# Usage: ./world.sh [sysroot|builtins|libc|csu|hello|progs|all]
+#        ./world.sh lib DIR [cflags...] | prog DIR [cflags...]
 #
 # Needs what build.sh needs, plus bmake and rpcgen.
 #
@@ -331,7 +332,23 @@ hello() {
 	echo "built $o/hello"
 }
 
+# The libraries and programs the ramdisk carries.  ls is built without
+# colour and sh without line editing until ncurses and libedit are.
+LIBS="lib/libutil lib/libcrypt lib/libm lib/libkvm lib/libkinfo"
+PROGS="bin/cat bin/chmod bin/cp bin/date bin/df bin/echo bin/hostname
+	bin/kill bin/ln bin/mkdir bin/mv bin/ps bin/pwd bin/rm bin/sleep
+	bin/stty bin/test sbin/dmesg sbin/init sbin/mount sbin/reboot
+	sbin/sysctl usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname
+	usr.bin/wc"
+progs() {
+	for l in $LIBS; do lib "$l"; done
+	for p in $PROGS; do prog "$p"; done
+	prog bin/ls -UCOLORLS
+	prog bin/sh -DNO_HISTORY
+}
+
 case "${1:-all}" in
+progs)		progs ;;
 csu)		csu ;;
 lib)		shift; lib "$@" ;;
 prog)		shift; prog "$@" ;;
@@ -339,6 +356,6 @@ hello)		hello ;;
 sysroot)	sysroot ;;
 builtins)	builtins ;;
 libc)		libc ;;
-all)		sysroot; builtins; libc; csu; hello ;;
+all)		sysroot; builtins; libc; csu; hello; progs ;;
 *)	echo "usage: $0 [sysroot|builtins|libc|all]" >&2; exit 1 ;;
 esac
