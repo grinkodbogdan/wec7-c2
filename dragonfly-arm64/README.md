@@ -427,6 +427,13 @@ reservation, and points the scanout pipe at it (`fb: moved off the
 ramdisk` in the boot log). The instruction-cache change stays: it is
 what Linux does for this kind of cache.
 
+**Thirteenth boot: DragonFly's own userland on the phone.** The kernel
+self-test passed on four cores, then init's demo ran DragonFly's `sh`,
+`uname`, `sysctl`, `ls`, `df`, `ps`, `wc` and `tail` against the real C
+library: 4 cpus, 2786 MB of memory, 37 programs, tmpfs on `/tmp`, and
+`/bin/hello` reported `libc: all checks passed`. The shell then waits
+at its prompt (there is no input device yet).
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
