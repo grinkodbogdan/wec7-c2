@@ -476,6 +476,12 @@ remount, and every file compares identical. The eighteenth image runs
 the same test on the phone, on a sparse file in tmpfs (the flash driver
 does not write yet).
 
+**Eighteenth boot: ext4 and HAMMER2 on the phone.** Android's `persist`
+(31.5MB, Xiaomi's sensor calibration files) and `cache` (252MB) mounted
+read-only as ext4 from the UFS flash, and the HAMMER2 test passed on the
+phone: a 1.1GB volume formatted, filled with 33 programs, remounted, and
+every file identical.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
