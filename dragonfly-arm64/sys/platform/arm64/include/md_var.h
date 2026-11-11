@@ -69,6 +69,7 @@ struct arm64_bootinfo {
 	/* /memreserve/ entries and /reserved-memory nodes */
 	struct arm64_memregion bi_resv[ARM64_MAXRESERVED];
 	int		bi_nresv;
+	vm_paddr_t	bi_fb_moved_from; /* LK's fb, if the console moved off it */
 	u_char		bi_resv_nomap[ARM64_MAXRESERVED]; /* "no-map" */
 	/* simple-framebuffer node, or the fb= boot argument */
 	vm_paddr_t	bi_fb_base;

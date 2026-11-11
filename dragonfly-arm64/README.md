@@ -416,6 +416,17 @@ The twelfth image invalidates the whole instruction cache on CPUs whose
 `CTR_EL0` reports a non-PIPT instruction cache, as Linux does, and a
 SIGILL of this kind also prints the instruction word in memory.
 
+**Twelfth boot.** Same crash; the instruction word in memory was
+`0x00000000`. The cache was not at fault: the ramdisk was. LK loads the
+boot image's ramdisk at 0x82a00000 and keeps its splash framebuffer at
+0x83401000, so the 12MB ramdisk now ends inside the framebuffer, and
+every line the console drew overwrote part of it (`/bin/sh` sat at
+0x833b0000-0x83462508). The thirteenth image gives the display its own
+buffer after the ramdisk, still inside LK's `cont_splash_mem`
+reservation, and points the scanout pipe at it (`fb: moved off the
+ramdisk` in the boot log). The instruction-cache change stays: it is
+what Linux does for this kind of cache.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

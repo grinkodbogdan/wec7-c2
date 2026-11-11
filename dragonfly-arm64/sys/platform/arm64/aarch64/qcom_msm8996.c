@@ -67,6 +67,9 @@
 #define	MDP_CTL0_LAYER0		0x902000UL	/* pipes staged on mixer 0 */
 #define	MDP_CTL0_OP		0x902014UL
 #define	MDP_CTL0_OP_CMD_MODE	(1U << 17)
+#define	MDP_CTL0_FLUSH		0x902018UL
+#define	  CTL_FLUSH_LM0		(1U << 6)
+#define	  CTL_FLUSH_CTL		(1U << 17)
 #define	MDP_CTL0_START		0x90201cUL
 
 /* Source pipe (SSPP) registers */
@@ -94,6 +97,8 @@ struct prz_buffer {
 
 static int msm8996_cmd_mode;
 static int msm8996_present;
+static vm_paddr_t msm8996_pipe;		/* source pipe scanning out the fb */
+static uint32_t msm8996_pipe_flush;
 static volatile struct prz_buffer *ramlog;
 
 static __inline uint32_t
@@ -118,12 +123,13 @@ msm8996_probe_display(struct arm64_bootinfo *bi)
 	static const struct {
 		u_int		shift;	/* field in CTL0_LAYER0 */
 		vm_paddr_t	pipe;
+		uint32_t	flush;	/* its bit in CTL0_FLUSH */
 	} stages[] = {
-		{ 0,  MDP_BASE + 0x4000 },	/* VIG0 */
-		{ 3,  MDP_BASE + 0x6000 },	/* VIG1 */
-		{ 9,  MDP_BASE + 0x14000 },	/* RGB0 */
-		{ 12, MDP_BASE + 0x16000 },	/* RGB1 */
-		{ 18, MDP_BASE + 0x24000 },	/* DMA0 */
+		{ 0,  MDP_BASE + 0x4000,  1U << 0 },	/* VIG0 */
+		{ 3,  MDP_BASE + 0x6000,  1U << 1 },	/* VIG1 */
+		{ 9,  MDP_BASE + 0x14000, 1U << 3 },	/* RGB0 */
+		{ 12, MDP_BASE + 0x16000, 1U << 4 },	/* RGB1 */
+		{ 18, MDP_BASE + 0x24000, 1U << 11 },	/* DMA0 */
 	};
 	uint32_t layer = rd32(MDP_CTL0_LAYER0);
 	uint32_t addr, stride, bytes, size;
@@ -136,6 +142,8 @@ msm8996_probe_display(struct arm64_bootinfo *bi)
 		if (((layer >> stages[i].shift) & 7) != 0 &&
 		    rd32(stages[i].pipe + SSPP_SRC0_ADDR) != 0) {
 			pipe = stages[i].pipe;
+			msm8996_pipe = pipe;
+			msm8996_pipe_flush = stages[i].flush;
 			break;
 		}
 	}
@@ -220,6 +228,69 @@ ramlog_init(vm_paddr_t pa)
 	ramlog = prz;
 }
 
+static int
+overlaps(vm_paddr_t a, vm_size_t alen, vm_paddr_t b, vm_size_t blen)
+{
+	return (a < b + blen && b < a + alen);
+}
+
+/*
+ * LK puts the boot image's ramdisk at 0x82a00000 and keeps its splash
+ * screen at 0x83401000, so a ramdisk over about 10MB ends inside the
+ * framebuffer, and every line the console draws overwrites part of it.
+ * Give the display a buffer of its own after the ramdisk and point the
+ * scanout pipe at it.  initarm() reserves whatever bi_fb_base is.
+ */
+static void
+msm8996_move_fb(struct arm64_bootinfo *bi)
+{
+	vm_size_t size = (vm_size_t)bi->bi_fb_stride * bi->bi_fb_height;
+	vm_paddr_t new;
+	int i, moved;
+
+	if (bi->bi_initrd_end <= bi->bi_initrd_start || msm8996_pipe == 0 ||
+	    !overlaps(bi->bi_fb_base, size, bi->bi_initrd_start,
+	    bi->bi_initrd_end - bi->bi_initrd_start))
+		return;
+
+	new = roundup2(bi->bi_initrd_end, 0x100000);
+	do {			/* step past no-map reserved regions */
+		moved = 0;
+		for (i = 0; i < bi->bi_nresv; ++i) {
+			if (bi->bi_resv_nomap[i] &&
+			    overlaps(new, size, bi->bi_resv[i].mr_start,
+			    bi->bi_resv[i].mr_size)) {
+				new = roundup2(bi->bi_resv[i].mr_start +
+				    bi->bi_resv[i].mr_size, 0x100000);
+				moved = 1;
+			}
+		}
+	} while (moved);
+	for (i = 0; i < bi->bi_nmem; ++i) {
+		if (new >= bi->bi_mem[i].mr_start && new + size <=
+		    bi->bi_mem[i].mr_start + bi->bi_mem[i].mr_size)
+			break;
+	}
+	if (i == bi->bi_nmem)
+		return;			/* nowhere to go; keep LK's */
+
+	bzero((void *)PHYS_TO_DMAP(new), size);
+	__asm __volatile("dsb sy");
+	{
+		vm_offset_t p, e = PHYS_TO_DMAP(new) + size;
+
+		for (p = PHYS_TO_DMAP(new); p < e; p += 64)
+			__asm __volatile("dc cvac, %0" : : "r" (p));
+		__asm __volatile("dsb sy");
+	}
+	wr32(msm8996_pipe + SSPP_SRC0_ADDR, (uint32_t)new);
+	wr32(MDP_CTL0_FLUSH, msm8996_pipe_flush | CTL_FLUSH_LM0 |
+	    CTL_FLUSH_CTL);
+	cpu_mfence();
+	bi->bi_fb_moved_from = bi->bi_fb_base;
+	bi->bi_fb_base = new;
+}
+
 /*
  * Called from initarm() once the device tree has been scanned, before
  * the console is set up.  Returns non-zero if this is an MSM8996.
@@ -252,8 +323,10 @@ msm8996_early_init(struct arm64_bootinfo *bi)
 	ramlog_init(MI5_RAMOOPS_CONSOLE);
 
 	/* An fb= boot argument overrides what the MDP reports. */
-	if (bi->bi_fb_base == 0)
+	if (bi->bi_fb_base == 0) {
 		msm8996_probe_display(bi);
+		msm8996_move_fb(bi);
+	}
 	return (1);
 }
 

@@ -552,6 +552,10 @@ cpu_startup(void *dummy __unused)
 	kprintf("Machine: %s\n", bi->bi_model ? bi->bi_model :
 	    (bi->bi_compatible ? bi->bi_compatible : "unknown"));
 	identify_cpu();
+	if (bi->bi_fb_moved_from != 0) {
+		kprintf("fb: moved off the ramdisk, from 0x%jx\n",
+		    (uintmax_t)bi->bi_fb_moved_from);
+	}
 	if (bi->bi_fb_base != 0) {
 		kprintf("fb0: %ux%u, %u bpp framebuffer at 0x%jx\n",
 		    bi->bi_fb_width, bi->bi_fb_height, bi->bi_fb_bpp,
