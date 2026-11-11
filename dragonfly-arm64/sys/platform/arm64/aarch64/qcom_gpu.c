@@ -43,6 +43,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/kthread.h>
+#include <sys/sysctl.h>
 
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
@@ -91,6 +92,37 @@
 #define	  REG_EN		0x46
 #define	    EN_BIT		0x80
 
+/*
+ * Progress, readable with sysctl hw.mi5.gpu whatever happens to kernel
+ * messages, and showing the step reached if one hangs.
+ */
+static char gpu_status[2048] = "not started";
+static size_t gpu_status_len;
+SYSCTL_DECL(_hw_mi5);
+SYSCTL_STRING(_hw_mi5, OID_AUTO, gpu, CTLFLAG_RD, gpu_status, 0,
+    "GPU bring-up progress");
+
+/* One more line of progress (the last one is where it stopped). */
+static void
+status(const char *fmt, ...)
+{
+	char line[256];
+	__va_list ap;
+	size_t n;
+
+	__va_start(ap, fmt);
+	kvsnprintf(line, sizeof(line), fmt, ap);
+	__va_end(ap);
+	n = strlen(line);
+	if (gpu_status_len + n + 2 < sizeof(gpu_status)) {
+		gpu_status[gpu_status_len++] = '\n';
+		memcpy(gpu_status + gpu_status_len, line, n + 1);
+		gpu_status_len += n;
+	}
+	cpu_sfence();
+	kprintf("gpu: %s\n", line);
+}
+
 static __inline uint32_t
 rd(vm_paddr_t pa)
 {
@@ -120,7 +152,7 @@ clk_on(const char *name, vm_paddr_t cbcr)
 {
 	wr(cbcr, rd(cbcr) | CBCR_EN);
 	if (waitbits(cbcr, CBCR_OFF, 0, 2000)) {
-		kprintf("gpu: clock %s does not start (0x%08x)\n", name,
+		status("clock %s does not start (0x%08x)", name,
 		    rd(cbcr));
 		return (EIO);
 	}
@@ -143,18 +175,21 @@ report(const char *when)
 {
 	uint8_t type = 0, sub = 0, range = 0, vset = 0, en = 0;
 
+	status("%s: reading vdd_gfx", when);
 	msm8996_spmi_read(S2_SID, S2_BASE + REG_TYPE, &type);
 	msm8996_spmi_read(S2_SID, S2_BASE + REG_SUBTYPE, &sub);
 	msm8996_spmi_read(S2_SID, S2_BASE + REG_RANGE, &range);
 	msm8996_spmi_read(S2_SID, S2_BASE + REG_VSET, &vset);
 	msm8996_spmi_read(S2_SID, S2_BASE + REG_EN, &en);
-	kprintf("gpu: %s: vdd_gfx type %02x/%02x %s %duV (owner ee%d); "
-	    "gdsc gpu 0x%08x/0x%08x gx 0x%08x clamp 0x%x\n", when, type, sub,
+	status("%s: vdd_gfx %02x/%02x en %02x range %d vset %d; reading MMCC",
+	    when, type, sub, en, range, vset);
+	status("%s: vdd_gfx type %02x/%02x %s %duV (owner ee%d); "
+	    "gdsc gpu 0x%08x/0x%08x gx 0x%08x clamp 0x%x", when, type, sub,
 	    (en & EN_BIT) ? "on" : "off", s2_uv(range & 3, vset),
 	    msm8996_spmi_owner(S2_SID, S2_BASE), rd(GPU_GDSCR),
 	    rd(GPU_GDS_HW_CTRL), rd(GPU_GX_GDSCR), rd(GPU_GX_CLAMP_IO));
-	kprintf("gpu: %s: clocks mmss_bimc_gfx 0x%08x bimc_gfx 0x%08x "
-	    "ahb 0x%08x gfx3d 0x%08x (rcg 0x%x/0x%x) rbbmtimer 0x%08x\n",
+	status("%s: clocks mmss_bimc_gfx 0x%08x bimc_gfx 0x%08x "
+	    "ahb 0x%08x gfx3d 0x%08x (rcg 0x%x/0x%x) rbbmtimer 0x%08x",
 	    when, rd(GCC_MMSS_BIMC_GFX), rd(GCC_BIMC_GFX), rd(GPU_AHB_CBCR),
 	    rd(GPU_GX_GFX3D_CBCR), rd(GFX3D_RCG), rd(GFX3D_RCG + 4),
 	    rd(GPU_RBBMTIMER_CBCR));
@@ -170,24 +205,24 @@ power_up(void)
 	if (msm8996_spmi_read(S2_SID, S2_BASE + REG_EN, &en) ||
 	    msm8996_spmi_read(S2_SID, S2_BASE + REG_RANGE, &range) ||
 	    msm8996_spmi_read(S2_SID, S2_BASE + REG_VSET, &vset)) {
-		kprintf("gpu: cannot read vdd_gfx\n");
+		status("cannot read vdd_gfx");
 		return (EIO);
 	}
 	if ((en & EN_BIT) == 0) {
 		uv = s2_uv(range & 3, vset);
 		if (uv < 600000 || uv > 1015000) {
-			kprintf("gpu: vdd_gfx is off and set to %duV; "
-			    "not turning it on\n", uv);
+			status("vdd_gfx is off and set to %duV; "
+			    "not turning it on", uv);
 			return (EINVAL);
 		}
 		error = msm8996_spmi_update(S2_SID, S2_BASE + REG_EN, EN_BIT,
 		    EN_BIT);
 		if (error) {
-			kprintf("gpu: vdd_gfx enable: error %d\n", error);
+			status("vdd_gfx enable: error %d", error);
 			return (error);
 		}
 		DELAY(500);		/* regulator-enable-ramp-delay */
-		kprintf("gpu: vdd_gfx on at %duV\n", uv);
+		status("vdd_gfx on at %duV", uv);
 	}
 
 	/* 2. the bus clocks and the register interface */
@@ -200,7 +235,7 @@ power_up(void)
 	wr(GPU_GDSCR, rd(GPU_GDSCR) & ~GDSC_SW_COLLAPSE);
 	if (waitbits(GPU_GDS_HW_CTRL, GDSC_PWR_ON, GDSC_PWR_ON, 1500) &&
 	    waitbits(GPU_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 1500)) {
-		kprintf("gpu: gpu gdsc does not power up (0x%08x 0x%08x)\n",
+		status("gpu gdsc does not power up (0x%08x 0x%08x)",
 		    rd(GPU_GDSCR), rd(GPU_GDS_HW_CTRL));
 		return (EIO);
 	}
@@ -208,7 +243,7 @@ power_up(void)
 	/* 4. the GX domain, then release its I/O clamp */
 	wr(GPU_GX_GDSCR, rd(GPU_GX_GDSCR) & ~GDSC_SW_COLLAPSE);
 	if (waitbits(GPU_GX_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 1500)) {
-		kprintf("gpu: gx gdsc does not power up (0x%08x)\n",
+		status("gx gdsc does not power up (0x%08x)",
 		    rd(GPU_GX_GDSCR));
 		return (EIO);
 	}
@@ -231,20 +266,22 @@ gpu_thread(void *arg)
 	if (mode < 2)
 		goto out;
 	if (power_up() != 0) {
-		kprintf("gpu: power-up stopped\n");
+		status("power-up stopped");
 		goto out;
 	}
 	report("powered");
-	kprintf("gpu: RBBM_STATUS 0x%08x STATUS3 0x%08x INT_0 0x%08x "
-	    "CP_PROTECT 0x%08x SECVID_TRUST 0x%08x\n",
+	status("reading GPU registers");
+	status("RBBM_STATUS 0x%08x STATUS3 0x%08x INT_0 0x%08x "
+	    "CP_PROTECT 0x%08x SECVID_TRUST 0x%08x",
 	    rd(GPU_REG(A5XX_RBBM_STATUS)), rd(GPU_REG(A5XX_RBBM_STATUS3)),
 	    rd(GPU_REG(A5XX_RBBM_INT_0_STATUS)),
 	    rd(GPU_REG(A5XX_CP_PROTECT_STATUS)),
 	    rd(GPU_REG(A5XX_RBBM_SECVID_TRUST)));
-	kprintf("gpu: SMMU sCR0 0x%08x IDR0 0x%08x IDR1 0x%08x\n",
+	status("reading SMMU");
+	status("SMMU sCR0 0x%08x IDR0 0x%08x IDR1 0x%08x",
 	    rd(SMMU_BASE + SMMU_SCR0), rd(SMMU_BASE + SMMU_IDR0),
 	    rd(SMMU_BASE + SMMU_IDR1));
-	kprintf("gpu: Adreno 530 powered and answering\n");
+	status("Adreno 530 powered and answering");
 out:
 	kthread_exit();
 }

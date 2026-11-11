@@ -375,7 +375,7 @@ main(void)
 	if (access("/etc/arcan.sh", R_OK) == 0 &&
 	    access("/dev/fb0", R_OK) == 0 &&
 	    access("/dev/input/event0", R_OK) == 0) {
-		static char autorun[512] = "autorun=dmesg | grep -E '^gpu|vibrator|keylight'";
+		static char autorun[512] = "autorun=sysctl hw.mi5.gpu hw.mi5.i2c9";
 		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term", autorun, NULL };
 		int afd, n;
 

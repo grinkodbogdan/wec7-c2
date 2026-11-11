@@ -106,6 +106,34 @@
 #define	  PMGPIO_DIG_OUT	0x45
 #define	  PMGPIO_EN_CTL		0x46
 
+static char i2c9_status[2048] = "not started";
+static size_t i2c9_status_len;
+SYSCTL_DECL(_hw_mi5);
+SYSCTL_STRING(_hw_mi5, OID_AUTO, i2c9, CTLFLAG_RD, i2c9_status, 0,
+    "vibrator and key light bring-up progress");
+
+/* A line of progress, kept for sysctl hw.mi5.i2c9 and printed. */
+static void
+st9(const char *fmt, ...)
+{
+	char line[256];
+	__va_list ap;
+	size_t n;
+
+	__va_start(ap, fmt);
+	kvsnprintf(line, sizeof(line), fmt, ap);
+	__va_end(ap);
+	n = strlen(line);
+	if (n > 0 && line[n - 1] == '\n')
+		line[--n] = 0;
+	if (i2c9_status_len + n + 2 < sizeof(i2c9_status)) {
+		i2c9_status[i2c9_status_len++] = '\n';
+		memcpy(i2c9_status + i2c9_status_len, line, n + 1);
+		i2c9_status_len += n;
+	}
+	kprintf("%s\n", line);
+}
+
 static struct qup_i2c *bus;
 static int vib_ok, lp_ok;
 static int keylight;
@@ -166,7 +194,7 @@ vib_init(void)
 	dw(DRV_RTP_IN, 0x7f);
 	dw(DRV_MODE, MODE_STANDBY);
 	vib_enable(0);
-	kprintf("vibrator: DRV260x id %d ready (was feedback 0x%02x ctrl "
+	st9("vibrator: DRV260x id %d ready (was feedback 0x%02x ctrl "
 	    "0x%02x/0x%02x/0x%02x)\n", st >> 5, fb, c1, c2, c3);
 	return (0);
 }
@@ -271,7 +299,7 @@ lp_init(void)
 		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_MODE_CTL, &m);
 		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_DIG_OUT, &o);
 		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_EN_CTL, &e);
-		kprintf("keylight: no answer (error %d); PM8994 GPIO 7 mode "
+		st9("keylight: no answer (error %d); PM8994 GPIO 7 mode "
 		    "0x%02x out 0x%02x en 0x%02x, owner ee%d\n", error, m, o, e,
 		    msm8996_spmi_owner(0, PMGPIO7));
 	}
@@ -280,14 +308,14 @@ lp_init(void)
 		int e2 = pmgpio7_out(i);
 
 		if (e2 != 0) {
-			kprintf("keylight: PM8994 GPIO 7 write: error %d\n",
+			st9("keylight: PM8994 GPIO 7 write: error %d\n",
 			    e2);
 			break;
 		}
 		tsleep(&lp_ok, 0, "lpen", hz / 100 + 1);
 		error = qup_i2c_regread(bus, LP_ADDR, LP_ENABLE, &v);
 		if (error == 0)
-			kprintf("keylight: enabled with PM8994 GPIO 7 %s\n",
+			st9("keylight: enabled with PM8994 GPIO 7 %s\n",
 			    i ? "high" : "low");
 	}
 	if (error)
@@ -336,24 +364,25 @@ i2c9_thread(void *arg __unused)
 	uint8_t v;
 	int error, i;
 
+	st9("i2c9: thread started");
 	if ((bus = qup_i2c_bus(9)) == NULL) {
-		kprintf("i2c9: not available\n");
+		st9("i2c9: not available\n");
 		goto out;
 	}
 	for (i = 0; i < (int)NELEM(devs); ++i) {
 		error = qup_i2c_regread(bus, devs[i].a, 0, &v);
-		kprintf("i2c9: 0x%02x %s: %s\n", devs[i].a, devs[i].n,
+		st9("i2c9: 0x%02x %s: %s\n", devs[i].a, devs[i].n,
 		    error == 0 ? "answers" : error == ENXIO ? "no answer" :
 		    "bus error");
 	}
 	error = vib_init();
 	vib_ok = error == 0;
 	if (error)
-		kprintf("vibrator: no answer at 0x%02x (error %d)\n", DRV_ADDR,
+		st9("vibrator: no answer at 0x%02x (error %d)\n", DRV_ADDR,
 		    error);
 	error = lp_init();
 	lp_ok = error == 0;
-	kprintf("keylight: LP5562 %s\n", lp_ok ? "ready" : "not answering");
+	st9("keylight: LP5562 %s\n", lp_ok ? "ready" : "not answering");
 	if (vib_ok)
 		vib_start(80);		/* a short buzz: the driver works */
 	if (lp_ok)
