@@ -247,15 +247,41 @@ power_up(void)
 	status("gpu gdsc on (0x%08x 0x%08x)", rd(GPU_GDSCR),
 	    rd(GPU_GDS_HW_CTRL));
 
-	/* 3. the GX domain, then release its I/O clamp */
+	/*
+	 * 3. the GX domain, as Linux's gdsc_enable() does it for a CLAMP_IO
+	 * domain: the wait timings gdsc_init() sets, the I/O clamp released
+	 * *before* the collapse bit is cleared, then memories kept on in
+	 * the core clock (its cxcs).
+	 */
+	wr(GPU_GX_GDSCR, (rd(GPU_GX_GDSCR) & ~0x00fff000U) |
+	    (0x2 << 20) | (0x8 << 16) | (0x2 << 12));
+	/*
+	 * The Mi 5's own kernel marks this domain force-enable-root-clk:
+	 * the core clock's root (gfx3d_clk_src) and the core clock itself
+	 * are turned on before the domain powers up.  ROOT_EN (CMD bit 1)
+	 * forces the root on at its current source, XO at reset.
+	 */
+	wr(GFX3D_RCG, rd(GFX3D_RCG) | 2);
+	(void)waitbits(GFX3D_RCG, 1U << 31, 0, 500);
+	wr(GPU_GX_GFX3D_CBCR, rd(GPU_GX_GFX3D_CBCR) | CBCR_EN);
+	status("gfx3d root 0x%08x/0x%08x, branch 0x%08x", rd(GFX3D_RCG),
+	    rd(GFX3D_RCG + 4), rd(GPU_GX_GFX3D_CBCR));
+	wr(GPU_GX_CLAMP_IO, rd(GPU_GX_CLAMP_IO) & ~1U);
+	DELAY(1);
 	wr(GPU_GX_GDSCR, rd(GPU_GX_GDSCR) & ~GDSC_SW_COLLAPSE);
-	if (waitbits(GPU_GX_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 1500)) {
-		status("gx gdsc does not power up (0x%08x)",
-		    rd(GPU_GX_GDSCR));
+	if (waitbits(GPU_GX_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 10000)) {
+		uint8_t st1 = 0, st2 = 0, en = 0;
+
+		msm8996_spmi_read(S2_SID, S2_BASE + 0x08, &st1);
+		msm8996_spmi_read(S2_SID, S2_BASE + 0x09, &st2);
+		msm8996_spmi_read(S2_SID, S2_BASE + REG_EN, &en);
+		status("gx gdsc does not power up (0x%08x, clamp 0x%x); "
+		    "vdd_gfx status 0x%02x 0x%02x en 0x%02x", rd(GPU_GX_GDSCR),
+		    rd(GPU_GX_CLAMP_IO), st1, st2, en);
 		return (EIO);
 	}
-	wr(GPU_GX_CLAMP_IO, rd(GPU_GX_CLAMP_IO) & ~1U);
-	DELAY(10);
+	wr(GPU_GX_GFX3D_CBCR, rd(GPU_GX_GFX3D_CBCR) | (1U << 14) | (1U << 13));
+	DELAY(1);
 	status("gx gdsc on (0x%08x), clamp 0x%x", rd(GPU_GX_GDSCR),
 	    rd(GPU_GX_CLAMP_IO));
 
