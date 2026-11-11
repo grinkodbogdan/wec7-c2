@@ -271,7 +271,21 @@ ENTRY(cpu_idle_restore)
 	add	sp, sp, #16
 	mov	x29, #0
 	mov	x30, #0
+	mrs	x9, tpidr_el1
+	ldr	w9, [x9, #GD_CPUID]
+	cbz	w9, 1f
+	/*
+	 * A secondary cpu arriving from mpentry: there was no previous
+	 * thread (x19 == x0), so mark the idle thread running by hand
+	 * and finish joining the system before idling.
+	 */
+	ldr	w9, [x0, #TD_FLAGS]
+	orr	w9, w9, #TDF_RUNNING
+	str	w9, [x0, #TD_FLAGS]
+	bl	ap_init
 	msr	daifclr, #3
+	b	cpu_idle
+1:	msr	daifclr, #3
 	mov	x0, x19
 	bl	lwkt_switch_return
 	b	cpu_idle

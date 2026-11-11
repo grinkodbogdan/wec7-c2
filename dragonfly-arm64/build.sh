@@ -37,7 +37,7 @@ P=$S/platform/arm64
 
 # Platform sources, in link order (locore must come first).
 MD_SRCS="locore.S exception.S swtch.S support.S
-	machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
+	machdep.c mp_machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c
 	cons_pl011.c fbcons.c qcom_msm8996.c autoconf.c fdt_subr.c identcpu.c stubs.c selftest.c

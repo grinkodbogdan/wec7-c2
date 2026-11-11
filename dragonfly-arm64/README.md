@@ -5,13 +5,13 @@ ARM (aarch64). DragonFly runs only on x86-64 upstream; this is the first part of
 the work needed to change that.
 
 **This is not a usable operating system yet.** The real DragonFly kernel boots
-on an emulated ARM64 machine, mounts a root filesystem from a ramdisk and runs
-user programs: an init that tests the kernel and a small interactive shell,
-with a working terminal, signals, floating point and a writable `/tmp`. What it
-cannot run is real software, because DragonFly's C library and toolchain have
-not been ported; the programs here use a few-hundred-line stand-in. It also
-uses one CPU only, has no disk, network or display drivers, and has never run
-on real hardware. See [What works](#what-works) and
+on emulated ARM64 machines and on a real Xiaomi Mi 5, mounts a root
+filesystem from a ramdisk and runs user programs: an init that tests the kernel
+and a small interactive shell, with a working terminal, signals, floating
+point, a writable `/tmp` and, in the emulator, all CPU cores. What it cannot run
+is real software, because DragonFly's C library and toolchain have not been
+ported; the programs here use a few-hundred-line stand-in. It has no disk,
+network, touch or GPU drivers. See [What works](#what-works) and
 [What is missing](#what-is-missing).
 
 ## Target hardware
@@ -119,8 +119,15 @@ Without a ramdisk (`vfs.root.mountfrom` unset) the kernel stops at the
 
 Tested under QEMU 8.2 `virt` with Cortex-A53, Cortex-A72 and `max` CPU models,
 256MB to 3GB of RAM, GICv2 and GICv3, entered at both EL1 and EL2, and loaded
-at both a 2MB-aligned and an unaligned address. One CPU only. The 14 checks
-`init` runs pass on all of them.
+at both a 2MB-aligned and an unaligned address, with 1, 2 and 4 CPU cores.
+The checks `init` runs pass on all of them.
+
+- **Multiple cores.** Secondary cores are started through PSCI `CPU_ON` and
+  join the scheduler; cores send each other interrupts through the GIC. With
+  four cores, four busy processes run in parallel (2.6x to 4x faster than one
+  after another in QEMU) and four processes forking 100 children each at once
+  run clean. `cpus=N` in the boot arguments limits the number of cores. The
+  shell's `cpustat` shows each core's time and IPIs received.
 
 - **The kernel links and runs.** All 264 source files that `sys/conf/files`
   marks `standard` are compiled and linked with the arm64 platform code into a
@@ -162,7 +169,7 @@ Roughly in the order it blocks progress:
 | Software to run | A stand-in C library and two test programs | A cross toolchain for `aarch64-dragonfly`, then DragonFly's libc, runtime linker and thread library, all of which have per-CPU assembly. This is the largest gap |
 | User mode, remaining | Most of it works | Thread-local storage system calls (needed by the real libc and threads), debugger support (`ptrace`, single step) |
 | Storage | Ramdisk root (read-only ISO 9660) and tmpfs | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then real disk drivers and a persistent filesystem |
-| More than one CPU | Not started | Starting secondary CPUs through PSCI, inter-processor interrupts, and an audit of shared code that assumes x86's strong memory ordering |
+| More than one CPU | Works in QEMU, untested on the phone | An audit of shared code that assumes x86's strong memory ordering; stopping the other cores on a panic (they keep running); a topology that knows the Mi 5's two clusters |
 | Interrupt controllers | GICv2 and GICv3, boot CPU only | Per-CPU setup for secondary CPUs, MSI (GICv2m or the GICv3 ITS) |
 | pmap performance | Correct but slow | One global lock, no address-space IDs (every process switch flushes the TLB), no large pages, dirty/accessed tracking by over-approximation |
 | Kernel modules | Cannot load | Relocation processing and a kernel symbol table |
@@ -184,7 +191,7 @@ naming what is missing, so hitting one is obvious.
 - **Memory ordering.** x86 is strongly ordered and aarch64 is not. The atomic
   header uses the strongest ordering for every operation, which is safe, but
   shared kernel code that relies on plain loads and stores being ordered (it
-  exists) will need auditing once SMP runs.
+  exists) still needs auditing. Nothing has shown up in testing so far.
 - **`char` signedness.** `char` is unsigned on aarch64. Kernel code that
   assumes signed `char` compiles fine and misbehaves at run time.
 
@@ -194,13 +201,15 @@ naming what is missing, so hitting one is obvious.
 2. ~~A root filesystem and a first user process.~~ Done.
 3. ~~Signals, floating point, a terminal and a shell.~~ Done, against a
    stand-in C library.
-4. **Mi 5 first boot.** A test image builds (`./build.sh mi5`); what remains
-   is trying it on the phone and fixing what that turns up. See below.
-5. **Real userland.** Cross toolchain, DragonFly's libc and runtime linker,
+4. ~~Mi 5 first boot.~~ Done: boots to the shell with all checks passing.
+5. ~~SMP.~~ Done in QEMU; the memory-ordering audit remains.
+6. **Real userland.** DragonFly's libc, runtime linker and thread library,
+   with FreeBSD's ARM64 pieces where DragonFly's are x86-only, and
    thread-local storage. This is the largest step.
-6. **SMP.** Secondary CPUs, IPIs, and the memory-ordering audit.
-7. **Drivers.** A device-tree bus, bus DMA, then storage, USB and network.
-8. **Self-hosting.** Native toolchain, `buildworld` on arm64.
+7. **Drivers.** A Linux driver compatibility layer, a device-tree bus, bus
+   DMA, then the Mi 5's storage (UFS), touch, USB and display.
+8. **Arcan**, on the real userland and the display, GPU and touch drivers.
+9. **Self-hosting.** Native toolchain, `buildworld` on arm64.
 
 ## Xiaomi Mi 5
 
@@ -304,14 +313,18 @@ highest. The free-memory list is now sorted. The boot argument `memrev`
 presents QEMU's RAM in the same order: the old kernel faults at the same
 step, the fixed one boots to the shell.
 
+**Fourth boot (11 November 2026).** Boots all the way: 3051 MB of RAM found
+and 2677 MB available after the kernel and reservations, the ramdisk mounted
+as root, `init` started, all 14 checks passed, and the shell prompt shown on
+the panel. Everything the kernel does so far works on the phone, on one core.
+
 ### What is untested or missing
 
-- **Anything after the memory manager's first step on real hardware.** The
-  fourth test image sorts the memory banks.
+- **The other three cores on the phone.** The fifth test image starts them;
+  the same image with `cpus=1` is the fallback.
 - **Input.** No touch, keys or USB.
-- **Everything after first boot.** Storage (UFS), USB, touch, display
-  control, power management, charging and the modem each need a driver for
-  this chip. One CPU core is used out of four.
+- **Everything after boot.** Storage (UFS), USB, touch, display control,
+  power management, charging and the modem each need a driver for this chip.
 
 ## Design notes
 

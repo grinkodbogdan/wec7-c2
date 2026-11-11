@@ -33,6 +33,7 @@ struct trapframe;
 
 #define	ARM64_MAXMEMREGIONS	16
 #define	ARM64_MAXRESERVED	48
+#define	ARM64_MAXFDTCPUS	64
 
 struct arm64_memregion {
 	vm_paddr_t	mr_start;
@@ -51,6 +52,7 @@ struct arm64_bootinfo {
 	struct arm64_memregion bi_mem[ARM64_MAXMEMREGIONS];
 	int		bi_nmem;
 	int		bi_ncpus;
+	u_long		bi_cpu_mpidr[ARM64_MAXFDTCPUS];	/* cpu nodes' reg */
 	vm_paddr_t	bi_uart_base;		/* arm,pl011 */
 	vm_paddr_t	bi_gicd_base;		/* GICv2 distributor */
 	vm_paddr_t	bi_gicc_base;		/* v2 cpu interface, v3 redistributors */
@@ -124,6 +126,9 @@ void	trap_fatal(struct trapframe *frame, int from_el1) __dead2;
 void	arm64_intr_init(void);
 void	arm64_intr(struct trapframe *frame);
 int	gic_init(int version, vm_paddr_t gicd, vm_paddr_t percpu);
+void	gic_init_secondary(void);
+void	gic_send_ipi(int cpu, u_long mpidr);
+void	mpentry(void);			/* cannot be called from C */
 void	gic_enable_irq(int irq);
 void	gic_disable_irq(int irq);
 int	gic_ack(void);
@@ -133,6 +138,8 @@ void	clock_intr(struct intrframe *frame);
 void	clock_intr_quiesce(void);
 
 int64_t	psci_call(uint64_t fn, uint64_t a1, uint64_t a2, int use_smc);
+int64_t	psci_call4(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3,
+	    int use_smc);
 void	cpu_poweroff(void) __dead2;
 
 void	busdma_swi(void);

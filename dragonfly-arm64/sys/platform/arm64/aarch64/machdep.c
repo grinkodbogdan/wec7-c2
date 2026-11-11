@@ -46,6 +46,7 @@
 #include <vm/vm_extern.h>
 
 #include <sys/thread2.h>
+#include <sys/mplock2.h>
 
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
@@ -471,6 +472,12 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	mi_proc0init(&gd->mi, (struct user *)proc0paddr_buff);
 	safepri = TDPRI_MAX;
 
+	/*
+	 * The boot thread holds the MP lock until the other cpus have
+	 * joined (ap_finish(), mp_machdep.c).
+	 */
+	cpu_get_initial_mplock();
+
 	cninit();
 	rand_initialize();
 	init_param2(physmem);
@@ -670,27 +677,7 @@ bootinfo_selftest(void)
 	     strstr(arm64_bootinfo.bi_bootargs, "selftest") != NULL));
 }
 
-/*
- * The point in boot where pc64 starts the other cpus (mp_start_aps).
- * Nothing is started here yet, but the per-cpu state every cpu,
- * including the boot cpu, gets at this stage is still needed.
- */
-static void
-arm64_mp_start(void *dummy __unused)
-{
-	size_t ipiq_size;
 
-	malloc_reinit_ncpus();
-
-	ipiq_size = sizeof(struct lwkt_ipiq) * ncpus;
-	mycpu->gd_ipiq = (void *)kmem_alloc(kernel_map, ipiq_size,
-					    VM_SUBSYS_IPIQ);
-	bzero(mycpu->gd_ipiq, ipiq_size);
-
-	/* initialize arc4random. */
-	arc4_init_pcpu(0);
-}
-SYSINIT(startaps, SI_BOOT2_START_APS, SI_ORDER_FIRST, arm64_mp_start, NULL);
 
 /*
  * Per-cpu data
@@ -706,9 +693,14 @@ globaldata_find(int cpu)
 int
 is_globaldata_space(vm_offset_t saddr, vm_offset_t eaddr)
 {
-	if (saddr >= (vm_offset_t)&CPU_prvspace_bsp &&
-	    eaddr <= (vm_offset_t)(&CPU_prvspace_bsp + 1))
-		return (TRUE);
+	int i;
+
+	for (i = 0; i < ncpus; ++i) {
+		if (CPU_prvspace[i] != NULL &&
+		    saddr >= (vm_offset_t)CPU_prvspace[i] &&
+		    eaddr <= (vm_offset_t)(CPU_prvspace[i] + 1))
+			return (TRUE);
+	}
 	return (FALSE);
 }
 

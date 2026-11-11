@@ -41,6 +41,11 @@ ASSYM(GD_CPUID, __offsetof(struct mdglobaldata, mi.gd_cpuid));
 ASSYM(GD_INTR_NESTING_LEVEL,
     __offsetof(struct mdglobaldata, mi.gd_intr_nesting_level));
 
+ASSYM(PS_IDLESTACK, __offsetof(struct privatespace, idlestack));
+ASSYM(PS_BOOTSTACK_OFF, __offsetof(struct privatespace, idlestack) +
+    UPAGES * PAGE_SIZE / 2);
+ASSYM(TDF_RUNNING, TDF_RUNNING);
+
 ASSYM(TD_PCB, __offsetof(struct thread, td_pcb));
 ASSYM(TD_SP, __offsetof(struct thread, td_sp));
 ASSYM(TD_LWP, __offsetof(struct thread, td_lwp));

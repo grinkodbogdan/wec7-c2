@@ -35,6 +35,7 @@
 #include <sys/machintr.h>
 #include <sys/rman.h>
 #include <sys/bus.h>
+#include <sys/sysctl.h>
 
 #include <sys/thread2.h>
 
@@ -88,6 +89,11 @@ struct machintr_abi MachIntrABI = {
 };
 
 static int	arm64_nirqs;
+
+/* IPIs each cpu has taken, for checking that they arrive at all. */
+static u_long	arm64_ipis[MAXCPU];
+SYSCTL_OPAQUE(_machdep, OID_AUTO, ipis, CTLFLAG_RD, arm64_ipis,
+    sizeof(arm64_ipis), "LU", "IPIs received, per cpu");
 
 static void
 gic_abi_intr_disable(int irq)
@@ -241,6 +247,24 @@ arm64_intr(struct trapframe *frame)
 				crit_enter_quick(td);
 				++gd->mi.gd_intr_nesting_level;
 				clock_intr((struct intrframe *)frame);
+				--gd->mi.gd_intr_nesting_level;
+				crit_exit_noyield(td);
+			}
+			continue;
+		}
+
+		if (irq < 16) {
+			/* An IPI from another cpu: messages are waiting. */
+			gic_eoi(iar);
+			++arm64_ipis[gd->mi.gd_cpuid];
+			if (td->td_critcount || td->td_nest_count) {
+				atomic_set_int(&gd->mi.gd_reqflags, RQF_IPIQ);
+			} else {
+				crit_enter_quick(td);
+				++gd->mi.gd_intr_nesting_level;
+				atomic_swap_int(&gd->mi.gd_npoll, 0);
+				lwkt_process_ipiq_frame(
+				    (struct intrframe *)frame);
 				--gd->mi.gd_intr_nesting_level;
 				crit_exit_noyield(td);
 			}

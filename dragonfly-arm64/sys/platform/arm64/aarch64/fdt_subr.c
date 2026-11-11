@@ -180,8 +180,13 @@ fdt_node_done(struct fdt_node *nodes, int depth, struct arm64_bootinfo *bi)
 			++bi->bi_nmem;
 		}
 	}
-	if (n->device_type != NULL && streq(n->device_type, "cpu"))
+	if (n->device_type != NULL && streq(n->device_type, "cpu")) {
+		if (bi->bi_ncpus < ARM64_MAXFDTCPUS && n->reg != NULL) {
+			bi->bi_cpu_mpidr[bi->bi_ncpus] =
+			    fdt_cells(n->reg, acells);
+		}
 		++bi->bi_ncpus;
+	}
 
 	/* A child of /reserved-memory with a fixed location. */
 	if (depth == 2 && n->reg != NULL && fdt_in_reserved) {

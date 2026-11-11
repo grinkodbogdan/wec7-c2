@@ -83,6 +83,93 @@ child_fp_noise(void)
 		x = x * 1.000001 + 0.5;
 }
 
+/*
+ * A fixed amount of integer work, a few seconds on one emulated core.
+ * Long enough that the scheduler's delay in spreading freshly forked
+ * processes over the cpus does not dominate the measurement.
+ */
+static void
+child_spin(void)
+{
+	volatile unsigned long x = 0;
+	unsigned long i;
+
+	for (i = 0; i < 450000000UL; ++i)
+		x += i ^ (x >> 3);
+	_exit(0);
+}
+
+/* Fork and reap many short-lived children. */
+static void
+child_forker(void)
+{
+	int i, status, bad = 0;
+	pid_t pid;
+
+	for (i = 0; i < 100; ++i) {
+		pid = fork();
+		if (pid == 0)
+			_exit(i & 0x7f);
+		if (pid < 0 || waitpid(pid, &status, 0) != pid ||
+		    !WIFEXITED(status) || WEXITSTATUS(status) != (i & 0x7f))
+			++bad;
+	}
+	_exit(bad != 0);
+}
+
+/* Start n children running fn at once; return how many exited 0. */
+static int
+run_parallel(int n, void (*fn)(void))
+{
+	pid_t pids[16];
+	int i, status, good = 0;
+
+	if (n > 16)
+		n = 16;
+	for (i = 0; i < n; ++i) {
+		pids[i] = fork();
+		if (pids[i] == 0)
+			fn();
+	}
+	for (i = 0; i < n; ++i) {
+		if (pids[i] > 0 && waitpid(pids[i], &status, 0) == pids[i] &&
+		    WIFEXITED(status) && WEXITSTATUS(status) == 0)
+			++good;
+	}
+	return (good);
+}
+
+/*
+ * With more than one cpu: show that they share the work, and run the
+ * fork path on all of them at once.
+ */
+static void
+smptest(void)
+{
+	long t0, t1, tn;
+	int ncpu = 1;
+
+	sysctl_int(6, 3, &ncpu);		/* hw.ncpu */
+	printf("  cpus online: %d\n", ncpu);
+	if (ncpu < 2)
+		return;
+
+	t0 = uptime_ms();
+	run_parallel(1, child_spin);
+	t1 = uptime_ms() - t0;
+	t0 = uptime_ms();
+	check("one busy process per cpu", run_parallel(ncpu, child_spin) == ncpu);
+	tn = uptime_ms() - t0;
+	printf("  1 busy process: %ld ms, %d at once: %ld ms (%ld.%ldx)\n",
+	    t1, ncpu, tn, ncpu * t1 / (tn ? tn : 1),
+	    (ncpu * t1 * 10 / (tn ? tn : 1)) % 10);
+	/* No parallelism measures 1.0x or less; ask for clearly more. */
+	check("cpus run in parallel", tn * 13 < ncpu * t1 * 10);
+
+	check("fork storm on all cpus (4 x 100 children)",
+	    run_parallel(4, child_forker) == 4);
+}
+
 static void
 on_usr1(int sig)
 {
@@ -167,6 +254,8 @@ selftest(void)
 		close(fd);
 		check("remove it", unlink("/tmp/selftest") == 0);
 	}
+
+	smptest();
 
 	if (failures == 0)
 		printf("All checks passed.\n");

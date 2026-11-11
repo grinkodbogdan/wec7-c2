@@ -33,6 +33,8 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/globaldata.h>
+#include <sys/thread.h>
 
 #include <cpu/armreg.h>
 #include <machine/md_var.h>
@@ -81,13 +83,19 @@
 #define	ICC_EOIR1_EL1		S3_0_C12_C12_1
 #define	ICC_SRE_EL1		S3_0_C12_C12_5
 #define	ICC_IGRPEN1_EL1		S3_0_C12_C12_7
+#define	ICC_SGI1R_EL1		S3_0_C12_C11_5
+
+#define	GICD_SGIR		0xf00	/* v2: software generated interrupt */
 
 #define	GIC_SPURIOUS		1023
+#define	GIC_IPI_SGI		0	/* the SGI used for lwkt IPIs */
 #define	GIC_FIRST_SPI		32
 
 static volatile uint8_t *gicd;
 static volatile uint8_t *gicc;		/* v2: cpu interface */
-static volatile uint8_t *gicr;		/* v3: this cpu's redistributor */
+static volatile uint8_t *gicr_base;	/* v3: first redistributor */
+static volatile uint8_t *gicr_pcpu[MAXCPU]; /* v3: each cpu's own */
+#define	gicr	(gicr_pcpu[mycpuid])
 static u_int gicr_stride = GICR_FRAME_SIZE;	/* some SoCs pad the frames */
 static int gic_version;
 static int gic_nirqs;
@@ -121,8 +129,12 @@ gic_v3_wait_rwp(void)
 	}
 }
 
+/*
+ * GICv3, per cpu: find this cpu's redistributor, wake it, set up its
+ * private interrupts and the system register cpu interface.
+ */
 static void
-gic_v3_init(vm_paddr_t gicr_pa)
+gic_v3_init_cpu(void)
 {
 	uint64_t mpidr = READ_SPECIALREG(mpidr_el1);
 	uint32_t aff = ((mpidr >> 8) & 0xff000000) | (mpidr & 0x00ffffff);
@@ -132,7 +144,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 
 	/* Each cpu's frames carry its affinity in GICR_TYPER[63:32]. */
 	boot_mark("boot: gic: finding redistributor\n");
-	rd = (volatile uint8_t *)PHYS_TO_DMAP(gicr_pa);
+	rd = gicr_base;
 	gicr = rd;
 	for (n = 0; n < 256; ++n) {
 		typer = *(volatile uint64_t *)(rd + GICR_TYPER);
@@ -147,8 +159,9 @@ gic_v3_init(vm_paddr_t gicr_pa)
 
 	/*
 	 * Mark the cpu awake and wait for the redistributor to agree.
-	 * Some firmware owns this register and the bootloader has done
-	 * it already (see qcom_msm8996.c).
+	 * Some firmware owns this register, and the bootloader (for the
+	 * boot cpu) or PSCI CPU_ON (for the others) has done it already
+	 * (see qcom_msm8996.c).
 	 */
 	if (!arm64_bootinfo.bi_gic_no_waker) {
 		boot_mark("boot: gic: waking redistributor\n");
@@ -169,7 +182,33 @@ gic_v3_init(vm_paddr_t gicr_pa)
 	for (irq = 0; irq < GIC_FIRST_SPI; ++irq)
 		gicr[GICR_IPRIORITYR(irq)] = 0x80;
 
-	/* Shared interrupts: group 1, off, routed to this cpu. */
+	/*
+	 * The cpu interface.  As Linux does, only write ICC_SRE_EL1 if
+	 * the system register interface is not on already: a hypervisor
+	 * may trap the write.
+	 */
+	boot_mark("boot: gic: cpu interface\n");
+	if ((READ_SPECIALREG(ICC_SRE_EL1) & 1) == 0) {
+		WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);
+		__asm __volatile("isb");
+	}
+	WRITE_SPECIALREG(ICC_PMR_EL1, 0xff);
+	WRITE_SPECIALREG(ICC_IGRPEN1_EL1, 1);
+	__asm __volatile("isb");
+}
+
+/*
+ * GICv3, once: the distributor.  Shared interrupts are group 1 and
+ * routed to the boot cpu.
+ */
+static void
+gic_v3_init(vm_paddr_t gicr_pa)
+{
+	uint64_t mpidr = READ_SPECIALREG(mpidr_el1);
+	int irq;
+
+	gicr_base = (volatile uint8_t *)PHYS_TO_DMAP(gicr_pa);
+
 	boot_mark("boot: gic: distributor\n");
 	gic_write(gicd, GICD_CTLR, 0);
 	gic_v3_wait_rwp();
@@ -185,19 +224,57 @@ gic_v3_init(vm_paddr_t gicr_pa)
 	gic_write(gicd, GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE);
 	gic_v3_wait_rwp();
 
-	/*
-	 * The cpu interface.  As Linux does, only write ICC_SRE_EL1 if
-	 * the system register interface is not on already: a hypervisor
-	 * may trap the write.
-	 */
-	boot_mark("boot: gic: cpu interface\n");
-	if ((READ_SPECIALREG(ICC_SRE_EL1) & 1) == 0) {
-		WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);
-		__asm __volatile("isb");
+	gic_v3_init_cpu();
+}
+
+/*
+ * Interrupt controller setup on a secondary cpu: its private
+ * interrupts, its cpu interface and the IPI line.
+ */
+void
+gic_init_secondary(void)
+{
+	int irq;
+
+	if (gicd == NULL)
+		return;
+	if (gic_version == 3) {
+		gic_v3_init_cpu();
+	} else {
+		/* Private interrupt state is banked per cpu. */
+		gic_write(gicd, GICD_ICENABLER(0), 0xffffffff);
+		for (irq = 0; irq < GIC_FIRST_SPI; ++irq)
+			gicd[GICD_IPRIORITYR(irq)] = 0x80;
+		gic_write(gicc, GICC_PMR, 0xff);
+		gic_write(gicc, GICC_CTLR, 1);
 	}
-	WRITE_SPECIALREG(ICC_PMR_EL1, 0xff);
-	WRITE_SPECIALREG(ICC_IGRPEN1_EL1, 1);
-	__asm __volatile("isb");
+	gic_enable_irq(GIC_IPI_SGI);
+}
+
+/*
+ * Raise the IPI on another cpu.  (mpidr) is its hardware affinity.
+ */
+void
+gic_send_ipi(int cpu, u_long mpidr)
+{
+	if (gicd == NULL)
+		return;
+	cpu_mfence();		/* the message must be visible first */
+	if (gic_version == 3) {
+		uint64_t val;
+
+		/* Aff3.Aff2.Aff1 pick the cluster, a bit the cpu in it. */
+		val = ((mpidr >> 32) & 0xff) << 48 |
+		    ((mpidr >> 16) & 0xff) << 32 |
+		    ((mpidr >> 8) & 0xff) << 16 |
+		    (uint64_t)GIC_IPI_SGI << 24 |
+		    1UL << (mpidr & 0xf);
+		WRITE_SPECIALREG(ICC_SGI1R_EL1, val);
+		__asm __volatile("isb");
+	} else {
+		/* v2 addresses cpus by interface number: assume == cpu id */
+		gic_write(gicd, GICD_SGIR, (1U << (16 + cpu)) | GIC_IPI_SGI);
+	}
 }
 
 /*
@@ -220,6 +297,7 @@ gic_init(int version, vm_paddr_t gicd_pa, vm_paddr_t percpu_pa)
 		if (arm64_bootinfo.bi_gicr_stride != 0)
 			gicr_stride = arm64_bootinfo.bi_gicr_stride;
 		gic_v3_init(percpu_pa);
+		gic_enable_irq(GIC_IPI_SGI);
 		return (gic_nirqs);
 	}
 
@@ -237,6 +315,7 @@ gic_init(int version, vm_paddr_t gicd_pa, vm_paddr_t percpu_pa)
 	gic_write(gicd, GICD_CTLR, 1);		/* enable distributor */
 	gic_write(gicc, GICC_PMR, 0xff);	/* unmask all priorities */
 	gic_write(gicc, GICC_CTLR, 1);		/* enable cpu interface */
+	gic_enable_irq(GIC_IPI_SGI);
 	return (gic_nirqs);
 }
 

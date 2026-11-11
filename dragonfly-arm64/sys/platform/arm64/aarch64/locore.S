@@ -90,6 +90,8 @@
 
 #define	BOOTSTACK_SIZE	(4 * 4096)
 
+#include "assym.s"
+
 	.section .text.boot, "ax"
 	.globl	_start
 _start:
@@ -282,6 +284,104 @@ virtstart:
 
 7:	wfi
 	b	7b
+
+	.ltorg
+
+/*
+ * Entry point of a secondary cpu, started by PSCI CPU_ON with the MMU
+ * off and x0 = its logical cpu number.  The page tables already exist,
+ * so this is the boot cpu's path without the table building: drop to
+ * EL1, turn the MMU on using locore's identity map, continue in the
+ * upper half on the middle of the cpu's idle stack and call
+ * init_secondary().  It then "resumes" its idle thread exactly as a
+ * context switch would (see cpu_idle_restore in swtch.S).
+ */
+	.section .text.boot, "ax"
+	.globl	mpentry
+mpentry:
+	mov	x19, x0			/* cpu number */
+	msr	daifset, #0xf
+
+	mrs	x1, CurrentEL
+	lsr	x1, x1, #2
+	cmp	x1, #2
+	b.ne	1f
+	mov	x1, #(1 << 31)
+	msr	hcr_el2, x1
+	mov	x1, #0x33ff
+	msr	cptr_el2, x1
+	msr	hstr_el2, xzr
+	mrs	x1, cnthctl_el2
+	orr	x1, x1, #3
+	msr	cnthctl_el2, x1
+	msr	cntvoff_el2, xzr
+	mrs	x1, id_aa64pfr0_el1
+	ubfx	x1, x1, #24, #4
+	cbz	x1, 8f
+	mrs	x1, S3_4_C12_C9_5	/* ICC_SRE_EL2 */
+	orr	x1, x1, #0x1
+	orr	x1, x1, #0x8
+	msr	S3_4_C12_C9_5, x1
+	isb
+8:	mov	x1, #0x3c5
+	msr	spsr_el2, x1
+	adr	x1, 1f
+	msr	elr_el2, x1
+	eret
+1:
+	msr	spsel, #1
+	mov	x1, #(3 << 20)		/* CPACR_EL1.FPEN */
+	msr	cpacr_el1, x1
+	isb
+
+	ldr	x1, =MAIR_VALUE
+	msr	mair_el1, x1
+	ldr	x1, =TCR_VALUE
+	mrs	x2, id_aa64mmfr0_el1
+	and	x2, x2, #0x7
+	cmp	x2, #5
+	mov	x3, #5
+	csel	x2, x2, x3, lo
+	orr	x1, x1, x2, lsl #32
+	msr	tcr_el1, x1
+	adrp	x21, boot_l0_ttbr0
+	adrp	x22, boot_l0_ttbr1
+	msr	ttbr0_el1, x21
+	msr	ttbr1_el1, x22
+	isb
+	tlbi	vmalle1
+	dsb	nsh
+	isb
+	ldr	x1, =SCTLR_VALUE
+	msr	sctlr_el1, x1
+	isb
+	ldr	x1, =mp_virtstart
+	br	x1
+
+	.ltorg
+
+	.text
+mp_virtstart:
+	ldr	x1, =exception_vectors
+	msr	vbar_el1, x1
+	ldr	x1, =CPU_prvspace
+	ldr	x20, [x1, x19, lsl #3]	/* this cpu's privatespace */
+	msr	tpidr_el1, x20		/* == its globaldata */
+	add	x1, x20, #PS_BOOTSTACK_OFF
+	mov	sp, x1
+	mov	x29, #0
+	isb
+
+	mov	x0, x19
+	bl	init_secondary
+
+	/* Become the idle thread: x0 = x19 = it, sp = its saved sp. */
+	ldr	x0, [x20, #GD_CURTHREAD]
+	mov	x19, x0
+	ldr	x1, [x0, #TD_SP]
+	mov	sp, x1
+	ldr	x10, [sp]
+	br	x10
 
 	.ltorg
 

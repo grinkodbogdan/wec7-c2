@@ -251,6 +251,33 @@ sysctl_string(int top, int second, char *buf, size_t size)
 	return (0);
 }
 
+int
+sysctl_int(int top, int second, int *val)
+{
+	int mib[2] = { top, second };
+	size_t len = sizeof(*val);
+
+	return (syscall(SYS___sysctl, mib, 2, val, &len, NULL, 0) < 0 ? -1 : 0);
+}
+
+/*
+ * Read a sysctl by name: translate the name with the sysctl.name2oid
+ * node (0.3), then read the oid.
+ */
+int
+sysctlbyname(const char *name, void *oldp, size_t *oldlenp)
+{
+	int qoid[2] = { 0, 3 };
+	int oid[24];
+	size_t oidlen = sizeof(oid);
+
+	if (syscall(SYS___sysctl, qoid, 2, oid, &oidlen, name,
+	    strlen(name)) < 0)
+		return (-1);
+	return (syscall(SYS___sysctl, oid, oidlen / sizeof(int), oldp,
+	    oldlenp, NULL, 0) < 0 ? -1 : 0);
+}
+
 void *
 mmap_anon(size_t len)
 {

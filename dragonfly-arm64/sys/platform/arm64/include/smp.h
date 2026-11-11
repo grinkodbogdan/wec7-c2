@@ -42,7 +42,7 @@ extern struct pcb		stoppcbs[];
 
 void	mp_start		(void);
 void	mp_announce		(void);
-void	init_secondary		(void);
+void	init_secondary		(int cpu);
 int	stop_cpus		(cpumask_t);
 void	ap_init			(void);
 int	restart_cpus		(cpumask_t);
@@ -58,6 +58,7 @@ extern cpumask_t		smp_active_mask;
  * code only needs an enumerable id space, so the logical id serves.
  */
 extern int ncpus;
+extern int naps;
 
 #define	CPUID_TO_APICID(cpuid)		(cpuid)
 #define	APICID_TO_CPUID(apicid)		(apicid)
@@ -71,7 +72,11 @@ get_apicid_from_cpuid(int cpuid)
 static __inline int
 get_cpuid_from_apicid(int apicid)
 {
-	return (apicid < ncpus ? apicid : -1);
+	/*
+	 * naps, not ncpus: the topology is built (SI_BOOT2_CPU_TOPOLOGY)
+	 * after the cpus are counted but before they are started.
+	 */
+	return (apicid >= 0 && apicid <= naps ? apicid : -1);
 }
 
 void	detect_cpu_topology(void);

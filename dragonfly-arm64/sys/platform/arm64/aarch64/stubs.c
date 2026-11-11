@@ -58,53 +58,6 @@
 #define	NOT_YET(what)	panic("arm64: " what " is not implemented yet")
 
 /*
- * Single cpu.  Secondary cpus are never started, so there is nobody to
- * send an IPI to, stop, or shoot a TLB entry down on.  (TLB
- * invalidations are broadcast by the hardware in any case.)
- */
-volatile cpumask_t stopped_cpus;
-cpumask_t	smp_active_mask = CPUMASK_INITIALIZER_ONLYONE;
-int		naps;			/* application processors started */
-
-void
-cpu_send_ipiq(int dcpu __unused)
-{
-}
-
-void
-smp_invltlb(void)
-{
-	cpu_invltlb();
-}
-
-void
-smp_sniff(void)
-{
-}
-
-void
-cpu_sniff(int dcpu __unused)
-{
-}
-
-int
-stop_cpus(cpumask_t map __unused)
-{
-	return (1);
-}
-
-int
-restart_cpus(cpumask_t map __unused)
-{
-	return (1);
-}
-
-void
-cpu_smp_stopped(void)
-{
-}
-
-/*
  * CPU topology.  Reported flat: every cpu its own single-core,
  * single-thread package.  The device tree's cpu-map node is not read.
  */

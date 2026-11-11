@@ -125,6 +125,8 @@ int	ioctl(int fd, unsigned long cmd, void *arg);
 int	sleep_ms(long ms);
 long	uptime_ms(void);
 int	sysctl_string(int top, int second, char *buf, size_t size);
+int	sysctl_int(int top, int second, int *val);
+int	sysctlbyname(const char *name, void *oldp, size_t *oldlenp);
 void	*mmap_anon(size_t len);
 
 size_t	strlen(const char *s);

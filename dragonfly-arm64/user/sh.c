@@ -38,7 +38,8 @@ cmd_help(void)
 	puts("           mkdir DIR       rmdir DIR      rm FILE..");
 	puts("           pwd             uname          uptime");
 	puts("           sleep SECONDS   kill PID       spin (until ^C)");
-	puts("           pi              reboot         poweroff");
+	puts("           pi              cpustat        reboot");
+	puts("           poweroff");
 	puts("           /path/to/program [ARGS..]   (e.g. /sbin/init)");
 	puts("Redirect:  COMMAND > FILE, COMMAND >> FILE   (try /tmp)");
 }
@@ -100,6 +101,38 @@ cmd_pi(void)
 	printf("pi is approximately %.6f\n", pi);
 }
 
+/* <sys/kinfo.h> struct kinfo_cputime */
+struct kinfo_cputime {
+	unsigned long	cp_user, cp_nice, cp_sys, cp_intr, cp_idle;
+	unsigned long	cp_unused01, cp_unused02, cp_sample_pc, cp_sample_sp;
+	char		cp_msg[32];
+};
+
+/* Clock ticks each cpu has spent in each state since boot. */
+static int
+cmd_cpustat(void)
+{
+	static struct kinfo_cputime cp[16];
+	static unsigned long ipis[256];
+	size_t len = sizeof(cp), ilen = sizeof(ipis);
+	int i, n;
+
+	if (sysctlbyname("kern.cputime", cp, &len) != 0) {
+		printf("cpustat: kern.cputime: errno %d\n", errno);
+		return (1);
+	}
+	if (sysctlbyname("machdep.ipis", ipis, &ilen) != 0)
+		memset(ipis, 0, sizeof(ipis));
+	n = len / sizeof(cp[0]);
+	printf("cpu      user    system interrupt      idle   ipis\n");
+	for (i = 0; i < n; ++i) {
+		printf("%-3d %9lu %9lu %9lu %9lu %6lu\n", i, cp[i].cp_user +
+		    cp[i].cp_nice, cp[i].cp_sys, cp[i].cp_intr, cp[i].cp_idle,
+		    ipis[i]);
+	}
+	return (0);
+}
+
 /* Runs in the child.  Returns the exit status. */
 static int
 run_command(int argc, char **argv)
@@ -154,6 +187,8 @@ run_command(int argc, char **argv)
 		puts("spinning; press ^C to stop");
 		for (;;)
 			;
+	} else if (strcmp(argv[0], "cpustat") == 0) {
+		rc = cmd_cpustat();
 	} else if (strcmp(argv[0], "pi") == 0) {
 		cmd_pi();
 	} else if (strcmp(argv[0], "reboot") == 0) {

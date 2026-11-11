@@ -225,6 +225,18 @@ el0_bad:
 	b	2b
 
 /*
+ * int64_t psci_call4(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3,
+ *     int use_smc)
+ */
+	.globl	psci_call4
+psci_call4:
+	cbnz	x4, 1f
+	hvc	#0
+	ret
+1:	smc	#0
+	ret
+
+/*
  * int64_t psci_call(uint64_t fn, uint64_t a1, uint64_t a2, int use_smc)
  */
 	.globl	psci_call
