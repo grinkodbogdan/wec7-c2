@@ -232,6 +232,7 @@ a5xx_idle(const char *what)
 	    gpu_read(REG_A5XX_CP_HW_FAULT),
 	    gpu_read(REG_A5XX_CP_INTERRUPT_STATUS),
 	    gpu_read(REG_A5XX_CP_PROTECT_STATUS));
+	smmu_faults();
 	return (ETIMEDOUT);
 }
 
@@ -252,20 +253,36 @@ ilog2_u(uint32_t v)
 	((ilog2_u((_len)) & 0x1F) << 24) | (((_reg) << 2) & 0xFFFFF))
 
 /*
- * The GPU's stream through its SMMU: bypass (physical addresses), on
- * the stream match whose id is 0 (the device tree's iommus = <&smmu 0>),
- * or, if there is none, on a free match register.
+ * The GPU's stream through its SMMU, untranslated (physical addresses):
+ * on the stream match whose id is 0 (the device tree's iommus =
+ * <&smmu 0>), or a free one.  Plain bypass (S2CR type 1) first; where
+ * the SMMU refuses it (it reads back as fault), the way Linux's
+ * arm-smmu-qcom.c handles that (qcom_smmu_cfg_probe, bypass_quirk): the
+ * last context bank, stage 1 with translation off (SCTLR 0) and stage 2
+ * bypassed, and the stream translated through it.
  */
+static int smmu_cb = -1;
+static uint32_t smmu_pgsize, smmu_numpage;
+
+static vm_paddr_t
+smmu_cb_base(int n)
+{
+	return (SMMU_BASE + (vm_paddr_t)(smmu_numpage + n) * smmu_pgsize);
+}
+
 static int
 smmu_bypass(void)
 {
 	uint32_t scr0 = smmu_read(0), idr0 = smmu_read(0x20);
-	int nsmr = idr0 & 0xff, i, use = -1, free = -1;
+	uint32_t idr1 = smmu_read(0x24), s2cr;
+	int nsmr = idr0 & 0xff, numcb = idr1 & 0xff, i, use = -1, free = -1;
 
+	smmu_pgsize = (idr1 & (1U << 31)) ? 65536 : 4096;
+	smmu_numpage = 1U << (((idr1 >> 28) & 7) + 1);
 	for (i = 0; i < nsmr; ++i) {
 		uint32_t smr = smmu_read(0x800 + 4 * i);
-		uint32_t s2cr = smmu_read(0xc00 + 4 * i);
 
+		s2cr = smmu_read(0xc00 + 4 * i);
 		a5.status("a5xx: smmu SMR%d 0x%08x S2CR%d 0x%08x", i, smr, i,
 		    s2cr);
 		if ((smr & (1U << 31)) && (smr & 0x7fff) == 0 && use < 0)
@@ -282,10 +299,44 @@ smmu_bypass(void)
 	smmu_write(0xc00 + 4 * use, 1U << 16);		/* bypass */
 	smmu_write(0x800 + 4 * use, (1U << 31) | 0);	/* valid, id 0 */
 	__asm __volatile("dsb sy" : : : "memory");
-	a5.status("a5xx: smmu sCR0 0x%08x; stream 0 bypass in SMR%d "
-	    "(0x%08x / 0x%08x)", scr0, use, smmu_read(0x800 + 4 * use),
+	s2cr = smmu_read(0xc00 + 4 * use);
+	if (((s2cr >> 16) & 3) != 1) {
+		vm_paddr_t gr1 = SMMU_BASE + smmu_pgsize;
+
+		smmu_cb = numcb - 1;
+		*(volatile uint32_t *)PHYS_TO_DMAP(smmu_cb_base(smmu_cb)) = 0;
+		*(volatile uint32_t *)PHYS_TO_DMAP(gr1 + 4 * smmu_cb) =
+		    1U << 16;		/* CBAR: S1 translation, S2 bypass */
+		smmu_write(0xc00 + 4 * use, (0U << 16) | smmu_cb);
+		__asm __volatile("dsb sy" : : : "memory");
+		a5.status("a5xx: smmu refuses bypass (S2CR 0x%08x); context "
+		    "bank %d of %d with translation off, as Linux's qcom quirk: "
+		    "CBAR 0x%08x SCTLR 0x%08x S2CR 0x%08x", s2cr, smmu_cb, numcb,
+		    *(volatile uint32_t *)PHYS_TO_DMAP(gr1 + 4 * smmu_cb),
+		    *(volatile uint32_t *)PHYS_TO_DMAP(smmu_cb_base(smmu_cb)),
+		    smmu_read(0xc00 + 4 * use));
+	}
+	a5.status("a5xx: smmu sCR0 0x%08x idr1 0x%08x (page %u, %u pages); "
+	    "stream 0 in SMR%d (0x%08x / 0x%08x)", scr0, idr1, smmu_pgsize,
+	    smmu_numpage, use, smmu_read(0x800 + 4 * use),
 	    smmu_read(0xc00 + 4 * use));
 	return (0);
+}
+
+/* Faults the SMMU recorded, if any. */
+static void
+smmu_faults(void)
+{
+	a5.status("a5xx: smmu sGFSR 0x%08x sGFSYNR0 0x%08x sGFSYNR1 0x%08x",
+	    smmu_read(0x48), smmu_read(0x50), smmu_read(0x54));
+	if (smmu_cb >= 0) {
+		volatile uint32_t *cb =
+		    (volatile uint32_t *)PHYS_TO_DMAP(smmu_cb_base(smmu_cb));
+
+		a5.status("a5xx: smmu cb%d FSR 0x%08x FAR 0x%08x%08x FSYNR0 "
+		    "0x%08x", smmu_cb, cb[0x58 / 4], cb[0x64 / 4], cb[0x60 / 4],
+		    cb[0x68 / 4]);
+	}
 }
 
 static void *
@@ -428,6 +479,7 @@ a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
 	gpu_write(REG_A5XX_RBBM_INT_0_MASK, 0);		/* polled */
 
 	/* start the micro engines, then CP_ME_INIT (a5xx_me_init, a530) */
+	status("a5xx: microcode and ring set; starting the CP");
 	gpu_write(REG_A5XX_CP_PFP_ME_CNTL, 0);
 	OUT_PKT7(CP_ME_INIT, 8);
 	OUT_RING(0x0000002F);
@@ -439,6 +491,7 @@ a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
 	OUT_RING(0x00000000);
 	OUT_RING(0x00000000);
 	a5xx_flush();
+	status("a5xx: CP_ME_INIT queued (wptr %u)", a5.wptr);
 	if ((error = a5xx_idle("CP_ME_INIT")) != 0)
 		return (error);
 	status("a5xx: CP_ME_INIT done: rptr %u, status 0x%08x",
