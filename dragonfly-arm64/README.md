@@ -360,6 +360,13 @@ image tells them apart: each core measures its own clock with interrupts
 off as it starts (`cpu2: running at about N MHz`), and the shell's
 `cpustat` shows the measured speed and timer interrupts per core.
 
+**Eighth boot.** Same result; the speed lines had scrolled away. The
+framebuffer console does not scroll: it wraps to the top, so older
+lines remain below the newest one. The ninth image prints each core's
+clock and timer interrupt rate in the self-test, just before the
+timing test, and skips that test (reporting a failure) when a core is
+under a quarter of cpu0's speed.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

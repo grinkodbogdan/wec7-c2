@@ -143,6 +143,42 @@ run_parallel(int n, void (*fn)(void))
  * With more than one cpu: show that they share the work, and run the
  * fork path on all of them at once.
  */
+/*
+ * Print each cpu's clock (measured by the kernel as the cpu started)
+ * and how many timer interrupts each takes per second (a few hundred
+ * is normal; tens of thousands is a storm).  Returns nonzero if a cpu runs at under a quarter of cpu0's
+ * speed, where the timing test would take minutes.
+ */
+static int
+cpu_report(int ncpu)
+{
+	static int mhz[256];
+	static unsigned long t0[256], t1[256];
+	size_t len = sizeof(mhz), l0 = sizeof(t0), l1 = sizeof(t1);
+	int i, slow = 0;
+
+	if (ncpu > 64)
+		ncpu = 64;
+	if (sysctlbyname("machdep.cpu_mhz", mhz, &len) != 0)
+		return (0);
+	printf("  clock, MHz:      ");
+	for (i = 0; i < ncpu; ++i) {
+		printf(" cpu%d %d", i, mhz[i]);
+		if (mhz[i] * 4 < mhz[0])
+			slow = 1;
+	}
+	printf("\n");
+	if (sysctlbyname("machdep.timer_intrs", t0, &l0) == 0) {
+		sleep_ms(1000);
+		sysctlbyname("machdep.timer_intrs", t1, &l1);
+		printf("  timer intr/s:    ");
+		for (i = 0; i < ncpu; ++i)
+			printf(" cpu%d %lu", i, t1[i] - t0[i]);
+		printf("\n");
+	}
+	return (slow);
+}
+
 static void
 smptest(void)
 {
@@ -153,6 +189,14 @@ smptest(void)
 	printf("  cpus online: %d\n", ncpu);
 	if (ncpu < 2)
 		return;
+	if (cpu_report(ncpu) != 0) {
+		printf("  some cpus are far slower than cpu0: skipping the "
+		    "timing test\n");
+		++failures;
+		check("fork storm on all cpus (4 x 100 children)",
+		    run_parallel(4, child_forker) == 4);
+		return;
+	}
 
 	t0 = uptime_ms();
 	run_parallel(1, child_spin);
