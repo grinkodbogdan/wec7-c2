@@ -99,6 +99,11 @@ sysroot() {
 	cp "$S"/cpu/aarch64/include/*.h "$INC/cpu/"
 	cp "$S"/cpu/aarch64/include/*.h "$INC/machine/"
 	cp "$S"/platform/arm64/include/*.h "$INC/machine/"
+	# clang's own headers (arm_neon.h and friends) inside the sysroot,
+	# where Meson's include-path filtering leaves them alone.
+	rm -rf "$SYSROOT/usr/lib/clang/include"
+	mkdir -p "$SYSROOT/usr/lib/clang"
+	cp -r "$(clang -print-resource-dir)/include" "$SYSROOT/usr/lib/clang/include"
 	echo "sysroot headers in $INC"
 }
 
@@ -274,7 +279,7 @@ csu() {
 	cp "$o"/*.o "$SYSROOT/usr/lib/"
 	# pthreads and dlopen live in libc on DragonFly; programs and
 	# libraries that ask for -lpthread, -ldl or -lrt get empty archives.
-	for l in pthread dl rt; do
+	for l in pthread dl rt atomic; do
 		llvm-ar rcs "$SYSROOT/usr/lib/lib$l.a"
 	done
 	echo "built startup files in $SYSROOT/usr/lib"
@@ -361,6 +366,57 @@ cxx() {
 	echo "installed libc++, libc++abi, libunwind in $SYSROOT/usr"
 }
 
+# Meson cross file for the sysroot.
+meson_cross() {
+	sed "s|@SYSROOT@|$SYSROOT|g" "$HERE/tools/aarch64-dragonfly.meson.in" \
+	    > "$WOBJ/aarch64-dragonfly.meson"
+}
+
+#
+# Mesa: OpenGL with the softpipe software renderer, as a static OSMesa
+# (no window system, no kernel graphics driver, no dynamic loading).
+# Meson insists on a shared libOSMesa, so the archives that link would
+# use are merged into libOSMesa.a instead.
+#
+MESA_VERSION=${MESA_VERSION:-24.0.9}
+mesa() {
+	sync
+	src=$HERE/work/mesa-$MESA_VERSION
+	if [ ! -d "$src" ]; then
+		curl -sSfL "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz" |
+		    tar xJf - -C "$HERE/work"
+	fi
+	meson_cross
+	b=$WOBJ/mesa
+	[ -f "$b/build.ninja" ] || meson setup "$b" "$src" \
+	    --cross-file "$WOBJ/aarch64-dragonfly.meson" --prefix="$SYSROOT/usr" \
+	    -Dbuildtype=release -Ddefault_library=static -Dplatforms= \
+	    -Dgallium-drivers=swrast -Dvulkan-drivers= -Dosmesa=true \
+	    -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dgles1=disabled \
+	    -Dgles2=disabled -Dllvm=disabled -Dshader-cache=disabled \
+	    -Dzlib=disabled -Dexpat=disabled -Dxmlconfig=disabled \
+	    -Dzstd=disabled -Dvalgrind=disabled -Dlibunwind=disabled \
+	    -Dlmsensors=disabled -Dbuild-tests=false -Dshared-glapi=disabled \
+	    -Dglvnd=false -Dgallium-vdpau=disabled -Dgallium-va=disabled \
+	    -Dgallium-xa=disabled -Dgallium-nine=false \
+	    -Dgallium-opencl=disabled -Dandroid-libbacktrace=disabled \
+	    -Dmicrosoft-clc=disabled -Dintel-clc=disabled -Dtools= \
+	    -Dperfetto=false -Ddraw-use-llvm=false >/dev/null
+	ninja -C "$b" > "$b/build.log" 2>&1 || :	# the .so link fails
+	(cd "$b" && ninja -t commands \
+	    src/gallium/targets/osmesa/libOSMesa.so.8.0.0 | tail -1 |
+	    tr ' ' '\n' | grep -E '\.(a|o)$' | grep -v '/crt' | sort -u \
+	    > osmesa-inputs.txt &&
+	    rm -f libOSMesa.a && llvm-ar qcL libOSMesa.a $(cat osmesa-inputs.txt) &&
+	    llvm-ranlib libOSMesa.a)
+	cp "$b/libOSMesa.a" "$SYSROOT/usr/lib/"
+	mkdir -p "$INC/GL" "$INC/KHR"
+	cp "$src"/include/GL/osmesa.h "$src"/include/GL/gl.h \
+	    "$src"/include/GL/glext.h "$INC/GL/"
+	cp "$src/include/KHR/khrplatform.h" "$INC/KHR/"
+	echo "built $SYSROOT/usr/lib/libOSMesa.a"
+}
+
 # A smoke test: a small program using stdio, malloc, TLS and threads.
 hello() {
 	o=$WOBJ/hello; mkdir -p "$o"
@@ -390,6 +446,7 @@ case "${1:-all}" in
 progs)		progs ;;
 csu)		csu ;;
 cxx)		cxx ;;
+mesa)		mesa ;;
 lib)		shift; lib "$@" ;;
 prog)		shift; prog "$@" ;;
 hello)		hello ;;
