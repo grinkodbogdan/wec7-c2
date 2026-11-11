@@ -281,10 +281,21 @@ Confirmed on hardware by that boot: image format and load addresses, the
 watchdog stop, the device tree reader, finding the framebuffer, the pixel
 format and the panel refresh.
 
+**Second boot.** Nothing at all appeared over the fastboot screen. The
+fix had moved interrupt controller setup ahead of the first message, and on
+this chip the secure firmware forbids access to one of the controller's
+registers (`GICR_WAKER`): touching it hangs the phone. Linux skips that
+register on MSM8996 for the same reason (its
+`FLAGS_WORKAROUND_GICR_WAKER_MSM8996`). The same image also switched off
+the physical timer from EL1, which Qualcomm's hypervisor may trap. The
+third image skips the register on this chip, leaves the physical timer
+alone, and prints a `boot:` line before each early step, so a hang shows
+where it happened.
+
 ### What is untested or missing
 
-- **Anything after the copyright notice on real hardware.** The second test
-  image has the interrupt fix and the verbose boot report.
+- **Anything after the copyright notice on real hardware.** The third test
+  image has both interrupt fixes and step-by-step progress lines.
 - **Input.** No touch, keys or USB.
 - **Everything after first boot.** Storage (UFS), USB, touch, display
   control, power management, charging and the modem each need a driver for

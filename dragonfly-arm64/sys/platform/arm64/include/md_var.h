@@ -56,6 +56,7 @@ struct arm64_bootinfo {
 	vm_paddr_t	bi_gicc_base;		/* v2 cpu interface, v3 redistributors */
 	int		bi_gic_version;		/* 0 = none found */
 	u_int		bi_gicr_stride;		/* v3: bytes per cpu, 0 = default */
+	int		bi_gic_no_waker;	/* v3: firmware forbids GICR_WAKER */
 	int		bi_timer_irq;		/* virtual timer INTID */
 	u_int		bi_timer_freq;		/* timer node clock-frequency */
 	vm_paddr_t	bi_wdt_base;		/* qcom,msm-watchdog */
@@ -103,6 +104,7 @@ int	fdt_scan(const void *fdt, struct arm64_bootinfo *bi);
 void	cninit_early(vm_paddr_t uart_base);
 void	cnputc_early(int c);
 void	cnputs_early(const char *s);
+void	boot_mark(const char *s);
 void	fbcons_bootarg(struct arm64_bootinfo *bi);
 void	fbcons_init(struct arm64_bootinfo *bi);
 void	fbcons_putc(int c);

@@ -220,6 +220,19 @@ add_phys_avail(vm_paddr_t start, vm_paddr_t end,
 }
 
 /*
+ * A progress line for a verbose boot, usable before the console layer
+ * exists: it goes straight to the serial port, the screen and the RAM
+ * log.  On new hardware these are the only way to tell where an early
+ * hang happened.
+ */
+void
+boot_mark(const char *s)
+{
+	if (bootverbose)
+		cnputs_early(s);
+}
+
+/*
  * With a verbose boot, say what the firmware handed over before the
  * machine-independent kernel starts.  On new hardware this is the
  * first thing worth photographing: everything that can go wrong in
@@ -338,6 +351,9 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 			halt();
 	}
 	parse_bootargs(bi->bi_bootargs);
+	boot_mark("\nboot: DragonFly/arm64 initarm, device tree read\n");
+	if (bi->bi_wdt_base != 0)
+		boot_mark("boot: msm8996: watchdog stopped\n");
 
 	/*
 	 * Default to one cpu.  The device tree may list more (bi_ncpus),
@@ -362,7 +378,9 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 * world and other firmware).
 	 */
 	firstaddr = round_page(kernphys + (_end - kernbase));
+	boot_mark("boot: page tables\n");
 	pmap_bootstrap(&firstaddr, kernphys);
+	boot_mark("boot: page tables done\n");
 
 	reserved[0].mr_start = kernphys;
 	reserved[0].mr_size = firstaddr - kernphys;
@@ -398,6 +416,7 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	/*
 	 * Now the machine-independent per-cpu and thread0 state.
 	 */
+	boot_mark("boot: per-cpu data, thread0\n");
 	mi_gdinit(&gd->mi, 0);
 	cpu_gdinit(gd, 0);
 	mi_proc0init(&gd->mi, (struct user *)proc0paddr_buff);
@@ -417,6 +436,7 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 * right after the copyright notice.
 	 */
 	arm64_simulate_bootloader_irq();
+	boot_mark("boot: interrupt controller\n");
 	arm64_intr_init();
 
 	thread0.td_pcb->pcb_flags = 0;

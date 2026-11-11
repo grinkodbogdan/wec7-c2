@@ -148,12 +148,14 @@ _start:
 in_el1:
 	msr	spsel, #1
 	/*
-	 * Bootloaders can leave the generic timers armed (Qualcomm's LK
-	 * does).  An expired timer is a pending interrupt waiting for the
-	 * moment interrupts are unmasked, so switch both off now.
+	 * Bootloaders can leave the virtual timer armed.  An expired timer
+	 * is a pending interrupt waiting for the moment interrupts are
+	 * unmasked, so switch it off now.  The physical timer is left
+	 * alone: a hypervisor may trap EL1's access to it (Qualcomm's
+	 * does, on the Snapdragon 820), and the interrupt controller setup
+	 * masks its interrupt anyway.
 	 */
 	msr	cntv_ctl_el0, xzr
-	msr	cntp_ctl_el0, xzr
 	/*
 	 * Do not trap FP/SIMD use.  The kernel itself is built without
 	 * FP; this is for user programs, whose state swtch.S saves and

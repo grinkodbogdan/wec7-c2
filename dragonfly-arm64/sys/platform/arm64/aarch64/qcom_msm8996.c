@@ -34,6 +34,11 @@
  *     from the display controller (MDP): they differ between panels.
  *   - The Mi 5's panels are command-mode ones.  They do not refresh by
  *     themselves; each frame has to be sent with a "start" request.
+ *   - The secure firmware forbids access to the GICv3 redistributor's
+ *     GICR_WAKER register; touching it hangs the phone.  Linux has the
+ *     same workaround (FLAGS_WORKAROUND_GICR_WAKER_MSM8996).  The
+ *     vendor device trees do not carry the "qcom,msm8996-gic-v3"
+ *     compatible that Linux keys it on, so it is set here by SoC.
  *   - Android's "ramoops" console zone at 0x92920000 survives a warm
  *     reset, so text written there can be read back afterwards from a
  *     recovery image.  That is the only log there is when the screen
@@ -232,6 +237,8 @@ msm8996_early_init(struct arm64_bootinfo *bi)
 	}
 	if (!match)
 		return (0);
+
+	bi->bi_gic_no_waker = 1;
 
 	/* First of all: the watchdog, before it bites. */
 	if (bi->bi_wdt_base != 0) {

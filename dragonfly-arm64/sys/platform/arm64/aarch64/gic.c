@@ -128,12 +128,13 @@ gic_v3_init(vm_paddr_t gicr_pa)
 	uint32_t aff = ((mpidr >> 8) & 0xff000000) | (mpidr & 0x00ffffff);
 	volatile uint8_t *rd;
 	uint64_t typer;
-	int irq;
+	int irq, n;
 
 	/* Each cpu's frames carry its affinity in GICR_TYPER[63:32]. */
+	boot_mark("boot: gic: finding redistributor\n");
 	rd = (volatile uint8_t *)PHYS_TO_DMAP(gicr_pa);
 	gicr = rd;
-	for (;;) {
+	for (n = 0; n < 256; ++n) {
 		typer = *(volatile uint64_t *)(rd + GICR_TYPER);
 		if ((uint32_t)(typer >> 32) == aff) {
 			gicr = rd;
@@ -144,11 +145,23 @@ gic_v3_init(vm_paddr_t gicr_pa)
 		rd += gicr_stride;
 	}
 
-	/* Mark the cpu awake and wait for the redistributor to agree. */
-	gic_write(gicr, GICR_WAKER,
-	    gic_read(gicr, GICR_WAKER) & ~GICR_WAKER_PSLEEP);
-	while (gic_read(gicr, GICR_WAKER) & GICR_WAKER_CASLEEP)
-		;
+	/*
+	 * Mark the cpu awake and wait for the redistributor to agree.
+	 * Some firmware owns this register and the bootloader has done
+	 * it already (see qcom_msm8996.c).
+	 */
+	if (!arm64_bootinfo.bi_gic_no_waker) {
+		boot_mark("boot: gic: waking redistributor\n");
+		gic_write(gicr, GICR_WAKER,
+		    gic_read(gicr, GICR_WAKER) & ~GICR_WAKER_PSLEEP);
+		for (n = 0; n < 1000000; ++n) {
+			if ((gic_read(gicr, GICR_WAKER) &
+			    GICR_WAKER_CASLEEP) == 0)
+				break;
+			cpu_pause();
+		}
+	}
+	boot_mark("boot: gic: private interrupts\n");
 
 	/* Private interrupts (SGIs and PPIs): group 1, off, default prio. */
 	gic_write(gicr, GICR_IGROUPR0, 0xffffffff);
@@ -157,6 +170,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 		gicr[GICR_IPRIORITYR(irq)] = 0x80;
 
 	/* Shared interrupts: group 1, off, routed to this cpu. */
+	boot_mark("boot: gic: distributor\n");
 	gic_write(gicd, GICD_CTLR, 0);
 	gic_v3_wait_rwp();
 	for (irq = GIC_FIRST_SPI; irq < gic_nirqs; irq += 32) {
@@ -171,9 +185,16 @@ gic_v3_init(vm_paddr_t gicr_pa)
 	gic_write(gicd, GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE);
 	gic_v3_wait_rwp();
 
-	/* The cpu interface. */
-	WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);
-	__asm __volatile("isb");
+	/*
+	 * The cpu interface.  As Linux does, only write ICC_SRE_EL1 if
+	 * the system register interface is not on already: a hypervisor
+	 * may trap the write.
+	 */
+	boot_mark("boot: gic: cpu interface\n");
+	if ((READ_SPECIALREG(ICC_SRE_EL1) & 1) == 0) {
+		WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);
+		__asm __volatile("isb");
+	}
 	WRITE_SPECIALREG(ICC_PMR_EL1, 0xff);
 	WRITE_SPECIALREG(ICC_IGRPEN1_EL1, 1);
 	__asm __volatile("isb");

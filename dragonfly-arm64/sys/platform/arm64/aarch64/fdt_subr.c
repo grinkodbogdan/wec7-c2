@@ -232,6 +232,8 @@ fdt_node_done(struct fdt_node *nodes, int depth, struct arm64_bootinfo *bi)
 		} else if (fdt_is_compatible(n, "arm,gic-v3")) {
 			bi->bi_gic_version = 3;
 			bi->bi_gicr_stride = n->rdist_stride;
+			if (fdt_is_compatible(n, "qcom,msm8996-gic-v3"))
+				bi->bi_gic_no_waker = 1;
 			bi->bi_gicd_base = fdt_cells(n->reg, acells);
 			/* second region: the redistributors */
 			if (n->reg_len / 4 >= (uint32_t)(2 * cells)) {
