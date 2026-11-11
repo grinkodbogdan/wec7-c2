@@ -88,6 +88,12 @@ fbmem_ioctl(struct dev_ioctl_args *ap)
 	case FBMEM_FLUSH:
 		fbcons_push();
 		return (0);
+	case FBMEM_FLUSH_ROWS: {
+		struct fbmem_rows *r = (struct fbmem_rows *)ap->a_data;
+
+		fbcons_push_rows(r->y0, r->y1);
+		return (0);
+	}
 	}
 	return (ENOTTY);
 }

@@ -124,6 +124,7 @@ int	fbcons_geometry(vm_paddr_t *pa, u_int *width, u_int *height,
 	    u_int *stride, u_int *bpp);
 void	fbcons_suspend(int on);
 void	fbcons_push(void);
+void	fbcons_push_rows(u_int y0, u_int y1);
 
 void	identify_cpu(void);
 

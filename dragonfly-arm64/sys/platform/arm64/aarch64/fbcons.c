@@ -363,7 +363,20 @@ fbcons_suspend(int on)
 void
 fbcons_push(void)
 {
-	fb_flush(fb.base, (size_t)fb.stride * fb.height);
+	fbcons_push_rows(0, fb.height);
+}
+
+/* Clean rows [y0, y1) out of the cache, then refresh the panel. */
+void
+fbcons_push_rows(u_int y0, u_int y1)
+{
+	if (fb.base == NULL)
+		return;
+	if (y1 > fb.height)
+		y1 = fb.height;
+	if (y0 < y1)
+		fb_flush(fb.base + (size_t)y0 * fb.stride,
+		    (size_t)(y1 - y0) * fb.stride);
 	if (fbcons_flush_hook != NULL)
 		fbcons_flush_hook();
 }

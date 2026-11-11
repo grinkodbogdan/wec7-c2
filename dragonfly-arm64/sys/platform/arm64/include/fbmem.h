@@ -23,4 +23,11 @@ struct fbmem_info {
 /* Make what was drawn visible (cache clean, panel refresh). */
 #define	FBMEM_FLUSH	_IO('F', 2)
 
+/* The same for rows [y0, y1) only: less cache to clean. */
+struct fbmem_rows {
+	uint32_t	y0;
+	uint32_t	y1;
+};
+#define	FBMEM_FLUSH_ROWS _IOW('F', 3, struct fbmem_rows)
+
 #endif /* !_MACHINE_FBMEM_H_ */

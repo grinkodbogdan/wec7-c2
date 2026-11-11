@@ -563,6 +563,28 @@ without hardware and `sysctl machdep.touch_inject=X*65536+Y` taps;
 **Twenty-fourth image: touch.** Untested on the phone. On start, Arcan's
 terminal runs `dmesg | grep touch`, which shows how far the bring-up got.
 
+**Twenty-fifth image: faster drawing.** On the phone touch works, but
+the screen updated slowly: every frame is drawn by Mesa's software
+renderer. Three changes, each measured in QEMU (`/tmp/arcan/fbmem.stats`
+holds the same figures on the phone):
+
+- The fbmem platform reads the finished frame out of Arcan's world render
+  target instead of drawing it again as a full-screen textured quad
+  (1400ms to 16ms per frame in QEMU).
+- Only canvas rows that changed are converted and copied to `/dev/fb0`,
+  and the new `FBMEM_FLUSH_ROWS` ioctl cleans only those rows from the
+  cache.
+- The on-screen keyboard is drawn once into its own texture and redrawn
+  only when its layout changes, so the world draws one image instead of a
+  hundred; the full-screen black backdrop is gone.
+
+A frame takes about a third of the time it did. The real fix is the GPU.
+
+The same round also fixed a kernel bug behind the occasional `sh`
+segfaults: `cpu_fork()` copied the parent's saved thread pointer, which is
+only updated when the parent is switched out, so a child forked before
+that inherited a stale (zero) one and crashed on its first TLS access.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

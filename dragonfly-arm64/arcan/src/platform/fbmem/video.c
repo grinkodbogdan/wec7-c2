@@ -26,6 +26,8 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
+#include <errno.h>
 
 #include <machine/fbmem.h>
 
@@ -47,10 +49,23 @@ static struct {
 	uint8_t *fb;
 	OSMesaContext ctx;
 	uint8_t *buf;			/* canvas, RGBA, top row first */
+	uint8_t *prev;			/* the canvas as last copied out */
+	uint8_t *row;			/* one converted panel row */
 	size_t canvasw, canvash;
 	unsigned scale;
 	uint64_t frames;
+	/* time spent, for /tmp/arcan/fbmem.stats */
+	double t_render, t_blit, t_flush;
+	uint64_t rows_out;
+	bool flipped;			/* canvas rows bottom first */
 } fbm = { .fd = -1 };
+
+static double now_ms()
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
 
 static char* fbm_envopts[] = {
 	"ARCAN_FBMEM_DEVICE=/dev/fb0", "framebuffer device",
@@ -172,7 +187,9 @@ bool platform_video_init(uint16_t w, uint16_t h,
 /* depth 24, stencil 8: what the engine's render targets may ask for */
 	fbm.ctx = OSMesaCreateContextExt(OSMESA_RGBA, 24, 8, 0, NULL);
 	fbm.buf = malloc(fbm.canvasw * fbm.canvash * 4);
-	if (!fbm.ctx || !fbm.buf ||
+	fbm.prev = calloc(fbm.canvasw * fbm.canvash, 4);
+	fbm.row = malloc(fbm.fi.stride);
+	if (!fbm.ctx || !fbm.buf || !fbm.prev || !fbm.row ||
 		!OSMesaMakeCurrent(fbm.ctx, fbm.buf, GL_UNSIGNED_BYTE,
 			fbm.canvasw, fbm.canvash)){
 		arcan_warning("(fbmem) couldn't create the OSMesa context\n");
@@ -271,38 +288,77 @@ size_t platform_video_displays(platform_display_id* dids, size_t* lim)
 	return 1;
 }
 
-/*
- * Canvas (RGBA bytes) to framebuffer, each canvas pixel becoming a
- * scale x scale block.
- */
-static void blit_to_fb()
+/* One canvas row (RGBA bytes) as a panel row, each pixel repeated. */
+static void convert_row(const uint8_t* src, uint8_t* d)
 {
 	const unsigned s = fbm.scale;
-	const size_t bypp = fbm.fi.bpp / 8;
 
-	for (size_t y = 0; y < fbm.canvash; y++){
-		const uint8_t* src = fbm.buf + y * fbm.canvasw * 4;
-		uint8_t* row = fbm.fb + (y * s) * fbm.fi.stride;
-		uint8_t* d = row;
-
+	switch (fbm.fi.bpp){
+	case 32: /* XRGB8888 little-endian */
 		for (size_t x = 0; x < fbm.canvasw; x++, src += 4){
-			for (unsigned k = 0; k < s; k++, d += bypp){
-				switch (fbm.fi.bpp){
-				case 32: /* XRGB8888 little-endian: B G R X */
-					d[0] = src[2]; d[1] = src[1]; d[2] = src[0]; d[3] = 0xff;
-				break;
-				case 24: /* packed 24-bit, blue first (the Mi 5 as LK sets it up) */
-					d[0] = src[2]; d[1] = src[1]; d[2] = src[0];
-				break;
-				default: /* RGB565 */
-					*(uint16_t*)d = (src[0] >> 3) << 11 |
-						(src[1] >> 2) << 5 | src[2] >> 3;
-				}
-			}
+			uint32_t p = 0xff000000u | src[0] << 16 | src[1] << 8 | src[2];
+			for (unsigned k = 0; k < s; k++, d += 4)
+				memcpy(d, &p, 4);
 		}
-		for (unsigned k = 1; k < s; k++)
-			memcpy(row + k * fbm.fi.stride, row, fbm.canvasw * s * bypp);
+	break;
+	case 24: /* packed 24-bit, blue first (the Mi 5 as LK sets it up) */
+		for (size_t x = 0; x < fbm.canvasw; x++, src += 4)
+			for (unsigned k = 0; k < s; k++, d += 3){
+				d[0] = src[2]; d[1] = src[1]; d[2] = src[0];
+			}
+	break;
+	default: /* RGB565 */
+		for (size_t x = 0; x < fbm.canvasw; x++, src += 4){
+			uint16_t p = (src[0] >> 3) << 11 | (src[1] >> 2) << 5 | src[2] >> 3;
+			for (unsigned k = 0; k < s; k++, d += 2)
+				memcpy(d, &p, 2);
+		}
 	}
+}
+
+/*
+ * Canvas to framebuffer, only the rows that changed since the last copy;
+ * returns the changed span in panel rows, [*y0, *y1).
+ */
+static void blit_to_fb(uint32_t* y0, uint32_t* y1)
+{
+	const unsigned s = fbm.scale;
+	const size_t cb = fbm.canvasw * 4;
+	const size_t pb = fbm.canvasw * s * (fbm.fi.bpp / 8);
+
+	*y0 = UINT32_MAX;
+	*y1 = 0;
+	for (size_t y = 0; y < fbm.canvash; y++){
+		const uint8_t* src = fbm.buf +
+			(fbm.flipped ? fbm.canvash - 1 - y : y) * cb;
+		uint8_t* old = fbm.prev + y * cb;
+
+		if (fbm.frames > 0 && memcmp(src, old, cb) == 0)
+			continue;
+		memcpy(old, src, cb);
+		convert_row(src, fbm.row);
+		for (unsigned k = 0; k < s; k++)
+			memcpy(fbm.fb + (y * s + k) * fbm.fi.stride, fbm.row, pb);
+		if (*y0 == UINT32_MAX)
+			*y0 = y * s;
+		*y1 = (y + 1) * s;
+		fbm.rows_out++;
+	}
+}
+
+static void write_stats()
+{
+	FILE* f = fopen("/tmp/arcan/fbmem.stats", "w");
+	if (!f){
+		arcan_warning("(fbmem) can't write stats: %s\n", strerror(errno));
+		return;
+	}
+	fprintf(f, "frames %llu: per frame render %.1f ms, copy %.1f ms, "
+		"flush %.1f ms; %.0f canvas rows changed per frame\n",
+		(unsigned long long) fbm.frames,
+		fbm.t_render / fbm.frames, fbm.t_blit / fbm.frames,
+		fbm.t_flush / fbm.frames, (double) fbm.rows_out / fbm.frames);
+	fclose(f);
 }
 
 void platform_video_synch(uint64_t tick_count, float fract,
@@ -312,6 +368,7 @@ void platform_video_synch(uint64_t tick_count, float fract,
 		pre();
 
 	size_t nd;
+	double t0 = now_ms();
 	arcan_bench_register_cost( arcan_vint_refresh(fract, &nd) );
 
 /* nothing changed: don't spend a software frame on it */
@@ -320,16 +377,45 @@ void platform_video_synch(uint64_t tick_count, float fract,
 		goto out;
 	}
 
-	if (arcan_vint_worldrt()){
-		agp_activate_rendertarget(NULL);
-		arcan_vint_drawrt(arcan_vint_world(), 0, 0, fbm.canvasw, fbm.canvash);
-		arcan_vint_drawcursor(true);
-		arcan_vint_drawcursor(false);
+	double tw = now_ms();
+	struct agp_rendertarget* wrt = arcan_vint_worldrt();
+	if (wrt){
+/*
+ * Read the world straight out of its render target: in software, a
+ * readback costs a fraction of drawing it again as a full-screen quad.
+ * The rows come bottom first; blit_to_fb walks them in reverse.
+ */
+		uintptr_t fbo = 0;
+		agp_rendertarget_ids(wrt, &fbo, NULL, NULL);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+		glReadPixels(0, 0, fbm.canvasw, fbm.canvash,
+			GL_RGBA, GL_UNSIGNED_BYTE, fbm.buf);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+		fbm.flipped = true;
 	}
-	glFinish();
-	blit_to_fb();
-	ioctl(fbm.fd, FBMEM_FLUSH);
+	else {
+		glFinish();
+		fbm.flipped = false;
+	}
+	double t1 = now_ms();
+
+	struct fbmem_rows rows;
+	blit_to_fb(&rows.y0, &rows.y1);
+	double t2 = now_ms();
+	if (rows.y0 < rows.y1)
+		ioctl(fbm.fd, FBMEM_FLUSH_ROWS, &rows);
+	double t3 = now_ms();
+
+	fbm.t_render += t1 - t0;
+	fbm.t_blit += t2 - t1;
+	fbm.t_flush += t3 - t2;
 	fbm.frames++;
+	if (fbm.frames <= 3)
+		arcan_warning("(fbmem) frame %llu: world %.1f screen %.1f copy %.1f "
+			"flush %.1f ms\n", (unsigned long long) fbm.frames, tw - t0, t1 - tw,
+			t2 - t1, t3 - t2);
+	if (fbm.frames % 10 == 0)
+		write_stats();
 
 out:
 	if (post)

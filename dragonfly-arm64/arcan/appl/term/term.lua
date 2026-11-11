@@ -16,6 +16,7 @@ local cmds = {
 	"df -h",
 	"sysctl hw.ncpu hw.physmem hw.machine",
 	"dmesg | grep touch",
+	"cat /tmp/arcan/fbmem.stats",
 	"dmesg | tail -15",
 	"hello | tail -4",
 	"mount_ext2fs -o ro /dev/ufs0s11 /mnt && ls /mnt; umount /mnt",
@@ -125,51 +126,76 @@ for _, l in pairs(layers) do
 		{"space", " ", 4}, {"tab", TAB, 1}, {"enter", ENTER, 2}})
 end
 
-local kbd = {layer = "lower", keys = {}, ctrl = false, anchor = nil,
-	flash = {}}
+local kbd = {layer = "lower", keys = {}, ctrl = false, surf = nil,
+	hl = nil, hl_until = nil}
 local key_h = 44
 
+-- The keyboard is drawn once into its own texture, redrawn only when the
+-- layout changes; the world then draws it as one image.  In software GL a
+-- hundred small images cost far more than one big one.
 local function kbd_build()
-	if valid_vid(kbd.anchor) then
-		delete_image(kbd.anchor)	-- takes the linked keys with it
+	if valid_vid(kbd.surf) then
+		delete_image(kbd.surf)
+	end
+	for _, v in ipairs(kbd.vids or {}) do
+		if valid_vid(v) then
+			delete_image(v)
+		end
 	end
 	kbd.keys = {}
-	kbd.anchor = null_surface(VRESW, kbd_h)
-	move_image(kbd.anchor, 0, VRESH - bar_h - kbd_h)
-	order_image(kbd.anchor, 8)
-	show_image(kbd.anchor)
+	kbd.surf = alloc_surface(VRESW, kbd_h)
+	image_color(kbd.surf, 0, 0, 0)
 
+	local vids = {}
 	local unit = VRESW / 10
 	for ri, r in ipairs(layers[kbd.layer]) do
 		local x = 0
 		for _, k in ipairs(r) do
 			local w = k[3] * unit
+			local y = (ri - 1) * key_h
 			local on = (k[2] == SHIFT and kbd.layer == "upper") or
 				(k[2] == SYM and kbd.layer == "sym") or
 				(k[2] == CTRL and kbd.ctrl)
 			local bg = color_surface(w - 4, key_h - 4,
 				on and 90 or 48, on and 110 or 52, on and 160 or 64)
-			link_image(bg, kbd.anchor)
-			image_inherit_order(bg, true)
-			order_image(bg, 1)
-			move_image(bg, x + 2, (ri - 1) * key_h + 2)
+			move_image(bg, x + 2, y + 2)
 			show_image(bg)
+			table.insert(vids, bg)
 			local label = k[1] == "\\" and "\\\\" or k[1]
 			local txt = render_text([[\f,13\#ffffff]] .. label)
 			if valid_vid(txt) then
-				link_image(txt, bg)
-				image_inherit_order(txt, true)
-				order_image(txt, 1)
-				local tw, th = image_surface_properties(txt).width,
-					image_surface_properties(txt).height
-				move_image(txt, (w - 4 - tw) / 2, (key_h - 4 - th) / 2)
+				local p = image_surface_properties(txt)
+				move_image(txt, x + 2 + (w - 4 - p.width) / 2,
+					y + 2 + (key_h - 4 - p.height) / 2)
+				order_image(txt, 2)
 				show_image(txt)
+				table.insert(vids, txt)
 			end
-			table.insert(kbd.keys, {x = x, y = (ri - 1) * key_h, w = w,
-				k = k, vid = bg})
+			table.insert(kbd.keys, {x = x, y = y, w = w, k = k})
 			x = x + w
 		end
 	end
+	define_rendertarget(kbd.surf, vids, RENDERTARGET_DETACH,
+		RENDERTARGET_NOSCALE, 0)
+	kbd.vids = vids
+	rendertarget_forceupdate(kbd.surf)
+	move_image(kbd.surf, 0, VRESH - bar_h - kbd_h)
+	order_image(kbd.surf, 8)
+	show_image(kbd.surf)
+
+	if not valid_vid(kbd.hl) then
+		kbd.hl = color_surface(1, 1, 200, 220, 255)
+		blend_image(kbd.hl, 0.0)
+		order_image(kbd.hl, 9)
+	end
+end
+
+-- Light up a key for a moment: one translucent image over it.
+local function kbd_flash(e)
+	move_image(kbd.hl, e.x + 2, VRESH - bar_h - kbd_h + e.y + 2)
+	resize_image(kbd.hl, e.w - 4, key_h - 4)
+	blend_image(kbd.hl, 0.5)
+	kbd.hl_until = CLOCK + 4
 end
 
 local function kbd_press(k)
@@ -205,8 +231,7 @@ local function tap(x, y)
 	if ky >= 0 and ky < kbd_h then
 		for _, e in ipairs(kbd.keys) do
 			if x >= e.x and x < e.x + e.w and ky >= e.y and ky < e.y + key_h then
-				image_color(e.vid, 140, 160, 220)
-				table.insert(kbd.flash, {vid = e.vid, at = CLOCK + 4})
+				kbd_flash(e)
 				kbd_press(e.k)
 				return
 			end
@@ -248,9 +273,6 @@ function term(args)
 	if want_kbd then
 		kbd_h = key_h * 5
 	end
-	local back = color_surface(VRESW, VRESH, 0, 0, 0)
-	order_image(back, 1)
-	show_image(back)
 	bar = color_surface(VRESW, bar_h, 32, 48, 80)
 	move_image(bar, 0, VRESH - bar_h)
 	order_image(bar, 10)
@@ -317,14 +339,9 @@ function term_input(iotbl)
 end
 
 function term_clock_pulse()
-	for i = #kbd.flash, 1, -1 do
-		local f = kbd.flash[i]
-		if CLOCK >= f.at then
-			if valid_vid(f.vid) then
-				image_color(f.vid, 48, 52, 64)
-			end
-			table.remove(kbd.flash, i)
-		end
+	if kbd.hl_until and CLOCK >= kbd.hl_until then
+		blend_image(kbd.hl, 0.0)
+		kbd.hl_until = nil
 	end
 	if autorun and CLOCK >= autorun_at and
 		valid_vid(term_vid, TYPE_FRAMESERVER) then

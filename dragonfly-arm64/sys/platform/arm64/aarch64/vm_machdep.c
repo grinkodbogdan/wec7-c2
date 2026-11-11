@@ -68,8 +68,16 @@ cpu_fork(struct lwp *lp1, struct lwp *lp2, int flags)
 		return;
 
 	/* The live FP/SIMD registers are part of what the child inherits. */
-	if (lp1->lwp_thread == curthread)
+	if (lp1->lwp_thread == curthread) {
 		fpu_save(&lp1->lwp_thread->td_pcb->pcb_save);
+		/*
+		 * So is the thread pointer: the pcb only records it when the
+		 * thread is switched out, and a parent that has not been
+		 * since setting up its TLS would hand the child a stale one.
+		 */
+		lp1->lwp_thread->td_pcb->pcb_tpidr_el0 =
+		    READ_SPECIALREG(tpidr_el0);
+	}
 
 	/* Copy lp1's pcb, the child's trapframe sits right below it. */
 	pcb2 = lp2->lwp_thread->td_pcb;
