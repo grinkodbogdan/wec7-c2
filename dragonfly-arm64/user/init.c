@@ -369,8 +369,20 @@ main(void)
 	if (access("/etc/arcan.sh", R_OK) == 0 &&
 	    access("/dev/fb0", R_OK) == 0 &&
 	    access("/dev/input/event0", R_OK) == 0) {
-		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term",
-		    "autorun=uname -a; df -h / /tmp; ls /", NULL };
+		static char autorun[512] = "autorun=uname -a; df -h / /tmp; ls /";
+		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term", autorun, NULL };
+		int afd, n;
+
+		/* /etc/arcan.autorun, if present, replaces the command. */
+		if ((afd = open("/etc/arcan.autorun", O_RDONLY)) >= 0) {
+			n = read(afd, autorun + 8, sizeof(autorun) - 9);
+			if (n > 0) {
+				autorun[8 + n] = 0;
+				if (autorun[8 + n - 1] == '\n')
+					autorun[8 + n - 1] = 0;
+			}
+			close(afd);
+		}
 
 		printf("init: starting Arcan\n");
 		pid = fork();

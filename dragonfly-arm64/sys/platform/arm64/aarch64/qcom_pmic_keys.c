@@ -41,6 +41,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/kthread.h>
+#include <sys/sysctl.h>
 
 #include <dev/misc/evdev/input.h>
 #include <dev/misc/evdev/evdev.h>
@@ -219,6 +220,48 @@ keys_thread(void *arg __unused)
 	}
 }
 
+/* An evdev device, the interface Arcan and others read. */
+static void
+keys_register_evdev(void)
+{
+	keys_evdev = evdev_alloc();
+	evdev_set_name(keys_evdev, "Mi 5 buttons");
+	evdev_set_phys(keys_evdev, "pm8994-pon+gpio");
+	evdev_set_id(keys_evdev, BUS_HOST, 0, 0, 0);
+	evdev_support_event(keys_evdev, EV_SYN);
+	evdev_support_event(keys_evdev, EV_KEY);
+	for (int i = 0; i < 4; ++i)
+		evdev_support_key(keys_evdev, key_codes[i]);
+	if (evdev_register(keys_evdev) != 0) {
+		evdev_free(keys_evdev);
+		keys_evdev = NULL;
+	}
+}
+
+/*
+ * sysctl machdep.key_inject=CODE: press and release a key through the
+ * evdev device, for testing what reads it (QEMU has no buttons).
+ */
+static int
+sysctl_key_inject(SYSCTL_HANDLER_ARGS)
+{
+	int code = 0, error;
+
+	error = sysctl_handle_int(oidp, &code, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (keys_evdev == NULL)
+		return (ENXIO);
+	evdev_push_key(keys_evdev, code, 1);
+	evdev_sync(keys_evdev);
+	evdev_push_key(keys_evdev, code, 0);
+	evdev_sync(keys_evdev);
+	return (0);
+}
+SYSCTL_PROC(_machdep, OID_AUTO, key_inject, CTLTYPE_INT | CTLFLAG_WR, 0, 0,
+    sysctl_key_inject, "I", "inject a key press and release");
+
+
 static void
 msm8996_keys_init(void *dummy __unused)
 {
@@ -226,8 +269,15 @@ msm8996_keys_init(void *dummy __unused)
 	uint8_t pon = 0, g1 = 0, g2 = 0;
 	int enable = 1;
 
-	if (!msm8996_is_present())
+	if (!msm8996_is_present()) {
+		/* keys.fake=1: the evdev device alone, fed by key_inject */
+		int fake = 0;
+
+		TUNABLE_INT_FETCH("keys.fake", &fake);
+		if (fake)
+			keys_register_evdev();
 		return;
+	}
 	TUNABLE_INT_FETCH("msm8996.keys", &enable);
 	if (!enable)
 		return;
@@ -246,19 +296,7 @@ msm8996_keys_init(void *dummy __unused)
 	    rd(TLMM_IN_OUT(HOME_GPIO)) & 1);
 	TUNABLE_INT_FETCH("msm8996.keys_verbose", &keys_verbose);
 
-	/* An evdev device, the interface Arcan and others read. */
-	keys_evdev = evdev_alloc();
-	evdev_set_name(keys_evdev, "Mi 5 buttons");
-	evdev_set_phys(keys_evdev, "pm8994-pon+gpio");
-	evdev_set_id(keys_evdev, BUS_HOST, 0, 0, 0);
-	evdev_support_event(keys_evdev, EV_SYN);
-	evdev_support_event(keys_evdev, EV_KEY);
-	for (int i = 0; i < 4; ++i)
-		evdev_support_key(keys_evdev, key_codes[i]);
-	if (evdev_register(keys_evdev) != 0) {
-		evdev_free(keys_evdev);
-		keys_evdev = NULL;
-	}
+	keys_register_evdev();
 	kthread_create(keys_thread, NULL, &td, "keys");
 }
 SYSINIT(msm8996keys, SI_SUB_CONFIGURE, SI_ORDER_ANY, msm8996_keys_init, NULL);

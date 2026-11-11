@@ -291,8 +291,8 @@ static void blit_to_fb()
 				case 32: /* XRGB8888 little-endian: B G R X */
 					d[0] = src[2]; d[1] = src[1]; d[2] = src[0]; d[3] = 0xff;
 				break;
-				case 24: /* RGB888, as LK sets up the Mi 5's panel */
-					d[0] = src[0]; d[1] = src[1]; d[2] = src[2];
+				case 24: /* packed 24-bit, blue first (the Mi 5 as LK sets it up) */
+					d[0] = src[2]; d[1] = src[1]; d[2] = src[0];
 				break;
 				default: /* RGB565 */
 					*(uint16_t*)d = (src[0] >> 3) << 11 |

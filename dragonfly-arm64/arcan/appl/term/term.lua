@@ -100,9 +100,20 @@ function term(args)
 	spawn()
 end
 
+-- The phone's buttons: Arcan's evdev platform files a device with a few
+-- keys as a game device, so they arrive as digital events with the Linux
+-- key code in subid; a keyboard's would arrive translated, code in number.
+local function button_code(iotbl)
+	if iotbl.translated then
+		return iotbl.number
+	elseif iotbl.digital then
+		return iotbl.subid
+	end
+end
+
 function term_input(iotbl)
-	if iotbl.translated and iotbl.number then
-		local code = iotbl.number
+	local code = button_code(iotbl)
+	if code then
 		if code == KEY_VOLUP or code == KEY_VOLDOWN or
 			code == KEY_POWER or code == KEY_HOME then
 			if not iotbl.active then

@@ -529,6 +529,16 @@ in, home sends Ctrl-C. In QEMU, `tools/qemu-shot.py` captures it: a typed
 `uname -a; ls /; df -h /tmp; ps ax` runs and prints in the terminal.
 On the phone, init starts it after the self-tests (`/etc/arcan.sh`).
 
+**Twenty-first boot: Arcan on the phone.** Arcan started from init, the
+terminal ran its autorun commands, and the command bar drew, but red and
+blue were swapped (the 24-bit framebuffer LK sets up is blue-first) and
+the buttons did nothing: Arcan's evdev platform files a device with only
+four keys as a game device, so they arrive as digital events with the
+key code in `subid`, which the appl did not handle. Both are fixed; the
+button path is now tested in QEMU with `keys.fake=1` (the evdev device
+without hardware) and `sysctl machdep.key_inject=CODE`, typed into
+Arcan's own terminal from `/etc/arcan.autorun`.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
