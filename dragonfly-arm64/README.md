@@ -378,6 +378,13 @@ set up from inside the cluster), and the power cluster is left at the
 bootloader's setting. The boot argument `msm8996.perfcl=1` stops at
 300 MHz, and `msm8996.perfcl=0` leaves the cluster alone.
 
+**Tenth boot: four cores, full self-test passes.** Measured clocks
+cpu0 1228, cpu1 1228, cpu2 1036, cpu3 1036 MHz; timer interrupts about
+250 per second on every core. One busy process took 4938 ms, four at
+once 5841 ms (3.3x). That is what the clocks predict: the four finish
+when the two slower cores do, 4938 x 1228 / 1036 = 5853 ms. All checks
+passed, and the shell runs.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
