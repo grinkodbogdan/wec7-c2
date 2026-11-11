@@ -405,6 +405,17 @@ once 5841 ms (3.3x). That is what the clocks predict: the four finish
 when the two slower cores do, 4938 x 1228 / 1036 = 5853 ms. All checks
 passed, and the shell runs.
 
+**Eleventh boot: real userland.** The kernel self-test passed, then
+every run of DragonFly's `sh` died with SIGILL ("unknown reason", the
+CPU's undefined-instruction exception) at the first instruction of
+`mmap`, a valid instruction. The instruction cache was stale: the
+kernel synchronised it after loading program pages by invalidating by
+the direct-map address, and the Kryo's virtually indexed instruction
+cache keeps the user mapping's lines elsewhere. QEMU models no caches.
+The twelfth image invalidates the whole instruction cache on CPUs whose
+`CTR_EL0` reports a non-PIPT instruction cache, as Linux does, and a
+SIGILL of this kind also prints the instruction word in memory.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

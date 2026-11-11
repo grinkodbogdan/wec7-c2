@@ -482,6 +482,19 @@ trap_el0(struct trapframe *frame)
 			    td->td_proc->p_comm, esr_class_name(ec),
 			    (uintmax_t)frame->tf_elr,
 			    (uintmax_t)frame->tf_far, sig);
+			if (ec == EXCP_UNKNOWN) {
+				uint32_t insn = 0;
+
+				/*
+				 * What memory holds there: a valid
+				 * instruction means the instruction cache
+				 * was stale.
+				 */
+				copyin((void *)frame->tf_elr, &insn,
+				    sizeof(insn));
+				kprintf("pid %d: instruction word there is "
+				    "0x%08x\n", td->td_proc->p_pid, insn);
+			}
 		}
 		trapsignal(lp, sig, code);
 	}

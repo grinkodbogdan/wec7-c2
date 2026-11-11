@@ -198,8 +198,20 @@ arm64_sync_icache(vm_offset_t va, vm_size_t len)
 	for (p = va & ~(dline - 1); p < eva; p += dline)
 		__asm __volatile("dc cvau, %0" : : "r" (p));
 	__asm __volatile("dsb ish");
-	for (p = va & ~(iline - 1); p < eva; p += iline)
-		__asm __volatile("ic ivau, %0" : : "r" (p));
+
+	/*
+	 * Invalidating by address only reaches the lines for this
+	 * address.  A virtually indexed instruction cache (CTR_EL0.L1Ip
+	 * other than PIPT, as on the Snapdragon 820's Kryo) can hold the
+	 * same code under the user mapping's index too, so invalidate all
+	 * of it on every cpu, as Linux does for such caches.
+	 */
+	if (((ctr >> 14) & 3) != 3) {
+		__asm __volatile("ic ialluis");
+	} else {
+		for (p = va & ~(iline - 1); p < eva; p += iline)
+			__asm __volatile("ic ivau, %0" : : "r" (p));
+	}
 	__asm __volatile("dsb ish\n\tisb");
 }
 
