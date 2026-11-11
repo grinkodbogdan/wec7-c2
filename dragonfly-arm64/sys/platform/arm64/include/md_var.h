@@ -94,6 +94,7 @@ struct thread;
 u_long	initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys);
 int	bootinfo_selftest(void);
 void	arm64_selftest(void);
+void	arm64_simulate_bootloader_irq(void);
 void	trap_el0(struct trapframe *frame);
 void	arm64_user_return(struct trapframe *frame);
 

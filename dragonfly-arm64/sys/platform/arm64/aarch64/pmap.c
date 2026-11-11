@@ -480,6 +480,9 @@ pmap_init(void)
 	vm_pindex_t initial_pvs;
 	vm_pindex_t i;
 
+	if (bootverbose)
+		kprintf("boot: pmap_init, %ld pages\n", vm_page_array_size);
+
 	/* vm_page_startup() does not run pmap_page_init() on these. */
 	for (i = 0; i < vm_page_array_size; i++) {
 		vm_page_t m = &vm_page_array[i];
@@ -499,6 +502,8 @@ pmap_init(void)
 	zbootinit(pvzone, "PV ENTRY", sizeof(struct pv_entry), pvinit,
 	    initial_pvs);
 	pmap_initialized = TRUE;
+	if (bootverbose)
+		kprintf("boot: pmap_init done\n");
 }
 
 /*
@@ -636,6 +641,10 @@ pmap_kremove_noinval(vm_offset_t va)
 vm_offset_t
 pmap_map(vm_offset_t *virtp, vm_paddr_t start, vm_paddr_t end, int prot)
 {
+	if (bootverbose) {
+		kprintf("boot: pmap_map %jx-%jx\n", (uintmax_t)start,
+		    (uintmax_t)end);
+	}
 	return (PHYS_TO_DMAP(start));
 }
 

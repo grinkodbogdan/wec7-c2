@@ -205,7 +205,7 @@ naming what is missing, so hitting one is obvious.
 ## Xiaomi Mi 5
 
 The Mi 5 (codename gemini, Snapdragon 820 / MSM8996) is the target phone.
-**This kernel has not been run on one yet.** What follows is ready to try.
+It has been tried once. See [Hardware results](#hardware-results).
 
 The phone-specific facts used here (where the bootloader loads things, the
 watchdog it leaves running, how to find and refresh the display, the RAM log
@@ -229,8 +229,13 @@ returns to Android. Hold volume down + power to reach fastboot mode.
 If it works, the bootloader's logo is replaced by white-on-black boot text
 ending in the 14 self-test lines, `All checks passed.` and a `#` prompt, as in
 `screenshot-fbcons.png`. The prompt cannot be used: there is no touch or key
-driver. `MI5_APPEND="..." ./build.sh mi5` adds boot arguments (`-v` for a
-verbose boot).
+driver.
+
+The image boots verbose by default (`-v`): before the usual messages it
+prints lines starting with `boot:` that give the memory layout the bootloader
+handed over, then one line per early boot stage. If the phone stops, the last
+`boot:` line on the screen says where. `MI5_APPEND="..." ./build.sh mi5`
+replaces the extra boot arguments; `MI5_APPEND=""` gives a quiet boot.
 
 ### If the screen shows nothing
 
@@ -254,13 +259,32 @@ To read it: hold power until the phone restarts, boot TWRP for gemini with
 - Uses the GICv3 interrupt controller under the `soc` bus, PSCI over SMC,
   and both memory banks (3 GB and 4 GB models).
 
+- Takes over the interrupt controller and switches off the timers before
+  enabling interrupts, since the bootloader leaves both running.
+
+### Hardware results
+
+**First boot (10 November 2026), 3 GB model.** The bootloader accepted the
+image, the kernel ran, found the display and drew the DragonFly copyright
+notice over the fastboot screen in the right colours and font. It then
+stopped.
+
+Cause: the kernel enabled interrupts before it had set up the interrupt
+controller. The bootloader leaves the controller enabled with an interrupt
+pending (its timer), and with no controller set up that interrupt could not
+be acknowledged, so the processor took it again forever. QEMU starts with a
+quiet controller, which is why the emulator never showed it. The boot
+argument `lkirq` now recreates the bootloader's state in QEMU: the first
+image stops at exactly the same line, the fixed one boots to the shell.
+
+Confirmed on hardware by that boot: image format and load addresses, the
+watchdog stop, the device tree reader, finding the framebuffer, the pixel
+format and the panel refresh.
+
 ### What is untested or missing
 
-- **Everything above on real hardware.** It works on emulated machines and on
-  the phone's device tree, not on the phone.
-- **The display path.** The register layout is taken from rpiios's working
-  loader; this kernel's code for it has never driven a real panel. If the
-  text is garbled rather than absent, the pixel format guess is wrong.
+- **Anything after the copyright notice on real hardware.** The second test
+  image has the interrupt fix and the verbose boot report.
 - **Input.** No touch, keys or USB.
 - **Everything after first boot.** Storage (UFS), USB, touch, display
   control, power management, charging and the modem each need a driver for

@@ -220,6 +220,12 @@ arm64_intr(struct trapframe *frame)
 
 	while ((iar = gic_ack()) != -1) {
 		irq = iar & 0x3ff;
+		if (arm64_nirqs == 0) {
+			/* Should not happen now the GIC starts early. */
+			gic_disable_irq(irq);
+			gic_eoi(iar);
+			continue;
+		}
 
 		if (irq == arm64_bootinfo.bi_timer_irq) {
 			/*

@@ -30,6 +30,8 @@
 #include <machine/atomic.h>
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
+#include <machine/vmparam.h>
+#include <cpu/armreg.h>
 
 static int selftest_failures;
 
@@ -115,4 +117,50 @@ arm64_selftest(void)
 
 	kprintf("selftest: atomic and bit primitives %s\n",
 	    selftest_failures ? "FAILED" : "passed");
+}
+
+/*
+ * Boot argument "lkirq": before the kernel sets up the interrupt
+ * controller, leave it the way Qualcomm's LK bootloader does on a
+ * phone, enabled and with an interrupt pending (an expired timer).  A
+ * kernel that unmasks interrupts before taking control of the
+ * controller then hangs in an endless interrupt; this reproduces the
+ * first-boot hang seen on a Xiaomi Mi 5 under QEMU.  GICv3 only.
+ */
+void
+arm64_simulate_bootloader_irq(void)
+{
+	struct arm64_bootinfo *bi = &arm64_bootinfo;
+	volatile uint8_t *d, *r;
+	uint32_t intid;
+
+	if (bi->bi_bootargs == NULL || strstr(bi->bi_bootargs, "lkirq") == NULL)
+		return;
+	if (bi->bi_gic_version != 3) {
+		kprintf("lkirq: needs a GICv3, ignored\n");
+		return;
+	}
+	intid = bi->bi_timer_irq;
+	d = (volatile uint8_t *)PHYS_TO_DMAP(bi->bi_gicd_base);
+	r = (volatile uint8_t *)PHYS_TO_DMAP(bi->bi_gicc_base);
+
+	*(volatile uint32_t *)(d + 0x000) = 0x13;	/* ARE_NS | Grp1 */
+	*(volatile uint32_t *)(r + 0x014) &= ~2U;	/* WAKER: awake */
+	while (*(volatile uint32_t *)(r + 0x014) & 4)
+		;
+	*(volatile uint32_t *)(r + 0x10080) = 0xffffffff; /* group 1 */
+	r[0x10400 + intid] = 0x80;			/* priority */
+	*(volatile uint32_t *)(r + 0x10100) = 1U << intid; /* enable */
+
+	WRITE_SPECIALREG(S3_0_C12_C12_5, READ_SPECIALREG(S3_0_C12_C12_5) | 1);
+	__asm __volatile("isb");
+	WRITE_SPECIALREG(S3_0_C4_C6_0, 0xff);		/* ICC_PMR_EL1 */
+	WRITE_SPECIALREG(S3_0_C12_C12_7, 1);		/* ICC_IGRPEN1_EL1 */
+	__asm __volatile("isb");
+
+	WRITE_SPECIALREG(cntv_tval_el0, 0);		/* expired */
+	WRITE_SPECIALREG(cntv_ctl_el0, CNTx_CTL_ENABLE);
+	__asm __volatile("isb");
+	kprintf("lkirq: interrupt %u left pending, as by a bootloader\n",
+	    intid);
 }

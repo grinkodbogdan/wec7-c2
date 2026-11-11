@@ -220,6 +220,77 @@ add_phys_avail(vm_paddr_t start, vm_paddr_t end,
 }
 
 /*
+ * With a verbose boot, say what the firmware handed over before the
+ * machine-independent kernel starts.  On new hardware this is the
+ * first thing worth photographing: everything that can go wrong in
+ * early memory setup follows from these numbers.
+ */
+static void
+boot_report(vm_paddr_t fdt_pa, vm_paddr_t kernphys, vm_paddr_t firstaddr,
+	    const struct arm64_memregion *reserved, int nreserved)
+{
+	struct arm64_bootinfo *bi = &arm64_bootinfo;
+	int i;
+
+	kprintf("boot: EL%d midr %08jx cntfrq %ju dt-freq %u\n",
+	    (int)CURRENTEL_EL(READ_SPECIALREG(CurrentEL)),
+	    (uintmax_t)READ_SPECIALREG(midr_el1),
+	    (uintmax_t)READ_SPECIALREG(cntfrq_el0), bi->bi_timer_freq);
+	kprintf("boot: kernel %jx-%jx fdt %jx+%x initrd %jx-%jx\n",
+	    (uintmax_t)kernphys, (uintmax_t)firstaddr, (uintmax_t)fdt_pa,
+	    bi->bi_fdt_size, (uintmax_t)bi->bi_initrd_start,
+	    (uintmax_t)bi->bi_initrd_end);
+	kprintf("boot: fb %jx %ux%u stride %u bpp %u wdt %jx\n",
+	    (uintmax_t)bi->bi_fb_base, bi->bi_fb_width, bi->bi_fb_height,
+	    bi->bi_fb_stride, bi->bi_fb_bpp, (uintmax_t)bi->bi_wdt_base);
+	kprintf("boot: gic v%d %jx %jx timer irq %d psci %d cpus %d\n",
+	    bi->bi_gic_version, (uintmax_t)bi->bi_gicd_base,
+	    (uintmax_t)bi->bi_gicc_base, bi->bi_timer_irq, bi->bi_psci,
+	    bi->bi_ncpus);
+	for (i = 0; i < bi->bi_nmem; ++i) {
+		kprintf("boot: ram %jx-%jx\n",
+		    (uintmax_t)bi->bi_mem[i].mr_start,
+		    (uintmax_t)(bi->bi_mem[i].mr_start +
+		    bi->bi_mem[i].mr_size));
+	}
+	for (i = 0; i < nreserved; ++i) {
+		kprintf("boot: resv %jx-%jx%s\n",
+		    (uintmax_t)reserved[i].mr_start,
+		    (uintmax_t)(reserved[i].mr_start + reserved[i].mr_size),
+		    i < 2 ? (i == 0 ? " kernel" : " fdt") : "");
+	}
+	kprintf("boot: %lu MB unmapped as firmware memory\n",
+	    arm64_nomap_pages >> (20 - PAGE_SHIFT));
+	for (i = 0; phys_avail[i].phys_end != 0; ++i) {
+		kprintf("boot: free %jx-%jx\n",
+		    (uintmax_t)phys_avail[i].phys_beg,
+		    (uintmax_t)phys_avail[i].phys_end);
+	}
+	kprintf("boot: entering mi_startup\n");
+}
+
+/*
+ * Progress markers for a verbose boot, one after each early stage of
+ * mi_startup().  If the machine stops, the last one on the screen says
+ * which stage it was in.
+ */
+static void
+boot_stage(void *arg)
+{
+	if (bootverbose)
+		kprintf("boot: %s done\n", (const char *)arg);
+}
+SYSINIT(stage_lock, SI_BOOT1_LOCK, SI_ORDER_ANY, boot_stage, "locks");
+SYSINIT(stage_vm, SI_BOOT1_VM, SI_ORDER_ANY, boot_stage, "vm");
+SYSINIT(stage_alloc, SI_BOOT1_ALLOCATOR, SI_ORDER_ANY, boot_stage,
+    "allocator");
+SYSINIT(stage_kmalloc, SI_BOOT1_KMALLOC, SI_ORDER_ANY, boot_stage, "kmalloc");
+SYSINIT(stage_post, SI_BOOT1_POST, SI_ORDER_ANY, boot_stage, "boot1");
+SYSINIT(stage_crit, SI_BOOT2_LEAVE_CRIT, SI_ORDER_ANY, boot_stage,
+    "interrupts on");
+SYSINIT(stage_presmp, SI_BOOT2_PRESMP, SI_ORDER_ANY, boot_stage, "presmp");
+
+/*
  * C entry point, reached from locore.S with the MMU on and the kernel
  * running at KERNBASE on a temporary stack.  This is the counterpart
  * of pc64's hammer_time(): it sets up everything mi_startup() takes
@@ -337,9 +408,23 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	init_param2(physmem);
 	msgbufinit(msgbufp, MSGBUF_SIZE);
 
+	/*
+	 * The interrupt controller has to be in a known state before
+	 * mi_startup() unmasks interrupts (leavecrit, SI_BOOT2_LEAVE_CRIT):
+	 * a bootloader may leave it enabled with interrupts pending, and
+	 * one that cannot be acknowledged is taken again and again
+	 * forever.  This is what stopped the first boot on a Xiaomi Mi 5
+	 * right after the copyright notice.
+	 */
+	arm64_simulate_bootloader_irq();
+	arm64_intr_init();
+
 	thread0.td_pcb->pcb_flags = 0;
 	thread0.td_pcb->pcb_ttbr0 = arm64_ttbr0_kernel;
 	lwp0.lwp_md.md_regs = &proc0_tf;
+
+	if (bootverbose)
+		boot_report(fdt_pa, kernphys, firstaddr, reserved, nreserved);
 
 	return ((u_long)thread0.td_pcb);
 }
@@ -392,8 +477,6 @@ cpu_startup(void *dummy __unused)
 	}
 	if (bootinfo_selftest())
 		arm64_selftest();
-
-	arm64_intr_init();
 
 	/*
 	 * Allocate space for system data structures.  The first

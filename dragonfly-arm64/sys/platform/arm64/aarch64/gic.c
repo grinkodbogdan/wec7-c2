@@ -57,6 +57,7 @@
  * hardware, seen from the non-secure side) or one (QEMU by default).
  */
 #define	GICD_CTLR_ENABLE	0x03
+#define	GICD_CTLR_RWP		(1U << 31)	/* register write pending */
 #define	GICD_CTLR_ARE_NS	0x10
 #define	GICD_IGROUPR(n)		(0x080 + 4 * ((n) / 32))
 #define	GICD_IROUTER(n)		(0x6000 + 8 * (n))
@@ -107,6 +108,19 @@ gic_write(volatile uint8_t *base, u_int off, uint32_t val)
  * GICv3: find the boot cpu's redistributor, wake it, and bring up the
  * system register cpu interface.
  */
+/* Wait until a distributor control write has taken effect (v3). */
+static void
+gic_v3_wait_rwp(void)
+{
+	int n;
+
+	for (n = 0; n < 1000000; ++n) {
+		if ((gic_read(gicd, GICD_CTLR) & GICD_CTLR_RWP) == 0)
+			return;
+		cpu_pause();
+	}
+}
+
 static void
 gic_v3_init(vm_paddr_t gicr_pa)
 {
@@ -144,6 +158,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 
 	/* Shared interrupts: group 1, off, routed to this cpu. */
 	gic_write(gicd, GICD_CTLR, 0);
+	gic_v3_wait_rwp();
 	for (irq = GIC_FIRST_SPI; irq < gic_nirqs; irq += 32) {
 		gic_write(gicd, GICD_IGROUPR(irq), 0xffffffff);
 		gic_write(gicd, GICD_ICENABLER(irq), 0xffffffff);
@@ -154,6 +169,7 @@ gic_v3_init(vm_paddr_t gicr_pa)
 		    mpidr & MPIDR_AFF_MASK;
 	}
 	gic_write(gicd, GICD_CTLR, GICD_CTLR_ARE_NS | GICD_CTLR_ENABLE);
+	gic_v3_wait_rwp();
 
 	/* The cpu interface. */
 	WRITE_SPECIALREG(ICC_SRE_EL1, READ_SPECIALREG(ICC_SRE_EL1) | 1);

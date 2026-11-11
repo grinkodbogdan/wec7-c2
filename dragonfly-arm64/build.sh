@@ -260,6 +260,11 @@ ramdisk() {
 # matches the board and fills in memory, command line and ramdisk.
 # This follows the recipe proven on a real Mi 5 by the rpiios project
 # (mi5/dtb.sh, shim/build-mi5.sh).  Needs cpp and dtc.
+#
+# MI5_APPEND adds boot arguments.  It defaults to "-v", a verbose boot
+# that reports the memory layout and each early boot stage on screen,
+# which is what is wanted while bringing the phone up; MI5_APPEND=""
+# turns that off.
 MI5_KERNEL_REPO=https://github.com/LineageOS/android_kernel_xiaomi_msm8996
 MI5_KERNEL_SHA=535079d2fa367e4a4ea2111e5903c62dced89cd2	# lineage-22.2
 
@@ -288,7 +293,7 @@ mi5() {
 	done
 	python3 "$HERE/tools/mkbootimg.py" --kernel "$OBJ/kernel.img" \
 	    --ramdisk "$OBJ/root.iso" $dtbargs \
-	    --cmdline "vfs.root.mountfrom=cd9660:md0 $MI5_APPEND" \
+	    --cmdline "vfs.root.mountfrom=cd9660:md0 ${MI5_APPEND--v}" \
 	    -o "$OBJ/dragonfly-mi5-boot.img"
 }
 
