@@ -36,6 +36,7 @@ and lays this directory's `sys/` tree over it.
 | `sys/platform/arm64/include/` | Platform headers: per-CPU data, thread, PCB, pmap, address space layout |
 | `sys/platform/arm64/conf/` | Kernel linker script |
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
+| `patches/ext2fs-4k-sectors.diff` | ext2fs reads its superblock as a whole 4KB block, for disks with 4KB sectors |
 | `patches/libc-aarch64.diff` | Edits to shared libc and header files: TLS variant I in `gen/tls.c`, quad-precision `long double` in `<float.h>`, the thread library's spin hint |
 | `lib/libc/aarch64/`, `lib/libc/thread/aarch64/` | The C library's machine-dependent part: system call stubs, `setjmp`, `getcontext`/`makecontext`, FP control (setjmp and FP files from FreeBSD/arm64) |
 | `lib/csu/aarch64/` | Program startup files (`crt1`, `crti`/`crtn`, a minimal `crtbegin`/`crtend`) |
@@ -451,6 +452,12 @@ found a GPT on all six, and LUN 0's 14 partitions appeared as
 0.9 s (74.5 MB/s) polled, one request at a time, through a bounce
 buffer. The sixteenth image adds ext2fs (ext4 read-only, tested in QEMU
 through `vn`) and mounts Android's `persist` and `cache` read-only.
+
+**Sixteenth boot.** Both mounts failed: ext2fs read the superblock as
+the 1KB at byte 1024, and the disk layer refused a transfer smaller than
+the flash's 4KB sector (`dscheck: b_bcount 1024 is not on a sector
+boundary`). `patches/ext2fs-4k-sectors.diff` reads the first 4KB of the
+device instead and takes the superblock from inside it.
 
 ### What is untested or missing
 

@@ -1,0 +1,54 @@
+diff --git a/sys/vfs/ext2fs/ext2_vfsops.c b/sys/vfs/ext2fs/ext2_vfsops.c
+index bc33622a08..e80917c4c2 100644
+--- a/sys/vfs/ext2fs/ext2_vfsops.c
++++ b/sys/vfs/ext2fs/ext2_vfsops.c
+@@ -813,18 +813,18 @@ ext2_reload(struct mount *mp)
+ 	 * Step 2: re-read superblock from disk.
+ 	 * constants have been adjusted for ext2
+ 	 */
+-	if ((error = bread(devvp, SBOFF, SBSIZE, &bp)) != 0) {
++	if ((error = bread(devvp, 0, SBREADSIZE, &bp)) != 0) {
+ 		brelse(bp);
+ 		return (error);
+ 	}
+-	es = (struct ext2fs *)bp->b_data;
++	es = (struct ext2fs *)((char *)bp->b_data + SBOFF);
+ 	if (ext2_check_sb_compat(es, devvp->v_rdev,
+ 	    (mp->mnt_flag & MNT_RDONLY) != 0) != 0) {
+ 		brelse(bp);
+ 		return (EIO);		/* XXX needs translation */
+ 	}
+ 	fs = VFSTOEXT2(mp)->um_e2fs;
+-	bcopy(bp->b_data, fs->e2fs, sizeof(struct ext2fs));
++	bcopy(es, fs->e2fs, sizeof(struct ext2fs));
+ 
+ 	if ((error = ext2_compute_sb_data(devvp, es, fs)) != 0) {
+ 		brelse(bp);
+@@ -909,9 +909,9 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
+ 
+ 	bp = NULL;
+ 	ump = NULL;
+-	if ((error = bread(devvp, SBOFF, SBSIZE, &bp)) != 0)
++	if ((error = bread(devvp, 0, SBREADSIZE, &bp)) != 0)
+ 		goto out;
+-	es = (struct ext2fs *)bp->b_data;
++	es = (struct ext2fs *)((char *)bp->b_data + SBOFF);
+ 	if (ext2_check_sb_compat(es, dev, ronly) != 0) {
+ 		error = EINVAL;		/* XXX needs translation */
+ 		goto out;
+diff --git a/sys/vfs/ext2fs/fs.h b/sys/vfs/ext2fs/fs.h
+index 3e539f5bd4..63f5097cf8 100644
+--- a/sys/vfs/ext2fs/fs.h
++++ b/sys/vfs/ext2fs/fs.h
+@@ -59,6 +59,11 @@
+ #define	SBSIZE		1024
+ #define	SBLOCK		2
+ #define	SBOFF		((off_t)1024)
++/*
++ * The superblock is read as the first 4KB of the device, so that disks
++ * with sectors up to 4KB (UFS flash, for one) can be read whole.
++ */
++#define	SBREADSIZE	4096
+ 
+ /*
+  * The path name on which the file system is mounted is maintained
