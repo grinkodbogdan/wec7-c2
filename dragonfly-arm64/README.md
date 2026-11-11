@@ -539,13 +539,37 @@ button path is now tested in QEMU with `keys.fake=1` (the evdev device
 without hardware) and `sysctl machdep.key_inject=CODE`, typed into
 Arcan's own terminal from `/etc/arcan.autorun`.
 
+### Touchscreen
+
+`qcom_touch.c` drives the panel's Synaptics RMI4 touch controller (I2C
+address 0x20) on BLSP2 QUP6, the bus the device tree calls `i2c12`. No
+BSD has a driver for the QUP I2C controller or for RMI4, so both follow
+Linux's register sequences (`i2c-qup.c`, version 1 tags, polled rather than
+interrupt driven; `drivers/input/rmi4`), written afresh. A kernel thread
+turns on the bus clocks and pins, finds the controller (powering it and
+releasing its reset if it does not answer), reads the RMI4 function table,
+configures F01, parses F12's register descriptors, and then samples the
+finger objects at 60Hz. Touches go out through a multitouch evdev device,
+`/dev/input/event1`, in panel pixels.
+
+The `term` appl now has an on-screen keyboard above the command bar
+(letters, digits, shift, a symbol layer, Ctrl, Tab, Enter, Delete), and a
+tap on the bar chooses (left or right third) or runs (middle) a command.
+Arcan's evdev platform needed one fix: the first touch after start came
+through as a release. In QEMU, `touch.fake=1` provides the evdev device
+without hardware and `sysctl machdep.touch_inject=X*65536+Y` taps;
+`user/touchtest.sh` types `ls` and Enter on the keyboard that way.
+
+**Twenty-fourth image: touch.** Untested on the phone. On start, Arcan's
+terminal runs `dmesg | grep touch`, which shows how far the bring-up got.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
   in two variants: all four cores, and `cpus=2` (the boot cluster only).
-- **Input.** No touch, keys or USB.
-- **Everything after boot.** Storage (UFS), USB, touch, display control,
-  power management, charging and the modem each need a driver for this chip.
+- **Input.** Buttons work; touch is new and untested on the phone; no USB.
+- **Everything else.** USB, display control (backlight), the GPU, Wi-Fi,
+  audio, power management, charging and the modem each need a driver.
 
 ## Design notes
 
@@ -602,4 +626,5 @@ Imported so far: from FreeBSD/arm64, libc's `setjmp` and FP-control files,
 `crti.S`/`crtn.S`, and `<machine/ieeefp.h>`; from compiler-rt, the
 builtins library. Taken from Linux as register-level protocols, not code:
 the Kryo clock setup (`clk-cpu-8996`), the SPMI PMIC arbiter read sequence
-(`spmi-pmic-arb`) and the GICv3 redistributor quirk.
+(`spmi-pmic-arb`), the QUP I2C controller (`i2c-qup`), the Synaptics RMI4
+touch protocol (`drivers/input/rmi4`) and the GICv3 redistributor quirk.
