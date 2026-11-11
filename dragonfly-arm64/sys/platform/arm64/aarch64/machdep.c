@@ -226,10 +226,16 @@ add_phys_avail(vm_paddr_t start, vm_paddr_t end,
  * log.  On new hardware these are the only way to tell where an early
  * hang happened.
  */
+static int	cons_ready;	/* kprintf() has a console */
+
 void
 boot_mark(const char *s)
 {
-	if (bootverbose)
+	if (!bootverbose)
+		return;
+	if (cons_ready)
+		kprintf("%s", s);	/* shares kprintf's message lock */
+	else
 		cnputs_early(s);
 }
 
@@ -479,6 +485,7 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	cpu_get_initial_mplock();
 
 	cninit();
+	cons_ready = 1;
 	rand_initialize();
 	init_param2(physmem);
 	msgbufinit(msgbufp, MSGBUF_SIZE);

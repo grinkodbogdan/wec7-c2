@@ -40,6 +40,8 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/thread.h>
+#include <sys/globaldata.h>
 #include <sys/kernel.h>
 #include <sys/conf.h>
 #include <sys/cons.h>
@@ -52,6 +54,7 @@
 #include <sys/proc.h>
 #include <sys/caps.h>
 
+#include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
 
@@ -103,12 +106,47 @@ cninit_early(vm_paddr_t uart_base)
  * Raw output for the paths that cannot use kprintf(): before cninit()
  * and while reporting a fault in the console code itself.
  */
-void
-cnputc_early(int c)
+/*
+ * One cpu at a time on the console hardware.
+ *
+ * Besides keeping lines from different cpus apart, this protects the
+ * display: a command-mode panel (the Xiaomi Mi 5's) is sent a frame by
+ * an explicit start command, and a second start while a frame is in
+ * flight desynchronizes it, after which it shows nothing new.  The lock
+ * is recursive per cpu, so a fault taken while printing can still
+ * print, and keeps interrupts off while held.
+ */
+static volatile int cons_owner = -1;
+
+static __inline int
+cons_lock(register_t *daif)
+{
+	int me = mycpuid;
+
+	if (cons_owner == me)
+		return (0);			/* already ours */
+	*daif = intr_disable();
+	while (!atomic_cmpset_int((volatile u_int *)&cons_owner,
+	    (u_int)-1, (u_int)me))
+		cpu_pause();
+	return (1);
+}
+
+static __inline void
+cons_unlock(int locked, register_t daif)
+{
+	if (!locked)
+		return;
+	atomic_store_rel_int((volatile u_int *)&cons_owner, (u_int)-1);
+	intr_restore(daif);
+}
+
+static void
+cnputc_locked(int c)
 {
 	if (uart != NULL) {
 		if (c == '\n')
-			cnputc_early('\r');
+			cnputc_locked('\r');
 		while (uart[UART_FR / 4] & UART_FR_TXFF)
 			;
 		uart[UART_DR / 4] = (uint32_t)c;
@@ -119,10 +157,24 @@ cnputc_early(int c)
 }
 
 void
+cnputc_early(int c)
+{
+	register_t daif = 0;
+	int locked = cons_lock(&daif);
+
+	cnputc_locked(c);
+	cons_unlock(locked, daif);
+}
+
+void
 cnputs_early(const char *s)
 {
+	register_t daif = 0;
+	int locked = cons_lock(&daif);
+
 	while (*s != '\0')
-		cnputc_early(*s++);
+		cnputc_locked(*s++);
+	cons_unlock(locked, daif);
 }
 
 static void
@@ -178,6 +230,8 @@ pl011_cngetc(void *private)
 static void
 pl011_tty_start(struct tty *tp)
 {
+	register_t daif = 0;
+	int locked;
 	char buf[64];
 	int n, i;
 
@@ -188,6 +242,7 @@ pl011_tty_start(struct tty *tp)
 		return;
 	}
 	tp->t_state |= TS_BUSY;
+	locked = cons_lock(&daif);
 	while ((n = clist_qtob(&tp->t_outq, buf, sizeof(buf))) > 0) {
 		for (i = 0; i < n; ++i) {
 			if (uart != NULL) {
@@ -201,6 +256,7 @@ pl011_tty_start(struct tty *tp)
 	}
 	tp->t_state &= ~TS_BUSY;
 	fbcons_flush();			/* a prompt has no newline */
+	cons_unlock(locked, daif);
 	lwkt_reltoken(&tp->t_token);
 	ttwwakeup(tp);
 }

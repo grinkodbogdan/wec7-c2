@@ -331,11 +331,24 @@ does both, and reports every step of starting each core (`smp:` lines: the
 core's power state as the firmware sees it, the call, its result, and how
 long the core took to report in).
 
+**Sixth boot, four cores.** Stopped right after `smp: cpu1: CPU_ON`, this
+time without the second core's lines either, and without the boot core
+reporting the call's result. Two explanations fit both this and the fifth
+boot: the firmware call does not return to the boot core, or the kernel kept
+going and the panel stopped showing new frames. The second is plausible
+because two cores were drawing and refreshing the panel at once, and a second
+"start frame" command while a frame is in flight desynchronizes this panel.
+The seventh image locks the console so only one core at a time draws or
+refreshes the panel. It also has the first secondary core, while it waits,
+report every few seconds what the boot core is doing (for example
+`smp: cpu1 still waiting: boot cpu inside the PSCI CPU_ON call cpu2 for 5 s`),
+which tells the two explanations apart. The boot argument `smp.stall=N`
+reproduces a stuck call in QEMU.
+
 ### What is untested or missing
 
-- **The second cluster's cores on the phone.** The sixth test image comes in
-  three variants: all four cores, `cpus=2` (the boot cluster only) and
-  `cpus=1`.
+- **The second cluster's cores on the phone.** The seventh test image comes
+  in two variants: all four cores, and `cpus=2` (the boot cluster only).
 - **Input.** No touch, keys or USB.
 - **Everything after boot.** Storage (UFS), USB, touch, display control,
   power management, charging and the modem each need a driver for this chip.

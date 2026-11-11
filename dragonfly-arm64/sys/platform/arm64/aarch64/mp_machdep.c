@@ -82,6 +82,24 @@ static cpumask_t smp_startup_mask = CPUMASK_INITIALIZER_ONLYONE;
 static cpumask_t smp_finalize_mask = CPUMASK_INITIALIZER_ONLYONE;
 static volatile int mp_finish;
 static u_long	cpu_mpidr[MAXCPU];	/* hardware id of each logical cpu */
+
+/*
+ * What the boot cpu is doing while it starts the others, for a waiting
+ * secondary to report if the boot cpu stops making progress (a cpu
+ * stuck inside a firmware call cannot report anything itself).
+ */
+static volatile const char *mp_progress = "starting";
+static volatile int mp_progress_cpu;
+static volatile uint64_t mp_progress_since;
+
+static void
+mp_set_progress(const char *what, int cpu)
+{
+	mp_progress_cpu = cpu;
+	mp_progress_since = cpu_cntvct();
+	mp_progress = what;
+	cpu_mfence();
+}
 static int	mp_want;		/* cpus to run, boot cpu included */
 
 /*
@@ -167,7 +185,9 @@ arm64_mp_start(void *dummy __unused)
 	struct privatespace *ps;
 	size_t ipiq_size;
 	int shift, x, err, waited;
+	int stall = -1;
 
+	TUNABLE_INT_FETCH("smp.stall", &stall);
 	ncpus = mp_want;
 	for (shift = 0; (1 << shift) < ncpus; ++shift)
 		;
@@ -196,6 +216,7 @@ arm64_mp_start(void *dummy __unused)
 	 * inside the firmware call.
 	 */
 	for (x = 1; x < ncpus; ++x) {
+		mp_set_progress("setting up", x);
 		if (bootverbose) {
 			kprintf("smp: cpu%d mpidr %lx: power state %d, "
 			    "setting up\n", x, mpidr[x],
@@ -218,7 +239,20 @@ arm64_mp_start(void *dummy __unused)
 
 		if (bootverbose)
 			kprintf("smp: cpu%d: CPU_ON\n", x);
+		mp_set_progress("inside the PSCI CPU_ON call", x);
+		if (stall == x) {
+			/*
+			 * Test hook (smp.stall=N): freeze here for 7 s, the
+			 * way a firmware call that does not return would,
+			 * to exercise the waiting cpu's report.
+			 */
+			uint64_t end = cpu_cntvct() + 7 * arm64_timer_freq();
+
+			while (cpu_cntvct() < end)
+				cpu_pause();
+		}
 		err = psci_cpu_on(mpidr[x], x);
+		mp_set_progress("waiting for", x);
 		if (bootverbose)
 			kprintf("smp: cpu%d: CPU_ON returned %d\n", x, err);
 		if (err != 0 && err != PSCI_E_ALREADY_ON) {
@@ -240,6 +274,7 @@ arm64_mp_start(void *dummy __unused)
 		if (bootverbose)
 			kprintf("smp: cpu%d: joined after %d ms\n", x, waited);
 	}
+	mp_set_progress("done starting cpus", x);
 	if (x < ncpus) {
 		/*
 		 * Run with the cpus that did start.  Their structures were
@@ -295,11 +330,33 @@ ap_init(void)
 	 * when bringing up the second cluster hung, and idling the way
 	 * Linux's waiting cpus do costs nothing.
 	 */
-	for (;;) {
-		cpu_lfence();
-		if (mp_finish != 0)
-			break;
-		__asm __volatile("wfe");
+	{
+		uint64_t freq = arm64_timer_freq();
+		uint64_t next = cpu_cntvct() + 3 * freq;
+		uint64_t kctl;
+
+		/*
+		 * The timer event stream wakes WFE every 2^16 ticks
+		 * (a few ms), so the first secondary can report on the
+		 * boot cpu now and then.
+		 */
+		kctl = READ_SPECIALREG(cntkctl_el1);
+		WRITE_SPECIALREG(cntkctl_el1, (kctl & ~0xf0UL) | (15UL << 4) |
+		    (1UL << 2));
+		for (;;) {
+			cpu_lfence();
+			if (mp_finish != 0)
+				break;
+			if (mycpu->gd_cpuid == 1 && cpu_cntvct() > next) {
+				kprintf("smp: cpu1 still waiting: boot cpu %s "
+				    "cpu%d for %ju s\n", mp_progress,
+				    mp_progress_cpu, (uintmax_t)((cpu_cntvct() -
+				    mp_progress_since) / freq));
+				next = cpu_cntvct() + 3 * freq;
+			}
+			__asm __volatile("wfe");
+		}
+		WRITE_SPECIALREG(cntkctl_el1, kctl);
 	}
 
 	while (try_mplock() == 0) {
