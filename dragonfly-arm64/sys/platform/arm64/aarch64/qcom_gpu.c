@@ -232,13 +232,11 @@ power_up(void)
 		status("vdd_gfx on at %duV", uv);
 	}
 
-	/* 2. the bus clocks and the register interface */
-	if ((error = clk_on("mmss_bimc_gfx", GCC_MMSS_BIMC_GFX)) != 0 ||
-	    (error = clk_on("bimc_gfx", GCC_BIMC_GFX)) != 0 ||
-	    (error = clk_on("gpu_ahb", GPU_AHB_CBCR)) != 0)
-		return (error);
-
-	/* 3. the GPU's always-on domain (its status is in hw_ctrl) */
+	/*
+	 * 2. the GPU's always-on domain (its status is in hw_ctrl).  As in
+	 * Linux, the power domains come before the clocks: the GPU's bus
+	 * clocks do not run while the domain is collapsed.
+	 */
 	wr(GPU_GDSCR, rd(GPU_GDSCR) & ~GDSC_SW_COLLAPSE);
 	if (waitbits(GPU_GDS_HW_CTRL, GDSC_PWR_ON, GDSC_PWR_ON, 1500) &&
 	    waitbits(GPU_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 1500)) {
@@ -246,8 +244,10 @@ power_up(void)
 		    rd(GPU_GDSCR), rd(GPU_GDS_HW_CTRL));
 		return (EIO);
 	}
+	status("gpu gdsc on (0x%08x 0x%08x)", rd(GPU_GDSCR),
+	    rd(GPU_GDS_HW_CTRL));
 
-	/* 4. the GX domain, then release its I/O clamp */
+	/* 3. the GX domain, then release its I/O clamp */
 	wr(GPU_GX_GDSCR, rd(GPU_GX_GDSCR) & ~GDSC_SW_COLLAPSE);
 	if (waitbits(GPU_GX_GDSCR, GDSC_PWR_ON, GDSC_PWR_ON, 1500)) {
 		status("gx gdsc does not power up (0x%08x)",
@@ -256,11 +256,27 @@ power_up(void)
 	}
 	wr(GPU_GX_CLAMP_IO, rd(GPU_GX_CLAMP_IO) & ~1U);
 	DELAY(10);
+	status("gx gdsc on (0x%08x), clamp 0x%x", rd(GPU_GX_GDSCR),
+	    rd(GPU_GX_CLAMP_IO));
 
-	/* 5. the core clocks, at whatever rate their roots have now */
-	if ((error = clk_on("gfx3d", GPU_GX_GFX3D_CBCR)) != 0 ||
-	    (error = clk_on("rbbmtimer", GPU_RBBMTIMER_CBCR)) != 0)
-		return (error);
+	/*
+	 * 4. the clocks, each tried and reported; the GPU's registers are
+	 * only read if the register interface (ahb) and core (gfx3d) run.
+	 */
+	{
+		int e1 = clk_on("mmss_bimc_gfx", GCC_MMSS_BIMC_GFX);
+		int e2 = clk_on("bimc_gfx", GCC_BIMC_GFX);
+		int e3 = clk_on("gpu_ahb", GPU_AHB_CBCR);
+		int e4 = clk_on("gfx3d", GPU_GX_GFX3D_CBCR);
+		int e5 = clk_on("rbbmtimer", GPU_RBBMTIMER_CBCR);
+
+		status("clocks: mmss_bimc_gfx %s, bimc_gfx %s, ahb %s, "
+		    "gfx3d %s, rbbmtimer %s", e1 ? "off" : "on",
+		    e2 ? "off" : "on", e3 ? "off" : "on", e4 ? "off" : "on",
+		    e5 ? "off" : "on");
+		if (e3 || e4)
+			return (EIO);
+	}
 	return (0);
 }
 

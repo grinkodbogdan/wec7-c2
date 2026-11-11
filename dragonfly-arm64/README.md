@@ -631,6 +631,15 @@ once during boot, most of their lines were lost (the twenty-sixth boot
 lost some too). `patches/kprintf-smp.diff` makes it wait, for a bounded
 time and only outside interrupts.
 
+**Twenty-ninth and thirtieth boots.** The vibrator works with Xiaomi's
+settings. The GPU's rail turned out to be off and set to 1.00V (an FTS2.5
+regulator, whose selector counts from 80mV, which the probe first decoded
+as 1.27V and refused); the thirtieth image turned it on, and then the
+GPU's memory-bus clock would not start because the GPU power domain was
+still collapsed. The thirty-first image powers the domains before the
+clocks, as Linux does. The key light's LP5562 still does not answer with
+its enable line driven either way.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the
