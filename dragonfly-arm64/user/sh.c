@@ -113,8 +113,10 @@ static int
 cmd_cpustat(void)
 {
 	static struct kinfo_cputime cp[16];
-	static unsigned long ipis[256];
+	static unsigned long ipis[256], tintr[256];
+	static int mhz[256];
 	size_t len = sizeof(cp), ilen = sizeof(ipis);
+	size_t tlen = sizeof(tintr), mlen = sizeof(mhz);
 	int i, n;
 
 	if (sysctlbyname("kern.cputime", cp, &len) != 0) {
@@ -123,12 +125,16 @@ cmd_cpustat(void)
 	}
 	if (sysctlbyname("machdep.ipis", ipis, &ilen) != 0)
 		memset(ipis, 0, sizeof(ipis));
+	if (sysctlbyname("machdep.timer_intrs", tintr, &tlen) != 0)
+		memset(tintr, 0, sizeof(tintr));
+	if (sysctlbyname("machdep.cpu_mhz", mhz, &mlen) != 0)
+		memset(mhz, 0, sizeof(mhz));
 	n = len / sizeof(cp[0]);
-	printf("cpu      user    system interrupt      idle   ipis\n");
+	printf("cpu  MHz     user   system     intr     idle   ipis  timer\n");
 	for (i = 0; i < n; ++i) {
-		printf("%-3d %9lu %9lu %9lu %9lu %6lu\n", i, cp[i].cp_user +
-		    cp[i].cp_nice, cp[i].cp_sys, cp[i].cp_intr, cp[i].cp_idle,
-		    ipis[i]);
+		printf("%-3d %4d %8lu %8lu %8lu %8lu %6lu %6lu\n", i, mhz[i],
+		    cp[i].cp_user + cp[i].cp_nice, cp[i].cp_sys, cp[i].cp_intr,
+		    cp[i].cp_idle, ipis[i], tintr[i]);
 	}
 	return (0);
 }

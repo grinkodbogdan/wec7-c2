@@ -95,6 +95,11 @@ static u_long	arm64_ipis[MAXCPU];
 SYSCTL_OPAQUE(_machdep, OID_AUTO, ipis, CTLFLAG_RD, arm64_ipis,
     sizeof(arm64_ipis), "LU", "IPIs received, per cpu");
 
+/* Timer interrupts each cpu has taken: a storm shows up here. */
+static u_long	arm64_timer_intrs[MAXCPU];
+SYSCTL_OPAQUE(_machdep, OID_AUTO, timer_intrs, CTLFLAG_RD, arm64_timer_intrs,
+    sizeof(arm64_timer_intrs), "LU", "timer interrupts taken, per cpu");
+
 static void
 gic_abi_intr_disable(int irq)
 {
@@ -241,6 +246,7 @@ arm64_intr(struct trapframe *frame)
 			 */
 			clock_intr_quiesce();
 			gic_eoi(iar);
+			++arm64_timer_intrs[gd->mi.gd_cpuid];
 			if (td->td_critcount || td->td_nest_count) {
 				atomic_set_int(&gd->mi.gd_reqflags, RQF_TIMER);
 			} else {

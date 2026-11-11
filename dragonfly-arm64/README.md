@@ -345,6 +345,21 @@ report every few seconds what the boot core is doing (for example
 which tells the two explanations apart. The boot argument `smp.stall=N`
 reproduces a stuck call in QEMU.
 
+**Seventh boot, four cores.** All four cores came online
+(`SMP: active cpu mask 000000000000000f`), so the earlier hangs were the
+panel desynchronizing under two cores, not the firmware. The boot ran
+through the self-test to the shell, with one failure: one busy process
+took 4.9 s, but four at once took 325 s instead of about 5 s. Work
+landing on a secondary core runs dozens of times slower. QEMU does not
+model this. The leading suspect is clock speed: the bootloader sets the
+clock of the cluster it runs on, and without a cpufreq driver (Linux's
+`clk-cpu-8996`) the other cluster may stay at its 19.2 MHz reference
+clock. 19.2 MHz against roughly 1.3 GHz is close to the 66x measured.
+An interrupt storm on the secondaries would look the same. The eighth
+image tells them apart: each core measures its own clock with interrupts
+off as it starts (`cpu2: running at about N MHz`), and the shell's
+`cpustat` shows the measured speed and timer interrupts per core.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

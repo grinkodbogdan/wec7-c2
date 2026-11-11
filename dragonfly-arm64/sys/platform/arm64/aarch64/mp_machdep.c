@@ -55,6 +55,7 @@
 #include <sys/globaldata.h>
 #include <sys/thread.h>
 #include <sys/mplock2.h>
+#include <sys/sysctl.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -157,6 +158,65 @@ SYSINIT(mpenum, SI_BOOT2_LAPIC, SI_ORDER_FIRST, arm64_mp_enumerate, NULL);
  * Ask the firmware to start the cpu with hardware id (mpidr) at
  * mpentry, which receives (cpu) in x0.
  */
+/*
+ * Each cpu's clock speed, measured once as it starts.  Bootloaders
+ * set the clock of the cluster they run on; the Snapdragon 820's
+ * other cluster can come out of CPU_ON at its 19.2 MHz reference
+ * clock until a cpufreq driver programs its PLL.
+ */
+static int	arm64_cpu_mhz[MAXCPU];
+SYSCTL_OPAQUE(_machdep, OID_AUTO, cpu_mhz, CTLFLAG_RD, arm64_cpu_mhz,
+    sizeof(arm64_cpu_mhz), "I", "clock speed measured at start, per cpu");
+
+/*
+ * Time a chain of dependent adds against the generic timer, with
+ * interrupts off.  Every core this port runs on retires one dependent
+ * add per cycle, so this is the clock rate to within a few percent.
+ */
+static int
+measure_mhz(void)
+{
+	const uint64_t iters = 200000;		/* 8 adds each */
+	uint64_t t0, t1, n, x = 0, freq = arm64_timer_freq();
+	register_t s;
+	int pass, best = 0;
+
+	s = intr_disable();
+	for (pass = 0; pass < 3; ++pass) {	/* warm up, take the best */
+		n = iters;
+		__asm __volatile("isb" ::: "memory");
+		t0 = cpu_cntvct();
+		__asm __volatile(
+		    "1:	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	add %0, %0, #1\n"
+		    "	subs %1, %1, #1\n"
+		    "	b.ne 1b\n"
+		    : "+r" (x), "+r" (n) : : "cc");
+		__asm __volatile("isb" ::: "memory");
+		t1 = cpu_cntvct();
+		if (t1 > t0 && freq != 0) {
+			int mhz = (int)(iters * 8 * freq / (t1 - t0) / 1000000);
+			if (mhz > best)
+				best = mhz;
+		}
+	}
+	intr_restore(s);
+	return (best);
+}
+
+static void
+record_mhz(int cpu)
+{
+	arm64_cpu_mhz[cpu] = measure_mhz();
+	kprintf("cpu%d: running at about %d MHz\n", cpu, arm64_cpu_mhz[cpu]);
+}
+
 static int
 psci_cpu_on(u_long mpidr, int cpu)
 {
@@ -188,6 +248,7 @@ arm64_mp_start(void *dummy __unused)
 	int stall = -1;
 
 	TUNABLE_INT_FETCH("smp.stall", &stall);
+	record_mhz(0);
 	ncpus = mp_want;
 	for (shift = 0; (1 << shift) < ncpus; ++shift)
 		;
@@ -304,6 +365,7 @@ init_secondary(int cpu)
 	WRITE_SPECIALREG(cntv_ctl_el0, 0);	/* no stale timer */
 	gic_init_secondary();
 	gic_enable_irq(arm64_bootinfo.bi_timer_irq);
+	record_mhz(cpu);
 	if (bootverbose) {
 		kprintf("cpu%d: started, mpidr %lx\n", cpu,
 		    READ_SPECIALREG(mpidr_el1) & MPIDR_AFF_MASK);
