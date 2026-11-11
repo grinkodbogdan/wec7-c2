@@ -165,6 +165,7 @@ SYSINIT(mpenum, SI_BOOT2_LAPIC, SI_ORDER_FIRST, arm64_mp_enumerate, NULL);
  * clock until a cpufreq driver programs its PLL.
  */
 static int	arm64_cpu_mhz[MAXCPU];
+static int	clocks_changed;	/* re-measure as the cpus are released */
 SYSCTL_OPAQUE(_machdep, OID_AUTO, cpu_mhz, CTLFLAG_RD, arm64_cpu_mhz,
     sizeof(arm64_cpu_mhz), "I", "clock speed measured at start, per cpu");
 
@@ -348,8 +349,12 @@ arm64_mp_start(void *dummy __unused)
 		ncpus_fit_mask = ncpus_fit - 1;
 	}
 	naps = ncpus - 1;
-	if (ncpus > 1)
+	if (ncpus > 1) {
 		kprintf("SMP: %d cpus\n", ncpus);
+		/* Clock the clusters the bootloader left on their XO. */
+		if (msm8996_cpu_clocks())
+			clocks_changed = 1;
+	}
 }
 SYSINIT(startaps, SI_BOOT2_START_APS, SI_ORDER_FIRST, arm64_mp_start, NULL);
 
@@ -419,6 +424,15 @@ ap_init(void)
 			__asm __volatile("wfe");
 		}
 		WRITE_SPECIALREG(cntkctl_el1, kctl);
+	}
+	if (clocks_changed) {
+		int before = arm64_cpu_mhz[mycpu->gd_cpuid];
+
+		arm64_cpu_mhz[mycpu->gd_cpuid] = measure_mhz();
+		if (arm64_cpu_mhz[mycpu->gd_cpuid] != before) {
+			kprintf("cpu%d: now at about %d MHz\n",
+			    mycpu->gd_cpuid, arm64_cpu_mhz[mycpu->gd_cpuid]);
+		}
 	}
 
 	while (try_mplock() == 0) {

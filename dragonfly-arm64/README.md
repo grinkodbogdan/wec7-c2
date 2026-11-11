@@ -367,6 +367,17 @@ clock and timer interrupt rate in the self-test, just before the
 timing test, and skips that test (reporting a failure) when a core is
 under a quarter of cpu0's speed.
 
+**Ninth boot.** The speed lines settle it: cpu0 runs at about 1228 MHz,
+cpu2 and cpu3 (the performance cluster, mpidr 0x100 and 0x101) at
+19 MHz, the XO reference clock. The bootloader clocks only the cluster
+it runs on. The tenth image programs the performance cluster's clock
+the way Linux's `clk-cpu-8996` does at probe, before any voltage
+change: GPLL0 (300 MHz) while the cluster PLL is set to 1036.8 MHz,
+then the PLL. Linux's ACD leg is skipped (it needs the cluster's L2
+set up from inside the cluster), and the power cluster is left at the
+bootloader's setting. The boot argument `msm8996.perfcl=1` stops at
+300 MHz, and `msm8996.perfcl=0` leaves the cluster alone.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

@@ -50,6 +50,7 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/kernel.h>
 
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
@@ -92,6 +93,7 @@ struct prz_buffer {
 };
 
 static int msm8996_cmd_mode;
+static int msm8996_present;
 static volatile struct prz_buffer *ramlog;
 
 static __inline uint32_t
@@ -238,6 +240,7 @@ msm8996_early_init(struct arm64_bootinfo *bi)
 	if (!match)
 		return (0);
 
+	msm8996_present = 1;
 	bi->bi_gic_no_waker = 1;
 
 	/* First of all: the watchdog, before it bites. */
@@ -251,5 +254,111 @@ msm8996_early_init(struct arm64_bootinfo *bi)
 	/* An fb= boot argument overrides what the MDP reports. */
 	if (bi->bi_fb_base == 0)
 		msm8996_probe_display(bi);
+	return (1);
+}
+
+/*
+ * Kryo cpu clocks (APCC, "qcom,msm8996-apcc" at 0x6400000).
+ *
+ * The bootloader clocks the power cluster (cpus 0-1) it runs on and
+ * leaves the performance cluster (cpus 2-3, mpidr 0x100/0x101) on the
+ * 19.2 MHz XO.  Linux's clk-cpu-8996 driver reprograms both clusters
+ * at probe, before cpufreq touches voltages: muxes to GPLL0 (300 MHz)
+ * while the cluster PLL is configured for L=54 (1036.8 MHz), then the
+ * muxes to the PLL.  Do the same for the performance cluster only,
+ * leaving the bootloader's power cluster setting alone.  Linux takes
+ * the ACD leg (mux 0x32), which needs the cluster's L2 ACD set up from
+ * a cpu in that cluster; the plain PLL leg (mux 0x31) needs nothing.
+ *
+ * Boot argument msm8996.perfcl: 0 leaves the cluster alone, 1 stops at
+ * GPLL0 (300 MHz), 2 (default) runs it from its PLL.
+ */
+#define	APCC_BASE		0x06400000UL
+#define	PERFCL			(APCC_BASE + 0x80000)
+#define	APC_PLL_MODE		0x00
+#define	  PLL_FSM_ENA		(1U << 20)
+#define	  PLL_FSM_RESET		(1U << 21)
+#define	  PLL_ACTIVE		(1U << 30)
+#define	  PLL_LOCK_DET		(1U << 31)
+#define	APC_PLL_L		0x04
+#define	APC_PLL_ALPHA		0x08
+#define	APC_PLL_USER_CTL	0x10
+#define	APC_PLL_CONFIG		0x18
+#define	APC_PLL_CONFIG_U	0x1c
+#define	APC_PLL_TEST		0x20
+#define	APC_PLL_TEST_U		0x24
+#define	APC_MUX			0x40
+#define	  MUX_AUTO_SEL_GPLL0	(3U << 4)
+#define	APC_CLK_CTL		0x44
+#define	  CLK_CTL_AUTO_SEL	(1U << 8)
+#define	APC_PSCTL		0x164
+
+static void
+apcc_rmw(vm_paddr_t reg, uint32_t mask, uint32_t val)
+{
+	wr32(reg, (rd32(reg) & ~mask) | val);
+}
+
+int
+msm8996_cpu_clocks(void)
+{
+	vm_paddr_t b = PERFCL;
+	int mode = 2, i;
+	uint32_t m;
+
+	if (!msm8996_present)
+		return (0);
+	TUNABLE_INT_FETCH("msm8996.perfcl", &mode);
+	kprintf("msm8996: performance cluster clock mux %#x, pll mode %#x\n",
+	    rd32(b + APC_MUX), rd32(b + APC_PLL_MODE));
+	if (mode <= 0)
+		return (0);
+
+	/* Run from GPLL0 (300 MHz) while the PLL is set up. */
+	wr32(b + APC_MUX, 0xc);
+	cpu_mfence();
+	DELAY(5);
+	apcc_rmw(b + APC_MUX, 3U << 4, MUX_AUTO_SEL_GPLL0);
+	if (mode == 1) {
+		kprintf("msm8996: performance cluster on GPLL0\n");
+		return (1);
+	}
+
+	/* clk_alpha_pll_configure() with Linux's hfpll_config */
+	wr32(b + APC_PLL_L, 54);
+	wr32(b + APC_PLL_ALPHA, 0);
+	wr32(b + APC_PLL_CONFIG, 0x200d4828);
+	wr32(b + APC_PLL_CONFIG_U, 0x006);
+	apcc_rmw(b + APC_PLL_USER_CTL, (1U << 0) | (1U << 3) | (1U << 12) |
+	    (3U << 8), (1U << 0) | (1U << 3) | (1U << 8));
+	wr32(b + APC_PLL_TEST, 0x1c000000);
+	wr32(b + APC_PLL_TEST_U, 0x00004000);
+	/* qcom_pll_set_fsm_mode(6, 0): the hardware sequences the PLL */
+	apcc_rmw(b + APC_PLL_MODE, PLL_FSM_RESET, 0);
+	apcc_rmw(b + APC_PLL_MODE, (0x3fU << 14) | (0x3fU << 8), 6U << 14);
+	apcc_rmw(b + APC_PLL_MODE, PLL_FSM_ENA, PLL_FSM_ENA);
+	cpu_mfence();
+
+	for (i = 0; i < 1000; ++i) {
+		m = rd32(b + APC_PLL_MODE);
+		if ((m & PLL_ACTIVE) && (m & PLL_LOCK_DET))
+			break;
+		DELAY(1);
+	}
+	DELAY(50);
+	if ((m & PLL_LOCK_DET) == 0) {
+		kprintf("msm8996: performance cluster PLL did not lock "
+		    "(mode %#x); staying on GPLL0\n", m);
+		return (1);
+	}
+
+	apcc_rmw(b + APC_CLK_CTL, CLK_CTL_AUTO_SEL, CLK_CTL_AUTO_SEL);
+	cpu_mfence();
+	DELAY(5);
+	wr32(b + APC_PSCTL, 0x00030005);	/* pulse swallower, soft start */
+	wr32(b + APC_MUX, 0x31);		/* the PLL leg */
+	cpu_mfence();
+	kprintf("msm8996: performance cluster on its PLL (1036.8 MHz), "
+	    "mode %#x\n", rd32(b + APC_PLL_MODE));
 	return (1);
 }

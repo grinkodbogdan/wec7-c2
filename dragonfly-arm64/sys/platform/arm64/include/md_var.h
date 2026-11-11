@@ -114,6 +114,7 @@ void	fbcons_flush(void);
 extern void	(*fbcons_flush_hook)(void);
 int	msm8996_early_init(struct arm64_bootinfo *bi);
 void	msm8996_fb_flush(void);
+int	msm8996_cpu_clocks(void);
 void	arm64_ramlog_putc(int c);
 uint64_t arm64_timer_freq(void);
 int	fbcons_present(void);
