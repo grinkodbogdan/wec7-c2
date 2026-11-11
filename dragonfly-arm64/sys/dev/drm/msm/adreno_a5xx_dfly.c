@@ -111,6 +111,13 @@
 #define	CP_MEM_WRITE		0x3d
 #define	CP_ME_INIT		0x48
 #define	CP_SET_SECURE_MODE	0x66
+#define	CP_INDIRECT_BUFFER_PFE	0x3f
+#define	CP_EVENT_WRITE		0x46
+#define	CP_SET_RENDER_MODE	0x6c
+#define	CACHE_FLUSH_TS		4
+#define	REG_A5XX_RBBM_ALWAYSON_COUNTER_LO	0x04d2
+#define	REG_A5XX_RBBM_ALWAYSON_COUNTER_HI	0x04d3
+#define	FENCE_OFFSET		0x100	/* in the scratch page */
 
 #define	RB_SIZE			(32 * 1024)	/* MSM_GPU_RINGBUFFER_SZ */
 #define	RB_BLKSIZE		32
@@ -135,6 +142,7 @@ static struct a5xx_dfly {
 } a5;
 
 static void smmu_faults(void);
+static int a5_running;
 
 static __inline uint32_t
 gpu_read(uint32_t reg)
@@ -198,6 +206,13 @@ OUT_RING(uint32_t v)
 {
 	a5.rb[a5.wptr] = v;
 	a5.wptr = (a5.wptr + 1) % (RB_SIZE / 4);
+}
+
+static __inline void
+OUT_PKT4(uint32_t reg, uint16_t cnt)
+{
+	OUT_RING(CP_TYPE4_PKT | (cnt << 0) | (PM4_PARITY(cnt) << 7) |
+	    ((reg & 0x3FFFF) << 8) | (PM4_PARITY(reg) << 27));
 }
 
 static __inline void
@@ -525,5 +540,91 @@ a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
 	    (uintmax_t)a5.scratch_pa, a5.scratch[0],
 	    a5.scratch[0] == 0xC0FFEE53 ? "the GPU runs commands" :
 	    "no write seen");
-	return (a5.scratch[0] == 0xC0FFEE53 ? 0 : EIO);
+	if (a5.scratch[0] != 0xC0FFEE53)
+		return (EIO);
+	a5_running = 1;
+	return (0);
+}
+
+/* ---- after start: submissions, as Linux's a5xx_submit without preemption ---- */
+
+/* Free dwords in the ring (one slot kept empty). */
+static uint32_t
+ring_space(void)
+{
+	uint32_t rptr = gpu_read(REG_A5XX_CP_RB_RPTR);
+
+	return ((rptr + RB_SIZE / 4 - a5.wptr - 1) % (RB_SIZE / 4));
+}
+
+/*
+ * Queue indirect buffers (iova, size in dwords), then write (seqno)
+ * to the fence word when the GPU is through them.  The caller has made
+ * the buffers visible to the GPU.
+ */
+int
+a5xx_dfly_submit(const uint64_t *iova, const uint32_t *ndw, int n,
+    uint32_t seqno)
+{
+	uint32_t need = 4 * n + 6 + 2 + 5 + 4;
+	int i, tries;
+
+	if (!a5_running)
+		return (ENXIO);
+	for (tries = 0; ring_space() < need; ++tries) {
+		if (tries > 100000)
+			return (EBUSY);
+		DELAY(10);
+	}
+	for (i = 0; i < n; ++i) {
+		OUT_PKT7(CP_INDIRECT_BUFFER_PFE, 3);
+		OUT_RING((uint32_t)iova[i]);
+		OUT_RING((uint32_t)(iova[i] >> 32));
+		OUT_RING(ndw[i]);
+	}
+	OUT_PKT7(CP_SET_RENDER_MODE, 5);
+	OUT_RING(0);
+	OUT_RING(0);
+	OUT_RING(0);
+	OUT_RING(0);
+	OUT_RING(0);
+	OUT_PKT4(REG_A5XX_CP_SCRATCH_REG(2), 1);
+	OUT_RING(seqno);
+	OUT_PKT7(CP_EVENT_WRITE, 4);
+	OUT_RING(CACHE_FLUSH_TS);
+	OUT_RING((uint32_t)(a5.scratch_pa + FENCE_OFFSET));
+	OUT_RING((uint32_t)((a5.scratch_pa + FENCE_OFFSET) >> 32));
+	OUT_RING(seqno);
+	a5xx_flush();
+	return (0);
+}
+
+/* The last completed sequence number. */
+uint32_t
+a5xx_dfly_fence(void)
+{
+	volatile uint32_t *f = (volatile uint32_t *)((char *)a5.scratch +
+	    FENCE_OFFSET);
+
+	__asm __volatile("dc ivac, %0; dsb sy" : : "r" (f) : "memory");
+	return (*f);
+}
+
+uint64_t
+a5xx_dfly_timestamp(void)
+{
+	uint32_t hi, lo, hi2;
+
+	do {
+		hi = gpu_read(REG_A5XX_RBBM_ALWAYSON_COUNTER_HI);
+		lo = gpu_read(REG_A5XX_RBBM_ALWAYSON_COUNTER_LO);
+		hi2 = gpu_read(REG_A5XX_RBBM_ALWAYSON_COUNTER_HI);
+	} while (hi != hi2);
+	return (((uint64_t)hi << 32) | lo);
+}
+
+int
+a5xx_dfly_running(void)
+{
+	return (a5_running);
 }

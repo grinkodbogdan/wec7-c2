@@ -710,6 +710,8 @@ zap_thread(void *arg __unused)
 	}
 	error = a5xx_dfly_start(status, pm4, pm4_len, pfp, pfp_len);
 	status("a5xx: start finished, error %d", error);
+	if (error == 0)
+		msm_dfly_attach();
 out:
 	if (pm4 != NULL)
 		kfree(pm4, M_GPUFW);

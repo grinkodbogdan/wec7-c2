@@ -48,7 +48,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 # filesystem, so there is something to mount as root, and tmpfs for
 # somewhere to write.
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
-	dev/drm/msm/adreno_a5xx_dfly.c
+	dev/drm/msm/adreno_a5xx_dfly.c dev/drm/msm/msm_dfly.c
 	dev/disk/md/md.c dev/disk/vn/vn.c kern/tty_pty.c
 	dev/misc/evdev/cdev.c dev/misc/evdev/evdev.c dev/misc/evdev/evdev_mt.c dev/misc/evdev/evdev_utils.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c

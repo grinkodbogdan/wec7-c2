@@ -14,4 +14,14 @@ typedef void (*a5xx_status_fn)(const char *fmt, ...) __printflike(1, 2);
 int	a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4,
 	    size_t pm4_len, const uint8_t *pfp, size_t pfp_len);
 
+/* After a5xx_dfly_start: */
+int	a5xx_dfly_running(void);
+int	a5xx_dfly_submit(const uint64_t *iova, const uint32_t *ndw, int n,
+	    uint32_t seqno);
+uint32_t a5xx_dfly_fence(void);
+uint64_t a5xx_dfly_timestamp(void);
+
+/* msm_dfly.c: create /dev/dri/card0 once the GPU runs. */
+void	msm_dfly_attach(void);
+
 #endif
