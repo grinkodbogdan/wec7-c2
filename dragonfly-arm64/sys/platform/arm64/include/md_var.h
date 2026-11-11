@@ -125,6 +125,11 @@ int	msm8996_spmi_read(int sid, uint16_t addr, uint8_t *val);
 int	msm8996_spmi_write(int sid, uint16_t addr, uint8_t val);
 int	msm8996_spmi_update(int sid, uint16_t addr, uint8_t mask, uint8_t val);
 
+/* MSM8996 RPM requests over GLINK (qcom_rpm.c) */
+int	msm8996_rpm_write(int state, uint32_t type, uint32_t id, uint32_t key,
+	    uint32_t value);
+int	msm8996_rpm_ready(void);
+
 /* Qualcomm secure monitor calls (qcom_scm.c) */
 int	qcom_scm_call(int svc, int cmd, uint32_t arginfo, const uint64_t *args,
 	    int nargs, uint64_t *res, int fast);

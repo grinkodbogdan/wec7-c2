@@ -415,6 +415,7 @@ SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_read, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
 #define	PAS_IS_SUPPORTED	7
 
 MALLOC_DEFINE(M_GPUFW, "gpufw", "GPU firmware");
+static int zap_started;
 
 static int
 fw_read(const char *path, uint8_t **bufp, size_t *lenp)
@@ -511,6 +512,18 @@ zap_load(void)
 	vm_paddr_t meta_pa, minpa = ~0UL, maxpa = 0, reloc, size;
 	int error, i, hash = 0, relocatable = 0, rc;
 
+	/*
+	 * The secure world checks the signature with the crypto engine,
+	 * whose clock the RPM gives only on request (qcom_rpm.c asks for
+	 * it, as Linux's RPM clock driver does at boot).
+	 */
+	for (i = 0; i < 100 && !msm8996_rpm_ready(); ++i)
+		tsleep(&zap_started, 0, "rpmwait", hz / 10);
+	if (!msm8996_rpm_ready()) {
+		status("zap: the RPM handoff has not happened (sysctl "
+		    "hw.mi5.rpm); not calling the secure world");
+		return (ENXIO);
+	}
 	rc = qcom_scm_is_available(SCM_SVC_PIL, PAS_INIT_IMAGE);
 	args[0] = ZAP_PAS_ID;
 	error = qcom_scm_call(SCM_SVC_PIL, PAS_IS_SUPPORTED, 1, args, 1, res, 0);
@@ -672,8 +685,6 @@ out:
 		kfree(mdt, M_GPUFW);
 	return (error);
 }
-
-static int zap_started;
 
 static void
 zap_thread(void *arg __unused)

@@ -672,6 +672,24 @@ the reserved region at 0x90f00000 (mapped only for the copy, since it is
 left out of the direct map), PAS_AUTH_AND_RESET. `sysctl
 hw.mi5.gpu_zap=1` runs it.
 
+**Thirty-fifth to thirty-eighth boots.** The secure monitor answers
+(SMC64 calls work; PAS init_image is available), and the zap shader's
+.mdt parses (an ELF header, a hash segment, one 0x1324-byte loadable
+segment), but PAS_INIT_IMAGE never returns: the cpu that called it stays
+in the secure world. The secure world checks the signature with the
+crypto engine, whose clock belongs to the RPM, and nothing has asked the
+RPM for it since the bootloader left. Linux's RPM clock driver asks for
+every RPM clock at its maximum when it starts (`clk_smd_rpm_handoff`),
+which is why upstream's zap loader needs no vote of its own.
+
+`qcom_rpm.c` is therefore an RPM client: GLINK over the RPM message RAM
+(0x68000, intentless, polled; after Linux's `qcom_glink_rpm.c` and
+`qcom_glink_native.c`), the `rpm_requests` channel, and RPM requests as
+`smd-rpm.c` builds them. At boot it hands off the crypto engine and the
+system, config, peripheral, memory, aggregate and multimedia buses at
+their maximum, active and sleep sets, as Linux does; `sysctl hw.mi5.rpm`
+shows the steps. The zap loader waits for it.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the
