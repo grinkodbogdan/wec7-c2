@@ -515,8 +515,11 @@ zap_load(void)
 	error = qcom_scm_call(SCM_SVC_PIL, PAS_IS_SUPPORTED, 1, args, 1, res, 0);
 	status("zap: scm: PAS init_image available %d; PAS %d supported: "
 	    "status %d result %ju", rc, ZAP_PAS_ID, error, (uintmax_t)res[0]);
-	if (error || res[0] == 0)
-		return (ENXIO);
+	/*
+	 * Informational only: Linux's zap loader does not ask, and this
+	 * phone's secure world answers 0 here; init_image refuses if the
+	 * peripheral really is unknown.
+	 */
 
 	if ((error = fw_read("/tmp/fw/a530_zap.mdt", &mdt, &mdtlen)) != 0) {
 		status("zap: /tmp/fw/a530_zap.mdt: error %d (run gpufw.sh)",
