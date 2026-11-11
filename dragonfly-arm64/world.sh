@@ -48,7 +48,7 @@ bm() {	# bmake in a DragonFly source directory
 #
 sysroot() {
 	"$HERE/build.sh" fetch
-	rm -rf "$INC"
+	# Refresh in place: libraries built later install headers here too.
 	mkdir -p "$INC" "$SYSROOT/usr/lib"
 	cd "$DFLY_SRC/include"
 	incs=$(bmake -m "$DFLY_SRC/share/mk" -V INCS MACHINE_ARCH=aarch64 2>/dev/null)

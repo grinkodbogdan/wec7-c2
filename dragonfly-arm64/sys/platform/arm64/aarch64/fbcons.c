@@ -57,6 +57,8 @@ static struct {
 	u_int		scale;		/* pixels per font pixel */
 	u_int		cols, rows;
 	u_int		col, row;
+	vm_paddr_t	pa;		/* physical address of the buffer */
+	int		suspended;	/* a graphics client owns the screen */
 	int		esc;		/* 0, 1 after ESC, 2 inside CSI */
 	u_int		arg;		/* CSI numeric argument */
 } fb;
@@ -72,7 +74,7 @@ void	(*fbcons_flush_hook)(void);
 void
 fbcons_flush(void)
 {
-	if (fb.base != NULL && fbcons_flush_hook != NULL)
+	if (fb.base != NULL && !fb.suspended && fbcons_flush_hook != NULL)
 		fbcons_flush_hook();
 }
 
@@ -165,7 +167,7 @@ fbcons_putc(int c)
 {
 	u_int r;
 
-	if (fb.base == NULL)
+	if (fb.base == NULL || fb.suspended)
 		return;
 
 	/*
@@ -308,6 +310,7 @@ fbcons_init(struct arm64_bootinfo *bi)
 		return;
 	}
 	fb.base = (uint8_t *)PHYS_TO_DMAP(bi->bi_fb_base);
+	fb.pa = bi->bi_fb_base;
 	fb.width = bi->bi_fb_width;
 	fb.height = bi->bi_fb_height;
 	fb.stride = bi->bi_fb_stride;
@@ -323,4 +326,44 @@ fbcons_init(struct arm64_bootinfo *bi)
 	fb.row = 0;
 	fb_clear_row(0);
 	fb_clear_row(1);
+}
+
+/*
+ * For /dev/fb0 (fbmem.c): the buffer's geometry, handing the screen to a
+ * graphics client and back, and pushing what it drew to the panel.
+ */
+int
+fbcons_geometry(vm_paddr_t *pa, u_int *width, u_int *height, u_int *stride,
+    u_int *bpp)
+{
+	if (fb.base == NULL)
+		return (ENXIO);
+	*pa = fb.pa;
+	*width = fb.width;
+	*height = fb.height;
+	*stride = fb.stride;
+	*bpp = fb.bpp;
+	return (0);
+}
+
+void
+fbcons_suspend(int on)
+{
+	fb.suspended = on;
+	if (!on) {		/* back to text: start from a clean screen */
+		u_int r;
+
+		for (r = 0; r < fb.rows; ++r)
+			fb_clear_row(r);
+		fb.row = fb.col = 0;
+		fbcons_flush();
+	}
+}
+
+void
+fbcons_push(void)
+{
+	fb_flush(fb.base, (size_t)fb.stride * fb.height);
+	if (fbcons_flush_hook != NULL)
+		fbcons_flush_hook();
 }

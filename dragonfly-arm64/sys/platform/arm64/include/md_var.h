@@ -120,6 +120,10 @@ int	msm8996_is_present(void);
 void	arm64_ramlog_putc(int c);
 uint64_t arm64_timer_freq(void);
 int	fbcons_present(void);
+int	fbcons_geometry(vm_paddr_t *pa, u_int *width, u_int *height,
+	    u_int *stride, u_int *bpp);
+void	fbcons_suspend(int on);
+void	fbcons_push(void);
 
 void	identify_cpu(void);
 
