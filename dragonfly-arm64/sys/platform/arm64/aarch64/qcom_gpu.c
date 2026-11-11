@@ -136,6 +136,9 @@ status(const char *fmt, ...)
 	}
 	cpu_sfence();
 	kprintf("gpu: %s\n", line);
+	/* from a command (sysctl): straight to its terminal, step by step */
+	if (curthread->td_proc != NULL)
+		uprintf("gpu: %s\n", line);
 }
 
 static __inline uint32_t
@@ -374,10 +377,7 @@ sysctl_gpu_read(SYSCTL_HANDLER_ARGS)
 		uint32_t val;
 
 		status("reading %s at 0x%jx", regs[i].n, (uintmax_t)regs[i].pa);
-		uprintf("gpu: reading %s at 0x%jx ... ", regs[i].n,
-		    (uintmax_t)regs[i].pa);
 		val = rd(regs[i].pa);
-		uprintf("0x%08x\n", val);
 		status("%s = 0x%08x", regs[i].n, val);
 	}
 	status("Adreno 530 powered and answering");
@@ -521,6 +521,7 @@ zap_load(void)
 	 * peripheral really is unknown.
 	 */
 
+	status("zap: reading /tmp/fw/a530_zap.mdt");
 	if ((error = fw_read("/tmp/fw/a530_zap.mdt", &mdt, &mdtlen)) != 0) {
 		status("zap: /tmp/fw/a530_zap.mdt: error %d (run gpufw.sh)",
 		    error);
@@ -572,6 +573,7 @@ zap_load(void)
 		goto out;
 	dcache_wbinv(meta, ehsz + hsz);
 	meta_pa = vtophys(meta);
+	status("zap: calling init_image");
 	args[0] = ZAP_PAS_ID;
 	args[1] = meta_pa;
 	error = qcom_scm_call(SCM_SVC_PIL, PAS_INIT_IMAGE, 0x82, args, 2, res,
@@ -594,6 +596,7 @@ zap_load(void)
 			error = E2BIG;
 			goto out;
 		}
+		status("zap: calling mem_setup");
 		args[0] = ZAP_PAS_ID;
 		args[1] = ZAP_BASE;
 		args[2] = size;
@@ -629,6 +632,8 @@ zap_load(void)
 		vm_paddr_t base = relocatable ? ZAP_BASE : reloc;
 		vm_size_t msz = relocatable ? size : maxpa - reloc;
 
+		status("zap: copying %ju bytes to 0x%jx", (uintmax_t)msz,
+		    (uintmax_t)base);
 		region = pmap_mapdev_attr(base, msz, PAT_WRITE_BACK);
 		memset(region, 0, msz);
 		for (i = 0; i < eh->e_phnum && error == 0; ++i) {
@@ -649,6 +654,7 @@ zap_load(void)
 	}
 
 	/* 4. authenticate and start */
+	status("zap: calling auth_and_reset");
 	args[0] = ZAP_PAS_ID;
 	error = qcom_scm_call(SCM_SVC_PIL, PAS_AUTH_AND_RESET, 1, args, 1,
 	    res, 0);
@@ -677,8 +683,6 @@ sysctl_gpu_zap(SYSCTL_HANDLER_ARGS)
 	if (!gpu_powered)
 		return (ENXIO);
 	error = zap_load();
-	uprintf("%s\n", gpu_status + (gpu_status_len > 1500 ?
-	    gpu_status_len - 1500 : 0));
 	return (error);
 }
 SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_zap, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
