@@ -27,10 +27,20 @@
  */
 #define	_JBLEN	32
 
+/*
+ * Layout used by libc (as FreeBSD/arm64): magic, sp, x19-x29, lr,
+ * d8-d15, then the signal mask (a sigset_t, two longs) at _JB_SIGMASK.
+ */
+#define	_JB_MAGIC__SETJMP	0xfb5d25837d7ff700
+#define	_JB_MAGIC_SETJMP	0xfb5d25837d7ff701
+#define	_JB_SIGMASK		22
+
+#ifndef __ASSEMBLER__
 #if __POSIX_VISIBLE
 typedef	struct _sigjmp_buf { long _sjb[_JBLEN]; } sigjmp_buf[1];
 #endif
 
 typedef	struct _jmp_buf { long _jb[_JBLEN]; } jmp_buf[1];
+#endif
 
 #endif /* !_CPU_SETJMP_H_ */

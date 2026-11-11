@@ -293,7 +293,7 @@ syscall2(struct trapframe *frame)
 	struct sysent *callp;
 	struct sysmsg sysmsg;
 	union sysunion *argp;
-	const int regcnt = 8;	/* number of args passed in registers */
+	int regcnt = 8;		/* number of args passed in registers */
 	int crit_count = td->td_critcount;
 	u_int code;
 	int error;
@@ -306,16 +306,28 @@ syscall2(struct trapframe *frame)
 		("Frame mismatch %p %p", lp->lwp_md.md_regs, frame));
 
 	code = (u_int)frame->tf_x[8];
+	argp = (union sysunion *)&frame->tf_x[0];
+
+	/*
+	 * syscall() and __syscall(): the real call number is the first
+	 * argument and the arguments proper follow it.  libc reaches mmap,
+	 * lseek and friends this way.
+	 */
+	if (code == SYS_syscall || code == SYS___syscall) {
+		code = (u_int)frame->tf_x[0];
+		argp = (union sysunion *)&frame->tf_x[1];
+		regcnt = 7;
+	}
 	if (code >= p->p_sysent->sv_size)
 		code = SYS___nosys;
 	callp = &p->p_sysent->sv_table[code];
 	narg = callp->sy_narg;
 
 	/*
-	 * The first eight arguments are already laid out as an array of
-	 * registers in the trapframe; any more are on the user stack.
+	 * The first eight arguments (seven for an indirect call) are
+	 * already laid out as an array of registers in the trapframe; any
+	 * more are on the user stack.
 	 */
-	argp = (union sysunion *)&frame->tf_x[0];
 	if (__predict_false(narg > regcnt)) {
 		register_t *argsdst = (void *)&sysmsg.extargs;
 

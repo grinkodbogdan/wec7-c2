@@ -1,0 +1,302 @@
+#!/bin/sh
+#
+# Build DragonFly userland for arm64: headers, compiler support library,
+# C library, startup files and programs, installed into a sysroot.
+#
+# Usage: ./world.sh [sysroot|builtins|libc|csu|prog DIR...|all]
+#
+# Needs what build.sh needs, plus bmake and rpcgen.
+#
+# DragonFly's makefiles are written for its own make(1) and a native
+# toolchain.  bmake reads them well enough to answer "which sources,
+# which flags", so this script asks it (bmake -V) and compiles with
+# clang itself, the way build.sh stands in for config(8).
+#
+set -e
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+DFLY_SRC=${DFLY_SRC:-$HERE/work/dragonfly}
+OBJ=${OBJ:-$HERE/work/obj}
+WOBJ=${WOBJ:-$HERE/work/wobj}
+SYSROOT=${SYSROOT:-$HERE/work/sysroot}
+JOBS=${JOBS:-$(nproc 2>/dev/null || echo 2)}
+LLVM_REPO=${LLVM_REPO:-https://github.com/llvm/llvm-project.git}
+LLVM_TAG=${LLVM_TAG:-llvmorg-18.1.3}
+
+S=$DFLY_SRC/sys
+INC=$SYSROOT/usr/include
+
+# The compiler driver.  clang has no aarch64 DragonFly target that
+# defines __DragonFly__, so use a bare ELF target, say who we are, and
+# use only the sysroot's headers.  wchar_t is int on DragonFly.
+CC_FLAGS="--target=aarch64-unknown-none-elf -D__DragonFly__=6 -D__ELF__"
+CC_FLAGS="$CC_FLAGS -nostdinc -isystem $INC -isystem $(clang -print-resource-dir)/include"
+CC_FLAGS="$CC_FLAGS -Xclang -fwchar-type=int -Xclang -fsigned-wchar"
+CC_FLAGS="$CC_FLAGS -fno-common -ffunction-sections -fdata-sections"
+cc() { clang $CC_FLAGS "$@"; }
+
+bm() {	# bmake in a DragonFly source directory
+	dir=$1; shift
+	(cd "$DFLY_SRC/$dir" && bmake -m "$DFLY_SRC/share/mk" \
+	    MACHINE=arm64 MACHINE_ARCH=aarch64 MACHINE_PLATFORM=arm64 \
+	    "$@" 2>/dev/null)
+}
+
+#
+# Headers, laid out the way include/Makefile installs them.
+#
+sysroot() {
+	"$HERE/build.sh" fetch
+	rm -rf "$INC"
+	mkdir -p "$INC" "$SYSROOT/usr/lib"
+	cd "$DFLY_SRC/include"
+	incs=$(bmake -m "$DFLY_SRC/share/mk" -V INCS MACHINE_ARCH=aarch64 2>/dev/null)
+	for h in $incs; do
+		[ -f "$h" ] && cp "$h" "$INC/"
+	done
+	for d in arpa protocols rpc rpcsvc xlocale; do
+		mkdir -p "$INC/$d"
+		cp "$d"/*.h "$d"/*.x "$INC/$d/" 2>/dev/null || :
+	done
+	# rpcsvc and rpc protocol headers generated from .x files.
+	for x in rpcsvc/*.x rpc/*.x; do
+		rpcgen -C -h -o "$INC/${x%.x}.h" "$x" 2>/dev/null || :
+	done
+	# osreldate.h
+	rel=$(awk '/^#define[[:space:]]+__DragonFly_version/ {print $3}' \
+	    "$S/sys/param.h")
+	printf '#ifdef _KERNEL\n#error "osreldate.h must not be used in the kernel, use sys/param.h"\n#else\n#undef __DragonFly_version\n#define __DragonFly_version %s\n#endif\n' \
+	    "$rel" > "$INC/osreldate.h"
+
+	ldirs=$(bmake -m "$DFLY_SRC/share/mk" -V LDIRS 2>/dev/null)
+	lsub=$(bmake -m "$DFLY_SRC/share/mk" -V LSUBDIRS 2>/dev/null)
+	for d in $ldirs $lsub; do
+		mkdir -p "$INC/$d"
+		cp "$S/$d"/*.h "$INC/$d/" 2>/dev/null || :
+	done
+	mkdir -p "$INC/dev/acpica" "$INC/dev/misc/evdev"
+	cp "$S/dev/acpica/acpiio.h" "$INC/dev/acpica/"
+	cp "$S"/dev/misc/evdev/input*.h "$INC/dev/misc/evdev/"
+	# <sys/foo.h> also reachable as <foo.h>, as INCSLINKS arranges.
+	for h in aio.h errno.h fcntl.h linker_set.h poll.h sched.h \
+	    syslog.h ucontext.h; do
+		ln -sf "sys/$h" "$INC/$h"
+	done
+	ln -sf ieeefp.h "$INC/floatingpoint.h"
+	ln -sf netproto/smb "$INC/netsmb"
+	# cpu/ from the cpu architecture; machine/ is cpu/ overlaid with
+	# the platform's headers.
+	# Headers other libraries install: libm's (OpenBSD's) and libutil's.
+	cp "$DFLY_SRC"/contrib/openbsd_libm/include/global/*.h "$INC/"
+	mkdir -p "$INC/machine"
+	cp "$DFLY_SRC"/contrib/openbsd_libm/include/arm64/*.h "$INC/machine/"
+	cp "$DFLY_SRC"/lib/libutil/libutil.h "$DFLY_SRC"/lib/libutil/login_cap.h "$INC/"
+	ln -sf libutil.h "$INC/util.h"
+	rpcgen -C -h -o "$INC/rpc/key_prot.h" rpcsvc/key_prot.x 2>/dev/null ||
+	    (cd "$DFLY_SRC/include" && rpcgen -C -h -o "$INC/rpc/key_prot.h" rpcsvc/key_prot.x)
+	mkdir -p "$INC/cpu" "$INC/machine"
+	cp "$S"/cpu/aarch64/include/*.h "$INC/cpu/"
+	cp "$S"/cpu/aarch64/include/*.h "$INC/machine/"
+	cp "$S"/platform/arm64/include/*.h "$INC/machine/"
+	echo "sysroot headers in $INC"
+}
+
+#
+# compiler-rt builtins: what libgcc provides for gcc (128-bit integer
+# and IEEE quad long double arithmetic, among others).
+#
+builtins() {
+	src=$HERE/work/compiler-rt
+	if [ ! -d "$src/lib/builtins" ]; then
+		rm -rf "$src.git"
+		git clone -q --depth 1 --branch "$LLVM_TAG" --filter=blob:none \
+		    --sparse "$LLVM_REPO" "$src.git"
+		git -C "$src.git" sparse-checkout set compiler-rt/lib/builtins
+		mv "$src.git/compiler-rt" "$src"
+		rm -rf "$src.git"
+	fi
+	o=$WOBJ/builtins
+	rm -rf "$o"; mkdir -p "$o"
+	b=$src/lib/builtins
+	# Generic sources, minus what needs an OS service or another
+	# architecture; plus the aarch64 directory.
+	ls "$b"/*.c "$b"/aarch64/*.c "$b"/aarch64/*.S 2>/dev/null |
+	    grep -vE '/(atomic|emutls|enable_execute_stack|gcc_personality_v0|clear_cache|eprintf|os_version_check|cpu_model|trampoline_setup|apple_versioning)\.c$' |
+	    grep -vE '/aarch64/(lse|sme-|fp_mode)' |
+	    grep -vE '/(x86|i386|x86_64|ppc|riscv|hexagon|arm|avr|loongarch|ve)/' |
+	    grep -vE '/(.*xf.*|.*tc.*|.*bf.*)\.c$' > "$o/list"
+	xargs -P "$JOBS" -I{} sh -c '
+		f={}; n=$(echo "$f" | sed "s|.*/builtins/||; s|/|_|g; s|\.[cS]$||")
+		'"clang $CC_FLAGS"' -O2 -fPIC -fvisibility=hidden \
+		    -DCOMPILER_RT_HAS_FLOAT16 -c "$f" -o "'"$o"'/$n.o" 2>"'"$o"'/$n.err" ||
+		    echo "builtins: $f failed" >&2' < "$o/list"
+	llvm-ar rcs "$SYSROOT/usr/lib/libcompiler_rt.a" "$o"/*.o
+	ln -sf libcompiler_rt.a "$SYSROOT/usr/lib/libgcc.a"
+	echo "built $SYSROOT/usr/lib/libcompiler_rt.a ($(ls "$o"/*.o | wc -l) objects)"
+}
+
+#
+# Compile a library directory's SRCS into $WOBJ/<dir>, using bmake to
+# find sources (.PATH), flags (CFLAGS) and generated files.
+#
+#   buildlib DIR NAME [extra cflags]
+#
+buildlib() {
+	dir=$1 name=$2; shift 2
+	o=$WOBJ/$dir
+	rm -rf "$o"; mkdir -p "$o"
+	srcs=$(bm "$dir" -V SRCS)
+	vpath=$(bm "$dir" -V .PATH)
+	# gcc-only warning options and -Werror stay out: a first port
+	# builds with whatever clang warns about, logged per file.
+	cflags=$(bm "$dir" -V CFLAGS | sed "s|-I\${.OBJDIR}|-I$o|g" |
+	    sed -E 's/ -Werror / /; s/ -Wsystem-headers / /')
+	cflags="$cflags -Wno-unknown-warning-option"
+	echo "$srcs" | tr ' ' '\n' | grep -v '^$' > "$o/srcs"
+	echo "$vpath" | tr ' ' '\n' | grep -v '^$' > "$o/vpath"
+	echo "$cflags" > "$o/cflags"
+	# Per-file flags (bsd.lib.mk's FLAGS_GROUPS): "file flags..." lines.
+	: > "$o/fileflags"
+	for g in $(bm "$dir" -V FLAGS_GROUPS); do
+		gf=$(bm "$dir" -V "${g}_FLAGS" | sed "s|\${.CURDIR}|$DFLY_SRC/$dir|g")
+		for f in $(bm "$dir" -V "${g}_FLAGS_FILES"); do
+			echo "$f $gf" >> "$o/fileflags"
+		done
+	done
+	echo "$dir: $(wc -l < "$o/srcs") sources"
+}
+
+# Re-overlay the port onto the source tree and refresh the
+# machine-dependent headers in the sysroot.
+sync() {
+	"$HERE/build.sh" fetch >/dev/null
+	cp "$S"/cpu/aarch64/include/*.h "$INC/cpu/"
+	cp "$S"/cpu/aarch64/include/*.h "$INC/machine/"
+	cp "$S"/platform/arm64/include/*.h "$INC/machine/"
+	cp "$DFLY_SRC"/contrib/openbsd_libm/include/arm64/*.h "$INC/machine/"
+}
+
+libc() {
+	sync
+	o=$WOBJ/lib/libc
+	buildlib lib/libc c
+	d=$DFLY_SRC/lib/libc
+	cflags="$(cat "$o/cflags") -I$o -I$d/include -I$d/aarch64 -I$d/locale -I$d/thread/aarch64"
+
+	# Generated sources: syscall stubs, gdtoa links, asmcontext.h.
+	gen_targets=$(bm lib/libc -V SASM -V SPSEUDO | tr ' \n' '  ')
+	for t in $(bm lib/libc -V SASM); do
+		printf '#include "SYS.h"\nRSYSCALL(%s)\n' "${t%.S}" > "$o/$t"
+	done
+	for t in $(bm lib/libc -V SPSEUDO); do
+		n=${t%.S}; n=${n#_}
+		printf '#include "SYS.h"\nPSEUDO(%s)\n' "$n" > "$o/$t"
+	done
+	for t in $(bm lib/libc -V GDTOASRCS); do
+		ln -sf "$DFLY_SRC/contrib/gdtoa/$t" "$o/gdtoa_$t"
+	done
+	# rpcgen, lex and yacc output: let bmake run its own rules.
+	(cd "$d" && MAKEOBJDIR=$o bmake -m "$DFLY_SRC/share/mk" \
+	    MACHINE=arm64 MACHINE_ARCH=aarch64 MACHINE_PLATFORM=arm64 \
+	    DESTDIR="$SYSROOT" crypt.h crypt_clnt.c crypt_xdr.c yp.h yp_xdr.c nslexer.c \
+	    nsparser.c >"$o/generate.log" 2>&1) || {
+		cat "$o/generate.log"; return 1; }
+	cc $cflags -O2 -fcommon -c "$d/aarch64/sys/asmcontext.c" \
+	    -o "$o/asmcontext.o"
+	NM=llvm-nm sh "$S/kern/genassym.sh" "$o/asmcontext.o" > "$o/asmcontext.h"
+
+	compile_list "$o" "$cflags -O2 -DNO_COMPAT7"
+	llvm-ar rcs "$SYSROOT/usr/lib/libc.a" $(sed 's|$|.o|; s|^|'"$o"'/|' "$o/objs")
+	echo "built $SYSROOT/usr/lib/libc.a"
+}
+
+# Compile every source in $1/srcs, looking for each in $1 and then
+# along $1/vpath.  Object names go to $1/objs.
+compile_list() {
+	o=$1 flags=$2
+	: > "$o/objs"; : > "$o/errors"
+	while read -r f; do
+		case "$f" in *.h) continue ;; esac
+		p=
+		if [ -e "$o/$f" ]; then p=$o/$f; else
+			while read -r v; do
+				[ -e "$v/$f" ] && { p=$v/$f; break; }
+			done < "$o/vpath"
+		fi
+		if [ -z "$p" ]; then echo "missing source: $f" >> "$o/errors"; continue; fi
+		extra=$(awk -v f="$f" '$1 == f { $1 = ""; print; exit }' "$o/fileflags" 2>/dev/null)
+		echo "${f%.*} $p $extra" | sed 's/[[:space:]]*$//'
+	done < "$o/srcs" > "$o/plan"
+	cut -d' ' -f1 "$o/plan" > "$o/objs"
+	cat > "$o/cc1.sh" <<-EOF
+	#!/bin/sh
+	n=\$1 p=\$2; shift 2
+	clang $CC_FLAGS $flags "\$@" -c "\$p" -o "$o/\$n.o" 2> "$o/\$n.log" ||
+	    { echo "\$n" >> "$o/failed"; }
+	EOF
+	chmod +x "$o/cc1.sh"
+	rm -f "$o/failed"
+	xargs -P "$JOBS" -L 1 "$o/cc1.sh" < "$o/plan"
+	if [ -s "$o/errors" ] || [ -s "$o/failed" ]; then
+		cat "$o/errors" 2>/dev/null
+		[ -s "$o/failed" ] && echo "failed: $(wc -l < "$o/failed") (logs in $o/*.log)" &&
+		    head -50 "$o/failed"
+		return 1
+	fi
+}
+
+#
+# Startup files: crt1.o (and Scrt1.o for PIE), crti.o/crtn.o around
+# .init/.fini, crtbegin/crtend (from gcc elsewhere; see crtbegin.c).
+#
+csu() {
+	sync
+	o=$WOBJ/lib/csu; rm -rf "$o"; mkdir -p "$o"
+	d=$DFLY_SRC/lib/csu
+	f="-O2 -I$d/common -I$DFLY_SRC/lib/libc/include -fno-omit-frame-pointer
+	    -fno-asynchronous-unwind-tables -Wall"
+	# crt1.c goes through assembly so the ABI tag note can be marked
+	# SHT_NOTE (see lib/csu/common/crtbrand.c).
+	for v in "crt1" "Scrt1 -fPIC -DPIC" "gcrt1 -DGCRT"; do
+		set -- $v; n=$1; shift
+		cc $f "$@" -S -o "$o/$n.s" "$d/aarch64/crt1.c"
+		sed -i -e '/\.note\.tag/s/progbits/note/' \
+		    -e '/\.note\.tag.*"a"$/s/$/,@note/' "$o/$n.s"
+		cc -c -o "$o/$n.o" "$o/$n.s"
+	done
+	cc $f -c -o "$o/crti.o" "$d/aarch64/crti.S"
+	cc $f -c -o "$o/crtn.o" "$d/aarch64/crtn.S"
+	cc $f -c -o "$o/crtbegin.o" "$d/aarch64/crtbegin.c"
+	cc $f -fPIC -DSHARED -c -o "$o/crtbeginS.o" "$d/aarch64/crtbegin.c"
+	cc $f -c -o "$o/crtend.o" "$d/aarch64/crtend.c"
+	cp "$o/crtend.o" "$o/crtendS.o"
+	cp "$o"/*.o "$SYSROOT/usr/lib/"
+	echo "built startup files in $SYSROOT/usr/lib"
+}
+
+# Link a static program: ldstatic OUTPUT OBJECT... [-lfoo...]
+ldstatic() {
+	out=$1; shift
+	l=$SYSROOT/usr/lib
+	ld.lld -static -nostdlib -o "$out" "$l/crt1.o" "$l/crti.o" \
+	    "$l/crtbegin.o" "$@" -L"$l" --start-group -lc -lcompiler_rt \
+	    --end-group "$l/crtend.o" "$l/crtn.o"
+}
+
+# A smoke test: a small program using stdio, malloc, TLS and threads.
+hello() {
+	o=$WOBJ/hello; mkdir -p "$o"
+	cc -O2 -Wall -c "$HERE/user/hello.c" -o "$o/hello.o"
+	ldstatic "$o/hello" "$o/hello.o"
+	echo "built $o/hello"
+}
+
+case "${1:-all}" in
+csu)		csu ;;
+hello)		hello ;;
+sysroot)	sysroot ;;
+builtins)	builtins ;;
+libc)		libc ;;
+all)		sysroot; builtins; libc; csu; hello ;;
+*)	echo "usage: $0 [sysroot|builtins|libc|all]" >&2; exit 1 ;;
+esac

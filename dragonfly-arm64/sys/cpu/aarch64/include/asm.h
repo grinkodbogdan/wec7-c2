@@ -27,4 +27,11 @@
 	.text; .globl sym; .type sym, %function; .balign 16; sym:
 #define	END(sym)	.size sym, . - sym
 
+/* Userland (libc, csu, rtld) spellings, as on the other ports. */
+#define	_C_LABEL(x)	x
+#define	CNAME(x)	x
+#define	HIDENAME(x)	.x
+#define	WEAK_REFERENCE(sym, alias)				\
+	.weak alias; .set alias, sym
+
 #endif /* !_CPU_ASM_H_ */

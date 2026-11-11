@@ -64,6 +64,9 @@ fetch() {
 	fi
 	# Overlay the port.  Plain copy keeps the tree usable with diff -ruN.
 	cp -R "$HERE/sys/." "$S/"
+	for d in lib libexec contrib bin sbin usr.bin; do
+		[ -d "$HERE/$d" ] && cp -R "$HERE/$d/." "$DFLY_SRC/$d/"
+	done
 	# The few machine-independent files that test for __x86_64__ need
 	# to learn about __aarch64__.  Skip if already applied.
 	for p in "$HERE"/patches/*.diff; do
@@ -246,6 +249,10 @@ ramdisk() {
 		$LD -nostdlib -static -e _start -Ttext=0x400000 \
 		    -o "$root/$prog" "$OBJ/u$name.o" "$OBJ/ulibc.o"
 	done
+	# Programs built against the real C library by world.sh, if any.
+	for f in "$HERE"/work/wobj/hello/hello; do
+		[ -x "$f" ] && cp "$f" "$root/bin/"
+	done
 	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
 	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
 	echo "built $OBJ/root.iso"
@@ -308,6 +315,7 @@ run() {
 }
 
 case "${1:-build}" in
+fetch)	fetch ;;
 build)	build; ramdisk ;;
 ramdisk) ramdisk ;;
 mi5)	mi5 ;;

@@ -28,21 +28,32 @@
 #endif
 
 /*
- * NOTE: the tcb_{self,dtv,pthread,errno) fields must be declared
- * in the structure in the specified order as assembly will access the
- * fields with a hardwired offset.
+ * Thread control block.
  *
- * Outside of this file, the system call layer generation will hardwire
- * the offset for tcb_errno.
+ * The aarch64 ELF TLS ABI is variant I: the thread pointer (TPIDR_EL0)
+ * addresses a 16-byte header whose first word is the DTV pointer, and
+ * the static TLS blocks follow it at positive offsets.  Code compiled
+ * for the local-exec and initial-exec models hardwires that layout, so
+ * DragonFly follows it here, unlike on x86_64 (variant II).
+ *
+ * DragonFly's other TCB fields go in front of the ABI header: the
+ * thread pointer addresses tcb_dtv, not the start of the structure.
+ * tls_get_tcb() and tls_set_tcb() hide the difference.
  */
 struct tls_tcb {
-	struct tls_tcb *tcb_self;	/* pointer to self*/
-	void *tcb_dtv;			/* Dynamic Thread Vector */
-	void *tcb_pthread;		/* thread library's data*/
+	struct tls_tcb *tcb_self;	/* pointer to self */
 	int *tcb_errno_p;		/* pointer to per-thread errno */
 	void *tcb_segstack;		/* used for segmented stacks */
 	void *tcb_unused[3];
+	/* The thread pointer points here; the ABI fixes these two. */
+	void *tcb_dtv;			/* Dynamic Thread Vector */
+	void *tcb_pthread;		/* thread library's data */
 };
+
+/* Offset of the thread pointer within struct tls_tcb. */
+#define	TLS_TCB_TP_OFFSET	__offsetof(struct tls_tcb, tcb_dtv)
+/* Size of the ABI header at the thread pointer. */
+#define	TLS_TP_HDR_SIZE		16
 
 struct tls_dtv {
 	uintptr_t dtv_generation;
@@ -57,27 +68,18 @@ struct tls_dtv {
 #define RTLD_STATIC_TLS_EXTRA_MAX	(1*1024*1024*1024)
 #define RTLD_STATIC_TLS_EXTRA_DEFAULT	6144	/* sysctl kern.tls_extra */
 
-/*
- * DragonFly keeps the x86 arrangement on every architecture: the static
- * TLS block sits below the TCB (variant II) and the thread pointer
- * addresses the TCB.  On aarch64 the thread pointer is TPIDR_EL0, which
- * userland may read and write directly.
- *
- * NOTE: the aarch64 ELF TLS ABI specifies variant I.  Compiler-generated
- * local-exec/initial-exec TLS accesses assume it, so the userland port
- * must either switch DragonFly's rtld/libc to variant I for this
- * architecture or stick to the general-dynamic model.  Unresolved.
- */
-#define RTLD_STATIC_TLS_VARIANT_II
+#define RTLD_STATIC_TLS_VARIANT_I
 
 /* Get the current TCB. */
 static __inline struct tls_tcb *
 tls_get_tcb(void)
 {
-	void *self;
+	char *tp;
 
-	__asm __volatile("mrs %0, tpidr_el0" : "=r" (self));
-	return (self);
+	__asm __volatile("mrs %0, tpidr_el0" : "=r" (tp));
+	if (tp == 0)
+		return (0);
+	return ((struct tls_tcb *)(tp - TLS_TCB_TP_OFFSET));
 }
 
 /* Get the current thread. */
@@ -93,7 +95,9 @@ tls_get_curthread(void)
 static __inline void
 tls_set_tcb(struct tls_tcb *tcb)
 {
-	__asm __volatile("msr tpidr_el0, %0" : : "r" (tcb));
+	char *tp = tcb ? (char *)tcb + TLS_TCB_TP_OFFSET : (char *)0;
+
+	__asm __volatile("msr tpidr_el0, %0" : : "r" (tp));
 }
 
 struct tls_tcb	*_rtld_allocate_tls(void);

@@ -36,7 +36,12 @@ and lays this directory's `sys/` tree over it.
 | `sys/platform/arm64/include/` | Platform headers: per-CPU data, thread, PCB, pmap, address space layout |
 | `sys/platform/arm64/conf/` | Kernel linker script |
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
-| `user/` | Test userland: a mini C library (`libc.c`, not a port of DragonFly's), an `init` that tests the kernel, and a small shell |
+| `patches/libc-aarch64.diff` | Edits to shared libc and header files: TLS variant I in `gen/tls.c`, quad-precision `long double` in `<float.h>`, the thread library's spin hint |
+| `lib/libc/aarch64/`, `lib/libc/thread/aarch64/` | The C library's machine-dependent part: system call stubs, `setjmp`, `getcontext`/`makecontext`, FP control (setjmp and FP files from FreeBSD/arm64) |
+| `lib/csu/aarch64/` | Program startup files (`crt1`, `crti`/`crtn`, a minimal `crtbegin`/`crtend`) |
+| `contrib/openbsd_libm/include/arm64/` | `<machine/ieee.h>` and `<machine/fenv.h>` for the math library |
+| `world.sh` | Builds userland: sysroot headers, compiler-rt builtins, libc, startup files, programs |
+| `user/` | Test userland: a mini C library (`libc.c`, not a port of DragonFly's), an `init` that tests the kernel, a small shell, and `hello.c`, a test of the real C library |
 | `build.sh` | Fetch, overlay, build the kernel and ramdisk, and run them in QEMU |
 | `tools/mkbootimg.py` | Packs kernel, device tree and ramdisk into an Android boot image for `fastboot boot` |
 | `tools/mi-coverage.sh` | Compiles only the shared kernel sources for aarch64 and reports failures |
@@ -53,6 +58,19 @@ Requirements: `git`, `clang`, `ld.lld`, `llvm-objcopy`, `llvm-nm`,
 ./build.sh build     # fetch DragonFly (~900MB checkout), build kernel + ramdisk
 ./build.sh run       # boot in QEMU on your terminal; Ctrl-A X exits
 ```
+
+To build DragonFly's own C library and the test program that uses it
+(also needs `bmake`, `rpcgen`, `flex` and `bison`):
+
+```sh
+./world.sh           # sysroot, compiler-rt, libc.a, startup files, hello
+./build.sh ramdisk   # puts /bin/hello in the ramdisk
+./build.sh run       # then type /bin/hello at the test shell
+```
+
+`world.sh` asks DragonFly's own makefiles (through `bmake -V`) which
+sources and flags each library uses, and compiles them with clang for a
+bare aarch64 ELF target with `__DragonFly__` defined.
 
 `build.sh` stands in for `config(8)` and the kernel makefiles, which do not
 know about arm64 yet. Expected console output (abridged):
@@ -166,8 +184,8 @@ Roughly in the order it blocks progress:
 
 | Area | State | What it takes |
 |---|---|---|
-| Software to run | A stand-in C library and two test programs | A cross toolchain for `aarch64-dragonfly`, then DragonFly's libc, runtime linker and thread library, all of which have per-CPU assembly. This is the largest gap |
-| User mode, remaining | Most of it works | Thread-local storage system calls (needed by the real libc and threads), debugger support (`ptrace`, single step) |
+| Software to run | DragonFly's real libc, static linking only; init and the shell still use the stand-in | The runtime linker (`rtld-elf`) and shared libraries, then DragonFly's own programs (`sh`, `ls`, ...) |
+| User mode, remaining | Most of it works | Debugger support (`ptrace`, single step) |
 | Storage | Ramdisk root (read-only ISO 9660) and tmpfs | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then real disk drivers and a persistent filesystem |
 | More than one CPU | Works in QEMU, untested on the phone | An audit of shared code that assumes x86's strong memory ordering; stopping the other cores on a panic (they keep running); a topology that knows the Mi 5's two clusters |
 | Interrupt controllers | GICv2 and GICv3, boot CPU only | Per-CPU setup for secondary CPUs, MSI (GICv2m or the GICv3 ITS) |
@@ -184,10 +202,11 @@ naming what is missing, so hitting one is obvious.
 
 ### Known open questions
 
-- **Thread-local storage layout.** DragonFly uses the x86 "variant II" TLS
-  layout everywhere; the aarch64 ELF ABI specifies variant I. `cpu/tls.h`
-  currently keeps variant II and notes the conflict. This must be settled
-  before any userland is built.
+- **Thread-local storage layout.** Settled: arm64 uses the ABI's variant I.
+  The thread pointer addresses the 16-byte ABI header (`tcb_dtv`,
+  `tcb_pthread`) at the end of DragonFly's `struct tls_tcb`, and the other
+  TCB fields sit below it. `tls_get_tcb()`/`tls_set_tcb()` hide the offset.
+  The runtime linker still needs the same change.
 - **Memory ordering.** x86 is strongly ordered and aarch64 is not. The atomic
   header uses the strongest ordering for every operation, which is safe, but
   shared kernel code that relies on plain loads and stores being ordered (it
@@ -203,9 +222,10 @@ naming what is missing, so hitting one is obvious.
    stand-in C library.
 4. ~~Mi 5 first boot.~~ Done: boots to the shell with all checks passing.
 5. ~~SMP.~~ Done in QEMU; the memory-ordering audit remains.
-6. **Real userland.** DragonFly's libc, runtime linker and thread library,
-   with FreeBSD's ARM64 pieces where DragonFly's are x86-only, and
-   thread-local storage. This is the largest step.
+6. **Real userland.** ~~DragonFly's libc and thread library, static, with
+   TLS~~: done in QEMU (`world.sh`, then `/bin/hello` in the test shell).
+   Next: the runtime linker and shared libraries, then DragonFly's own
+   programs replacing the test init and shell.
 7. **Drivers.** A Linux driver compatibility layer, a device-tree bus, bus
    DMA, then the Mi 5's storage (UFS), touch, USB and display.
 8. **Arcan**, on the real userland and the display, GPU and touch drivers.

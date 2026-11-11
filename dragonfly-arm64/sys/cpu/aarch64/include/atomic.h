@@ -20,6 +20,8 @@
 #ifndef _CPU_ATOMIC_H_
 #define _CPU_ATOMIC_H_
 
+#include <sys/atomic_common.h>
+
 #ifndef _SYS_TYPES_H_
 #include <sys/types.h>
 #endif
