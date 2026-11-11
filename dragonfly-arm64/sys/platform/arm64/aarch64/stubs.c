@@ -338,3 +338,13 @@ void
 busdma_swi(void)
 {
 }
+
+/*
+ * No in-kernel debugger yet: say where it would have stopped, and go on
+ * as a kernel without DDB does.
+ */
+void
+Debugger(const char *msg)
+{
+	kprintf("Debugger(\"%s\") called (no in-kernel debugger)\n", msg);
+}

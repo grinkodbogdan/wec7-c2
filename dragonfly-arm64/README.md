@@ -37,6 +37,7 @@ and lays this directory's `sys/` tree over it.
 | `sys/platform/arm64/conf/` | Kernel linker script |
 | `patches/mi-aarch64.diff` | Edits to six shared kernel files that tested for `__x86_64__` |
 | `patches/ext2fs-4k-sectors.diff` | ext2fs reads its superblock as a whole 4KB block, for disks with 4KB sectors |
+| `patches/hammer2-aarch64.diff` | HAMMER2's LZ4 and xxhash learn that aarch64 is 64-bit |
 | `patches/libc-aarch64.diff` | Edits to shared libc and header files: TLS variant I in `gen/tls.c`, quad-precision `long double` in `<float.h>`, the thread library's spin hint |
 | `lib/libc/aarch64/`, `lib/libc/thread/aarch64/` | The C library's machine-dependent part: system call stubs, `setjmp`, `getcontext`/`makecontext`, FP control (setjmp and FP files from FreeBSD/arm64) |
 | `lib/csu/aarch64/` | Program startup files (`crt1`, `crti`/`crtn`, a minimal `crtbegin`/`crtend`) |
@@ -458,6 +459,22 @@ the 1KB at byte 1024, and the disk layer refused a transfer smaller than
 the flash's 4KB sector (`dscheck: b_bcount 1024 is not on a sector
 boundary`). `patches/ext2fs-4k-sectors.diff` reads the first 4KB of the
 device instead and takes the superblock from inside it.
+
+### HAMMER2
+
+HAMMER2 builds into the arm64 kernel unchanged except for one bug:
+`hammer2_lz4.c` chose its 64-bit mode only for `__x86_64__`, and its
+32-bit mode keeps pointers in a hash table sized for 32-bit offsets,
+which on a 64-bit CPU overruns the table. The first QEMU test formatted,
+mounted and wrote a volume, then panicked in
+`LZ4_compress64k_heap_limitedOutput` when the unmount flushed the
+compressed data. `patches/hammer2-aarch64.diff` adds `__aarch64__` there,
+in the userland copy, and in xxhash's alignment check. Since then, in
+QEMU: `newfs_hammer2` on a 1.1GB `vn` volume, `mount_hammer2`, writing
+all of `/bin` and `/sbin` plus 40MB of zeros (compressed away), unmount,
+remount, and every file compares identical. The seventeenth image runs
+the same test on the phone, on a sparse file in tmpfs (the flash driver
+does not write yet).
 
 ### What is untested or missing
 
