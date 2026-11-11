@@ -434,6 +434,16 @@ library: 4 cpus, 2786 MB of memory, 37 programs, tmpfs on `/tmp`, and
 `/bin/hello` reported `libc: all checks passed`. The shell then waits
 at its prompt (there is no input device yet).
 
+**Fourteenth boot: the phone's storage.** LK leaves the UFS controller
+enabled (version 1.1, 32 slots, 64-bit addressing) with the link up and
+its own transfer list running. The probe stopped the list, pointed it at
+its own and read: a Toshiba THGLF2G9J8LBATRH, 64GB in 4KB blocks, as six
+LUNs (56GB, 4MB, 4MB, 128MB, 4.4GB, 32MB), and LUN 0's GPT with 14
+partitions (`ssd`, `persist`, `cache`, `userdata` and others). So a
+driver can start with standard UFS commands and leave Qualcomm's clock,
+regulator and PHY bring-up (Linux's `ufs-qcom`) for later, when the
+kernel has to reinitialise the controller itself.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
