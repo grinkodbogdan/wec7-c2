@@ -435,3 +435,9 @@ msm8996_cpu_clocks(void)
 	    "mode %#x\n", rd32(b + APC_PLL_MODE));
 	return (1);
 }
+
+int
+msm8996_is_present(void)
+{
+	return (msm8996_present);
+}
