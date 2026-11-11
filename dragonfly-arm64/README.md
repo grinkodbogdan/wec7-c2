@@ -472,7 +472,7 @@ compressed data. `patches/hammer2-aarch64.diff` adds `__aarch64__` there,
 in the userland copy, and in xxhash's alignment check. Since then, in
 QEMU: `newfs_hammer2` on a 1.1GB `vn` volume, `mount_hammer2`, writing
 all of `/bin` and `/sbin` plus 40MB of zeros (compressed away), unmount,
-remount, and every file compares identical. The seventeenth image runs
+remount, and every file compares identical. The eighteenth image runs
 the same test on the phone, on a sparse file in tmpfs (the flash driver
 does not write yet).
 
