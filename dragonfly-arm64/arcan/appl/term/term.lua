@@ -16,6 +16,7 @@ local cmds = {
 	"df -h",
 	"sysctl hw.ncpu hw.physmem hw.machine",
 	"sysctl hw.mi5",
+	"dmesg | grep gpu",
 	"sysctl hw.mi5.vibrate=300",
 	"sysctl hw.mi5.led=0x00ff00",
 	"sysctl hw.mi5.led=0",

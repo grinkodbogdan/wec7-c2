@@ -132,62 +132,48 @@ dw(uint8_t reg, uint8_t v)
 	return (qup_i2c_regwrite(bus, DRV_ADDR, reg, v));
 }
 
-/* drv260x_init() for an LRA: calibrate, then set up real-time playback. */
+/*
+ * The Mi 5's own driver (Xiaomi's drv2604.c) does not auto-calibrate: it
+ * sets the actuator's voltages and drive time and writes fixed
+ * calibration results.  Linux's generic calibration fails on this LRA
+ * (status 0x88), so this follows Xiaomi: LRA at 240Hz, rated 0x30,
+ * overdrive 0x40, closed loop, signed real-time playback.
+ */
 static int
 vib_init(void)
 {
-	uint8_t st = 0, go = 1, comp = 0, bemf = 0, fb = 0;
-	int error, i;
+	uint8_t st = 0, fb = 0, c1 = 0, c2 = 0, c3 = 0;
+	int error;
 
 	vib_enable(1);
 	if ((error = qup_i2c_regread(bus, DRV_ADDR, DRV_STATUS, &st)) != 0) {
 		vib_enable(0);
 		return (error);
 	}
-	dw(DRV_MODE, 0);			/* out of standby */
-	dw(DRV_RATED_VOLT, 0x90);
-	dw(DRV_OD_CLAMP, 0x90);
-	dw(DRV_MODE, MODE_AUTO_CAL);
-	dw(DRV_CTRL3, 0x40 | 0x08);		/* noise gate 2, unsigned RTP */
-	dw(DRV_FEEDBACK, 0x80 | 0x30 | 0x08);	/* LRA, brake 4x, loop gain high */
-	dw(DRV_LIB_SEL, LIB_LRA);
-	dw(DRV_GO, 1);
-	for (i = 0; i < 100 && go; ++i) {	/* up to 1.5s */
-		tsleep(&vib_ok, 0, "vibcal", hz * 15 / 1000 + 1);
-		if (qup_i2c_regread(bus, DRV_ADDR, DRV_GO, &go))
-			break;
-	}
-	qup_i2c_regread(bus, DRV_ADDR, DRV_STATUS, &st);
-	qup_i2c_regread(bus, DRV_ADDR, DRV_CAL_COMP, &comp);
-	qup_i2c_regread(bus, DRV_ADDR, DRV_CAL_BEMF, &bemf);
+	dw(DRV_MODE, 0);				/* ready */
+	dw(DRV_RATED_VOLT, 0x30);
+	dw(DRV_OD_CLAMP, 0x40);
 	qup_i2c_regread(bus, DRV_ADDR, DRV_FEEDBACK, &fb);
-	kprintf("vibrator: DRV260x id %d, calibration %s (status 0x%02x, "
-	    "comp 0x%02x, bemf 0x%02x, feedback 0x%02x)\n", st >> 5,
-	    go ? "timed out" : (st & 0x08) ? "failed" : "done", st, comp,
-	    bemf, fb);
-
-	/* drv260x_lra_init_regs */
-	dw(DRV_MODE, MODE_RTP);
-	dw(DRV_A2V_CTRL, 0x04 | 0x01);
-	dw(DRV_A2V_MIN_IN, 0x19);
-	dw(DRV_A2V_MAX_IN, 0x64);
-	dw(DRV_A2V_MIN_OUT, 0x19);
-	dw(DRV_A2V_MAX_OUT, 0xff);
-	dw(DRV_FEEDBACK, 0x80 | 0x01 | 0x04 | 0x03);
-	dw(DRV_CTRL1, 0x80);
-	dw(DRV_CTRL2, 0x20);
-	dw(DRV_CTRL3, 0x40 | 0x08 | 0x02);
-	dw(DRV_CTRL4, 0x20);
-	dw(DRV_RTP_IN, 0);
+	qup_i2c_regread(bus, DRV_ADDR, DRV_CTRL1, &c1);
+	qup_i2c_regread(bus, DRV_ADDR, DRV_CTRL2, &c2);
+	qup_i2c_regread(bus, DRV_ADDR, DRV_CTRL3, &c3);
+	dw(DRV_FEEDBACK, (fb & 0x7c) | 0x80 | 0x01);	/* LRA, BEMF gain 1 */
+	dw(DRV_CTRL1, (c1 & ~0x1f) | (5 * (1000 - 240) / 240));	/* drive time */
+	dw(DRV_CTRL2, c2 | 0x80);			/* bidirectional input */
+	dw(DRV_CTRL3, c3 & ~(0x20 | 0x08 | 0x01));	/* closed loop, signed */
+	dw(DRV_CAL_COMP, 0x08);
+	dw(DRV_CAL_BEMF, 0x8e);
+	dw(DRV_RTP_IN, 0x7f);
 	dw(DRV_MODE, MODE_STANDBY);
 	vib_enable(0);
+	kprintf("vibrator: DRV260x id %d ready (was feedback 0x%02x ctrl "
+	    "0x%02x/0x%02x/0x%02x)\n", st >> 5, fb, c1, c2, c3);
 	return (0);
 }
 
 static void
 vib_stop(void *arg __unused, int pending __unused)
 {
-	dw(DRV_RTP_IN, 0);
 	dw(DRV_MODE, MODE_STANDBY);
 	vib_enable(0);
 }
@@ -211,8 +197,8 @@ vib_start(int ms)
 	if (ms > 5000)
 		ms = 5000;
 	vib_enable(1);
-	if ((error = dw(DRV_MODE, MODE_RTP)) == 0)
-		error = dw(DRV_RTP_IN, 0x7f);
+	if ((error = dw(DRV_RTP_IN, 0x7f)) == 0)
+		error = dw(DRV_MODE, MODE_RTP);
 	callout_reset(&vib_stop_co, (ms * hz + 999) / 1000, vib_stop_timeout,
 	    NULL);
 	return (error);
@@ -279,10 +265,25 @@ lp_init(void)
 	int error, i;
 
 	error = qup_i2c_regread(bus, LP_ADDR, LP_ENABLE, &v);
+	if (error) {
+		uint8_t m = 0, o = 0, e = 0;
+
+		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_MODE_CTL, &m);
+		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_DIG_OUT, &o);
+		msm8996_spmi_read(0, PMGPIO7 + PMGPIO_EN_CTL, &e);
+		kprintf("keylight: no answer (error %d); PM8994 GPIO 7 mode "
+		    "0x%02x out 0x%02x en 0x%02x, owner ee%d\n", error, m, o, e,
+		    msm8996_spmi_owner(0, PMGPIO7));
+	}
 	/* No answer: the enable line, active low in the device tree. */
 	for (i = 0; error == ENXIO && i < 2; ++i) {
-		if (pmgpio7_out(i) != 0)
+		int e2 = pmgpio7_out(i);
+
+		if (e2 != 0) {
+			kprintf("keylight: PM8994 GPIO 7 write: error %d\n",
+			    e2);
 			break;
+		}
 		tsleep(&lp_ok, 0, "lpen", hz / 100 + 1);
 		error = qup_i2c_regread(bus, LP_ADDR, LP_ENABLE, &v);
 		if (error == 0)

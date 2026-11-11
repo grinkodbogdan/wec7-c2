@@ -613,6 +613,26 @@ lights come on when their drivers are ready.
 GNU grep is now in the ramdisk (`world.sh` builds `gnu/usr.bin/grep`);
 the twenty-fourth image's `dmesg | grep touch` had no grep to run.
 
+**Twenty-sixth boot.** The touchscreen reports (`touch: ready`), the
+backlight reads back (672 of 4095), the fuel gauge says 3% with a charger
+present, and the DRV2604 answers (id 4), but its generic auto-calibration
+fails (status 0x88) and the LP5562 does not answer. The twenty-seventh
+image sets the vibrator up as Xiaomi's own driver does (fixed calibration
+values, 240Hz LRA, rated 0x30 and overdrive 0x40, no auto-calibration)
+and reports each step of the key light's enable line.
+
+### GPU
+
+`qcom_gpu.c` is the first step toward the Adreno 530: it reports the
+state of the GPU's rail (vdd_gfx, PMI8994 S2), its two power domains
+and clocks, then powers them up in Linux's order (rail, bus clocks, the
+GPU domain, the GX domain and its I/O clamp, the core clocks) and only
+then reads GPU and GPU-SMMU registers. `msm8996.gpu=1` reports without
+powering anything; `0` skips it. The plan after that, as agreed: port
+Linux's drm/msm Adreno driver (GPL, in its own directory), load the
+microcode and the zap shader (from the phone's firmware partition, via
+the secure monitor), then build Mesa's freedreno for Arcan.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
