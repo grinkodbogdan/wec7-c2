@@ -260,7 +260,7 @@ ramdisk() {
 	# Programs built against the real C library by world.sh, if any.
 	# DragonFly's sh then becomes /bin/sh and the test shell /bin/tsh;
 	# the test init stays /sbin/init (the real one needs /etc/rc).
-	for f in "$HERE"/work/wobj/hello/hello "$HERE"/work/wobj/hello/keymenu; do
+	for f in "$HERE"/work/wobj/hello/hello "$HERE"/work/wobj/hello/keymenu "$HERE"/work/wobj/hello/cxxtest; do
 		[ -x "$f" ] && cp "$f" "$root/bin/"
 	done
 	sr=$HERE/work/sysroot

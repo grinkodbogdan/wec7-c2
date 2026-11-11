@@ -272,6 +272,11 @@ csu() {
 	cc $f -c -o "$o/crtend.o" "$d/aarch64/crtend.c"
 	cp "$o/crtend.o" "$o/crtendS.o"
 	cp "$o"/*.o "$SYSROOT/usr/lib/"
+	# pthreads and dlopen live in libc on DragonFly; programs and
+	# libraries that ask for -lpthread, -ldl or -lrt get empty archives.
+	for l in pthread dl rt; do
+		llvm-ar rcs "$SYSROOT/usr/lib/lib$l.a"
+	done
 	echo "built startup files in $SYSROOT/usr/lib"
 }
 
@@ -279,7 +284,7 @@ csu() {
 ldstatic() {
 	out=$1; shift
 	l=$SYSROOT/usr/lib
-	ld.lld -static -nostdlib -o "$out" "$l/crt1.o" "$l/crti.o" \
+	ld.lld -static -nostdlib --eh-frame-hdr -o "$out" "$l/crt1.o" "$l/crti.o" \
 	    "$l/crtbegin.o" "$@" -L"$l" --start-group -lc -lcompiler_rt \
 	    --end-group "$l/crtend.o" "$l/crtn.o"
 }
@@ -324,6 +329,38 @@ prog() {
 	echo "built $dir"
 }
 
+#
+# The C++ runtime: LLVM's libunwind, libc++abi and libc++, static, with
+# patches/llvm/libcxx-dragonfly.diff (DragonFly takes FreeBSD's paths in
+# libc++'s locale and threading code).
+#
+cxx() {
+	sync
+	src=$HERE/work/llvm-runtimes
+	if [ ! -d "$src/libcxx" ]; then
+		git clone -q --depth 1 --branch "$LLVM_TAG" --filter=blob:none \
+		    --sparse "$LLVM_REPO" "$src"
+		git -C "$src" sparse-checkout set runtimes libcxx libcxxabi \
+		    libunwind cmake llvm/cmake llvm/utils/llvm-lit third-party
+		git -C "$src" apply "$HERE/patches/llvm/libcxx-dragonfly.diff"
+	fi
+	b=$WOBJ/llvm-runtimes
+	cmake -G Ninja -S "$src/runtimes" -B "$b" \
+	    -DCMAKE_TOOLCHAIN_FILE="$HERE/tools/aarch64-dragonfly.cmake" \
+	    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$SYSROOT/usr" \
+	    -DLLVM_ENABLE_RUNTIMES="libunwind;libcxxabi;libcxx" \
+	    -DLIBUNWIND_ENABLE_SHARED=OFF -DLIBCXXABI_ENABLE_SHARED=OFF \
+	    -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+	    -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON -DLIBCXX_CXX_ABI=libcxxabi \
+	    -DLIBCXX_INCLUDE_BENCHMARKS=OFF -DLIBCXX_INCLUDE_TESTS=OFF \
+	    -DLIBCXXABI_INCLUDE_TESTS=OFF -DLIBUNWIND_INCLUDE_TESTS=OFF \
+	    -DLIBCXX_USE_COMPILER_RT=ON -DLIBCXXABI_USE_COMPILER_RT=ON \
+	    -DLIBUNWIND_USE_COMPILER_RT=ON -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON \
+	    -DLIBCXX_HARDENING_MODE=none >/dev/null
+	ninja -C "$b" install >/dev/null
+	echo "installed libc++, libc++abi, libunwind in $SYSROOT/usr"
+}
+
 # A smoke test: a small program using stdio, malloc, TLS and threads.
 hello() {
 	o=$WOBJ/hello; mkdir -p "$o"
@@ -352,6 +389,7 @@ progs() {
 case "${1:-all}" in
 progs)		progs ;;
 csu)		csu ;;
+cxx)		cxx ;;
 lib)		shift; lib "$@" ;;
 prog)		shift; prog "$@" ;;
 hello)		hello ;;
