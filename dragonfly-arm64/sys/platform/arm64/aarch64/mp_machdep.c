@@ -36,9 +36,9 @@
  *	set ncpus, allocate each cpu's private data and idle thread,
  *	CPU_ON it, wait for its startup bit
  *   each secondary (ap_init)
- *	set its bit in smp_startup_mask, wait for the boot cpu to let
- *	go of the MP lock, wait for mp_finish, start taking interrupts,
- *	start its clock, set its bit in smp_finalize_mask
+ *	set its bit in smp_startup_mask, sleep (WFE) until mp_finish,
+ *	take and drop the MP lock, start taking interrupts, start its
+ *	clock, set its bit in smp_finalize_mask
  *   boot cpu (ap_finish, SI_BOOT2_FINISH_SMP)
  *	release the MP lock, raise mp_finish, wait for everyone
  *
@@ -69,7 +69,9 @@
 #include <machine/md_var.h>
 #include <machine/smp.h>
 
+#define	PSCI_VERSION		0x84000000UL
 #define	PSCI_CPU_ON_64		0xc4000003UL
+#define	PSCI_AFFINITY_INFO_64	0xc4000004UL
 #define	PSCI_E_ALREADY_ON	(-4)
 
 volatile cpumask_t stopped_cpus;
@@ -146,6 +148,12 @@ psci_cpu_on(u_long mpidr, int cpu)
 	    arm64_bootinfo.bi_psci == 2));
 }
 
+static int64_t
+psci(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+{
+	return (psci_call4(fn, a1, a2, a3, arm64_bootinfo.bi_psci == 2));
+}
+
 /*
  * Set up and start the secondary cpus.  Runs on the boot cpu at the
  * point in boot where pc64 starts its application processors; also
@@ -174,7 +182,25 @@ arm64_mp_start(void *dummy __unused)
 	arc4_init_pcpu(0);
 	mdcpu->gd_mpidr = mpidr[0];
 
+	if (ncpus > 1 && bootverbose) {
+		int64_t v = psci(PSCI_VERSION, 0, 0, 0);
+
+		kprintf("smp: PSCI %d.%d via %s, starting %d more cpus\n",
+		    (int)(v >> 16) & 0xffff, (int)v & 0xffff,
+		    arm64_bootinfo.bi_psci == 2 ? "smc" : "hvc", ncpus - 1);
+	}
+
+	/*
+	 * In a verbose boot every step below is reported, since a cpu
+	 * that fails to come up can take the boot cpu down with it
+	 * inside the firmware call.
+	 */
 	for (x = 1; x < ncpus; ++x) {
+		if (bootverbose) {
+			kprintf("smp: cpu%d mpidr %lx: power state %d, "
+			    "setting up\n", x, mpidr[x],
+			    (int)psci(PSCI_AFFINITY_INFO_64, mpidr[x], 0, 0));
+		}
 		ps = (struct privatespace *)kmem_alloc(kernel_map,
 		    sizeof(struct privatespace), VM_SUBSYS_GD);
 		bzero(ps, sizeof(*ps));
@@ -190,7 +216,11 @@ arm64_mp_start(void *dummy __unused)
 		arc4_init_pcpu(x);
 		cpu_mfence();
 
+		if (bootverbose)
+			kprintf("smp: cpu%d: CPU_ON\n", x);
 		err = psci_cpu_on(mpidr[x], x);
+		if (bootverbose)
+			kprintf("smp: cpu%d: CPU_ON returned %d\n", x, err);
 		if (err != 0 && err != PSCI_E_ALREADY_ON) {
 			kprintf("cpu%d (mpidr %lx): PSCI CPU_ON failed (%d)\n",
 			    x, mpidr[x], err);
@@ -202,10 +232,13 @@ arm64_mp_start(void *dummy __unused)
 			DELAY(1000);
 		}
 		if (!CPUMASK_TESTBIT(smp_startup_mask, x)) {
-			kprintf("cpu%d (mpidr %lx): did not start\n",
-			    x, mpidr[x]);
+			kprintf("cpu%d (mpidr %lx): did not start, power "
+			    "state %d\n", x, mpidr[x], (int)psci(
+			    PSCI_AFFINITY_INFO_64, mpidr[x], 0, 0));
 			break;
 		}
+		if (bootverbose)
+			kprintf("smp: cpu%d: joined after %d ms\n", x, waited);
 	}
 	if (x < ncpus) {
 		/*
@@ -254,7 +287,21 @@ ap_init(void)
 	ATOMIC_CPUMASK_ORBIT(smp_startup_mask, mycpu->gd_cpuid);
 	cpu_mfence();
 
-	/* The boot cpu holds the MP lock until ap_finish(). */
+	/*
+	 * Sleep until the boot cpu has started everyone and lets us go
+	 * (ap_finish() signals with SEV).  pc64 spins on the MP lock
+	 * here instead; on the Snapdragon 820 a busy cpu in one cluster
+	 * while the firmware powers up the other was the prime suspect
+	 * when bringing up the second cluster hung, and idling the way
+	 * Linux's waiting cpus do costs nothing.
+	 */
+	for (;;) {
+		cpu_lfence();
+		if (mp_finish != 0)
+			break;
+		__asm __volatile("wfe");
+	}
+
 	while (try_mplock() == 0) {
 		cpu_pause();
 		cpu_lfence();
@@ -264,12 +311,6 @@ ap_init(void)
 	ATOMIC_CPUMASK_NANDBIT(mycpu->gd_other_cpus, mycpu->gd_cpuid);
 	cpu_mfence();
 	rel_mplock();
-
-	while (mp_finish == 0) {
-		cpu_pause();
-		cpu_lfence();
-	}
-	cpu_invltlb();
 
 	/* Start taking interrupts, IPIs included. */
 	crit_enter();
@@ -304,6 +345,7 @@ ap_finish(void *dummy __unused)
 
 	rel_mplock();
 	mp_finish = 1;
+	__asm __volatile("dsb sy; sev" : : : "memory");	/* wake ap_init() */
 	while (CPUMASK_CMPMASKNEQ(smp_active_mask, smp_startup_mask)) {
 		cpu_pause();
 		cpu_lfence();

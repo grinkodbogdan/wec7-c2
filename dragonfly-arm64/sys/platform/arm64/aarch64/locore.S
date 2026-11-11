@@ -349,8 +349,14 @@ mpentry:
 	msr	ttbr0_el1, x21
 	msr	ttbr1_el1, x22
 	isb
+	/*
+	 * Start from clean TLBs and instruction cache: a cpu powered up
+	 * by firmware may hold whatever it last ran (as the iOS port to
+	 * this chip found).
+	 */
 	tlbi	vmalle1
-	dsb	nsh
+	ic	iallu
+	dsb	sy
 	isb
 	ldr	x1, =SCTLR_VALUE
 	msr	sctlr_el1, x1

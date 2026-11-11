@@ -318,10 +318,24 @@ and 2677 MB available after the kernel and reservations, the ramdisk mounted
 as root, `init` started, all 14 checks passed, and the shell prompt shown on
 the panel. Everything the kernel does so far works on the phone, on one core.
 
+**Fifth boot, four cores.** The second core (`mpidr 1`, same cluster as the
+boot core) started and reported in; then the boot stopped silently. The third
+core (`mpidr 0x100`) is the first one in the Snapdragon 820's other cluster,
+and neither of the messages a failed start prints appeared, so the boot core
+never got past starting it. The emulator's cores are all in one cluster, so
+it never exercised this. The iOS port for this chip starts all four cores
+with the same firmware call; it also invalidates the new core's instruction
+cache before turning its MMU on, and its started cores sit idle while the
+next one powers up, where this kernel's spun hard on a lock. The sixth image
+does both, and reports every step of starting each core (`smp:` lines: the
+core's power state as the firmware sees it, the call, its result, and how
+long the core took to report in).
+
 ### What is untested or missing
 
-- **The other three cores on the phone.** The fifth test image starts them;
-  the same image with `cpus=1` is the fallback.
+- **The second cluster's cores on the phone.** The sixth test image comes in
+  three variants: all four cores, `cpus=2` (the boot cluster only) and
+  `cpus=1`.
 - **Input.** No touch, keys or USB.
 - **Everything after boot.** Storage (UFS), USB, touch, display control,
   power management, charging and the modem each need a driver for this chip.
