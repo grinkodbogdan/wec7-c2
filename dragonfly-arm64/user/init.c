@@ -362,6 +362,28 @@ main(void)
 	}
 
 	/*
+	 * With a framebuffer and buttons (the Mi 5), start Arcan with its
+	 * terminal; the volume and power buttons drive it.  Should it exit,
+	 * fall back to the button menu.
+	 */
+	if (access("/etc/arcan.sh", R_OK) == 0 &&
+	    access("/dev/fb0", R_OK) == 0 &&
+	    access("/dev/input/event0", R_OK) == 0) {
+		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term",
+		    "autorun=uname -a; df -h / /tmp; ls /", NULL };
+
+		printf("init: starting Arcan\n");
+		pid = fork();
+		if (pid == 0) {
+			execve("/bin/sh", ar_argv, sh_env);
+			_exit(127);
+		}
+		while (waitpid(-1, &status, 0) != pid)
+			;
+		printf("init: Arcan exited (status %d)\n", status);
+	}
+
+	/*
 	 * With buttons and no keyboard (the Mi 5), run the button menu;
 	 * otherwise, and if it ever exits, a shell.
 	 */

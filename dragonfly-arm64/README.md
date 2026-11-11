@@ -42,7 +42,11 @@ and lays this directory's `sys/` tree over it.
 | `lib/libc/aarch64/`, `lib/libc/thread/aarch64/` | The C library's machine-dependent part: system call stubs, `setjmp`, `getcontext`/`makecontext`, FP control (setjmp and FP files from FreeBSD/arm64) |
 | `lib/csu/aarch64/` | Program startup files (`crt1`, `crti`/`crtn`, a minimal `crtbegin`/`crtend`) |
 | `contrib/openbsd_libm/include/arm64/` | `<machine/ieee.h>` and `<machine/fenv.h>` for the math library |
-| `world.sh` | Builds userland: sysroot headers, compiler-rt builtins, libc, startup files, programs |
+| `world.sh` | Builds userland: sysroot headers, compiler-rt builtins, libc, startup files, programs, the C++ runtime, Mesa, FreeType and Arcan |
+| `arcan/` | Arcan's `fbmem` video platform and the `term` and `hello` appls |
+| `patches/arcan/`, `patches/llvm/` | Changes to Arcan and to LLVM's libc++ for DragonFly/arm64 |
+| `tools/aarch64-dragonfly.cmake`, `tools/aarch64-dragonfly.meson.in` | Cross-build descriptions for CMake and Meson projects |
+| `tools/qemu-shot.py` | Boots QEMU with a framebuffer, types commands, saves the screen as PNG |
 | `user/` | Test userland: a mini C library (`libc.c`, not a port of DragonFly's), an `init` that tests the kernel, a small shell, and `hello.c`, a test of the real C library |
 | `build.sh` | Fetch, overlay, build the kernel and ramdisk, and run them in QEMU |
 | `tools/mkbootimg.py` | Packs kernel, device tree and ramdisk into an Android boot image for `fastboot boot` |
@@ -490,6 +494,40 @@ releases (`qcom_pmic_keys.c`, polled every 20ms, SPMI reads after Linux's
 init runs when buttons exist: volume up/down choose a command, power runs
 it. The console now understands ANSI clear-screen and cursor-home, so the
 menu redraws in place.
+
+### Arcan
+
+Arcan 0.7.0.1 (the last C release; later ones moved to Zig and Vulkan)
+runs on DragonFly/arm64 with software rendering, so it needs no GPU
+driver yet. The chain, all static:
+
+- LLVM's libc++/libc++abi/libunwind (`world.sh cxx`), with DragonFly added
+  next to FreeBSD in libc++ (`patches/llvm/libcxx-dragonfly.diff`).
+- Mesa 24.0.9 as OSMesa with the softpipe renderer (`world.sh mesa`):
+  OpenGL 3.3, GLSL 3.30.
+- FreeType 2.13 (`world.sh freetype`); Lua 5.1 and SQLite from Arcan.
+- A new Arcan video platform, `fbmem` (`arcan/src/platform/fbmem`): it
+  renders through OSMesa at half the panel's resolution and copies each
+  frame to `/dev/fb0`, a new kernel device (`fbmem.c`) that maps the
+  console's framebuffer and pushes frames to the panel.
+- Arcan's evdev input platform reads the phone's buttons from
+  `/dev/input/event0`.
+- `patches/arcan/arcan-dragonfly.diff`: the platform in the build, GL
+  symbols resolved through the platform (static binaries have no
+  `dlsym`), static shmif/tui/a12 libraries, DragonFly in evdev's BSD
+  paths, and `ARCAN_FRAMESERVER_STDERR` for frameserver logs.
+
+The kernel needed the pty driver (Arcan's terminal runs the shell on a
+pty) and the LWKT token pool initialised at boot, as pc64 does; the pty
+code was the first to use it. The ramdisk links `/var` to `/tmp/var` for
+named semaphores, and now travels gzip-compressed (33MB, 13.8MB packed)
+for the kernel to inflate.
+
+The `term` appl (`arcan/appl/term`) is a full-screen terminal running
+`sh` with a command bar: volume up/down choose a command, power types it
+in, home sends Ctrl-C. In QEMU, `tools/qemu-shot.py` captures it: a typed
+`uname -a; ls /; df -h /tmp; ps ax` runs and prints in the terminal.
+On the phone, init starts it after the self-tests (`/etc/arcan.sh`).
 
 ### What is untested or missing
 

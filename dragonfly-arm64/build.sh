@@ -48,7 +48,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 # filesystem, so there is something to mount as root, and tmpfs for
 # somewhere to write.
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
-	dev/disk/md/md.c dev/disk/vn/vn.c
+	dev/disk/md/md.c dev/disk/vn/vn.c kern/tty_pty.c
 	dev/misc/evdev/cdev.c dev/misc/evdev/evdev.c dev/misc/evdev/evdev_mt.c dev/misc/evdev/evdev_utils.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
 	vfs/isofs/cd9660/cd9660_node.c vfs/isofs/cd9660/cd9660_rrip.c
@@ -289,6 +289,7 @@ ramdisk() {
 			mkdir -p "$root/usr/share/arcan/appl" \
 			    "$root/usr/share/arcan/resources/fonts"
 			cp -r "$asrc/data/appl/console" "$HERE/arcan/appl/hello" \
+			    "$HERE/arcan/appl/term" \
 			    "$root/usr/share/arcan/appl/"
 			cp -r "$asrc/data/scripts" "$root/usr/share/arcan/scripts"
 			cp "$asrc/data/resources/fonts/default.ttf" \

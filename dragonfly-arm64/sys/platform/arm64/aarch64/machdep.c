@@ -585,6 +585,8 @@ initarm(vm_paddr_t fdt_pa, vm_paddr_t kernphys)
 	 * joined (ap_finish(), mp_machdep.c).
 	 */
 	cpu_get_initial_mplock();
+	/* The token pool (lwkt_token.c) has to work early, as on pc64. */
+	lwkt_token_pool_init();
 
 	cninit();
 	cons_ready = 1;

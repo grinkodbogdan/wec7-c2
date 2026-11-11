@@ -74,6 +74,23 @@ index ff8328e..8a62f02 100644
  #else
  	if (-1 != gstate.notify){
  		char inbuf[1024];
+diff --git a/src/platform/posix/launch.c b/src/platform/posix/launch.c
+index 4329acb..b043913 100644
+--- a/src/platform/posix/launch.c
++++ b/src/platform/posix/launch.c
+@@ -398,7 +398,11 @@ struct arcan_frameserver* platform_launch_fork(
+ 			close(nfd);
+ 		}
+ 
+-		nfd = open("/dev/null", O_WRONLY);
++/* ARCAN_FRAMESERVER_STDERR=file keeps frameserver output, for porting */
++		const char* errlog = getenv("ARCAN_FRAMESERVER_STDERR");
++		nfd = errlog ? open(errlog, O_WRONLY | O_CREAT | O_APPEND, 0600) : -1;
++		if (-1 == nfd)
++			nfd = open("/dev/null", O_WRONLY);
+ 		if (-1 != nfd){
+ 			dup2(nfd, STDOUT_FILENO);
+ 			dup2(nfd, STDERR_FILENO);
 diff --git a/src/shmif/CMakeLists.txt b/src/shmif/CMakeLists.txt
 index 9f4098b..ba0ed9d 100644
 --- a/src/shmif/CMakeLists.txt
