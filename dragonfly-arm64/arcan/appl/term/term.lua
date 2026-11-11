@@ -17,6 +17,7 @@ local cmds = {
 	"sysctl hw.ncpu hw.physmem hw.machine",
 	"sysctl hw.mi5",
 	"sysctl hw.mi5.gpu hw.mi5.i2c9",
+	"sysctl hw.mi5.gpu_read=1",
 	"dmesg | tail -20",
 	"sysctl hw.mi5.vibrate=300",
 	"sysctl hw.mi5.led=0x00ff00",

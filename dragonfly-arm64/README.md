@@ -640,6 +640,15 @@ still collapsed. The thirty-first image powers the domains before the
 clocks, as Linux does. The key light's LP5562 still does not answer with
 its enable line driven either way.
 
+**Thirty-second boot.** The GPU is powered: vdd_gfx at 1.00V, both
+power domains on (the GX domain once its core clock and root were forced
+on first, as the Mi 5's kernel does), all five clocks running; but the
+first read of a GPU register stalled that cpu, and the boot with it. The
+thirty-third image also turns on `mmss_mmagic_ahb_clk` (the Mi 5's GPU
+driver lists it as `alt_mem_iface_clk`), releases any GPU block reset
+still asserted, and no longer reads GPU registers at boot:
+`sysctl hw.mi5.gpu_read=1` does, one at a time, naming each first.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the

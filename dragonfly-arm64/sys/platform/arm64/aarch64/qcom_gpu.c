@@ -64,6 +64,11 @@
 #define	RBBMTIMER_RCG		MM(0x4090)
 #define	GPU_RBBMTIMER_CBCR	MM(0x40b0)
 #define	GPU_GX_CLAMP_IO		MM(0x4300)
+#define	MMAGIC_AHB_CBCR		MM(0x5024)
+#define	GPU_GX_BCR		MM(0x4020)
+#define	GPU_BCR			MM(0x4030)
+#define	GPU_AON_BCR		MM(0x4040)
+#define	MMAGIC_BIMC_BCR		MM(0x5290)
 
 #define	CBCR_EN			(1U << 0)
 #define	CBCR_OFF		(1U << 31)
@@ -286,6 +291,28 @@ power_up(void)
 	    rd(GPU_GX_CLAMP_IO));
 
 	/*
+	 * 4a. the multimedia AHB interface clock, which the Mi 5's own GPU
+	 * driver keeps on (alt_mem_iface_clk = mmss_mmagic_ahb_clk); its
+	 * status is the enable bit (check_enable_bit downstream).
+	 */
+	wr(MMAGIC_AHB_CBCR, rd(MMAGIC_AHB_CBCR) | CBCR_EN);
+	DELAY(10);
+
+	/* 4b. block resets: any still asserted (bit 0) is released */
+	status("resets: gpu_gx 0x%x gpu 0x%x gpu_aon 0x%x mmagic_bimc 0x%x; "
+	    "mmagic_ahb 0x%08x", rd(GPU_GX_BCR), rd(GPU_BCR), rd(GPU_AON_BCR),
+	    rd(MMAGIC_BIMC_BCR), rd(MMAGIC_AHB_CBCR));
+	{
+		static const vm_paddr_t bcr[] = { GPU_AON_BCR, GPU_BCR,
+		    GPU_GX_BCR, MMAGIC_BIMC_BCR };
+
+		for (int i = 0; i < 4; ++i)
+			if (rd(bcr[i]) & 1)
+				wr(bcr[i], rd(bcr[i]) & ~1U);
+		DELAY(10);
+	}
+
+	/*
 	 * 4. the clocks, each tried and reported; the GPU's registers are
 	 * only read if the register interface (ahb) and core (gfx3d) run.
 	 */
@@ -306,6 +333,49 @@ power_up(void)
 	return (0);
 }
 
+static int gpu_powered;
+
+/*
+ * sysctl hw.mi5.gpu_read=1: read GPU and SMMU registers, one at a time
+ * with a status line before each, so a read that stalls the bus names
+ * itself (and only the reading process hangs, not the boot).
+ */
+static int
+sysctl_gpu_read(SYSCTL_HANDLER_ARGS)
+{
+	static const struct { vm_paddr_t pa; const char *n; } regs[] = {
+		{ GPU_REG(A5XX_RBBM_STATUS), "RBBM_STATUS" },
+		{ GPU_REG(A5XX_RBBM_STATUS3), "RBBM_STATUS3" },
+		{ GPU_REG(A5XX_RBBM_INT_0_STATUS), "RBBM_INT_0_STATUS" },
+		{ GPU_REG(A5XX_CP_PROTECT_STATUS), "CP_PROTECT_STATUS" },
+		{ GPU_REG(A5XX_RBBM_SECVID_TRUST), "RBBM_SECVID_TRUST" },
+		{ SMMU_BASE + SMMU_SCR0, "SMMU sCR0" },
+		{ SMMU_BASE + SMMU_IDR0, "SMMU IDR0" },
+		{ SMMU_BASE + SMMU_IDR1, "SMMU IDR1" },
+	};
+	int v = 0, error, i;
+
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (!gpu_powered)
+		return (ENXIO);
+	for (i = 0; i < (int)NELEM(regs); ++i) {
+		uint32_t val;
+
+		status("reading %s at 0x%jx", regs[i].n, (uintmax_t)regs[i].pa);
+		uprintf("gpu: reading %s at 0x%jx ... ", regs[i].n,
+		    (uintmax_t)regs[i].pa);
+		val = rd(regs[i].pa);
+		uprintf("0x%08x\n", val);
+		status("%s = 0x%08x", regs[i].n, val);
+	}
+	status("Adreno 530 powered and answering");
+	return (0);
+}
+SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_read, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
+    sysctl_gpu_read, "I", "read GPU registers (may hang the caller)");
+
 static void
 gpu_thread(void *arg)
 {
@@ -319,18 +389,8 @@ gpu_thread(void *arg)
 		goto out;
 	}
 	report("powered");
-	status("reading GPU registers");
-	status("RBBM_STATUS 0x%08x STATUS3 0x%08x INT_0 0x%08x "
-	    "CP_PROTECT 0x%08x SECVID_TRUST 0x%08x",
-	    rd(GPU_REG(A5XX_RBBM_STATUS)), rd(GPU_REG(A5XX_RBBM_STATUS3)),
-	    rd(GPU_REG(A5XX_RBBM_INT_0_STATUS)),
-	    rd(GPU_REG(A5XX_CP_PROTECT_STATUS)),
-	    rd(GPU_REG(A5XX_RBBM_SECVID_TRUST)));
-	status("reading SMMU");
-	status("SMMU sCR0 0x%08x IDR0 0x%08x IDR1 0x%08x",
-	    rd(SMMU_BASE + SMMU_SCR0), rd(SMMU_BASE + SMMU_IDR0),
-	    rd(SMMU_BASE + SMMU_IDR1));
-	status("Adreno 530 powered and answering");
+	gpu_powered = 1;
+	status("powered; sysctl hw.mi5.gpu_read=1 reads GPU registers");
 out:
 	kthread_exit();
 }
