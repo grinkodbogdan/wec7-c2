@@ -113,6 +113,8 @@ ssize_t	read(int fd, void *buf, size_t len);
 ssize_t	write(int fd, const void *buf, size_t len);
 int	dup2(int from, int to);
 int	unlink(const char *path);
+int	access(const char *path, int mode);
+#define	R_OK	0x04
 int	mkdir(const char *path, int mode);
 int	rmdir(const char *path);
 int	chdir(const char *path);

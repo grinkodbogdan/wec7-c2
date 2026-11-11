@@ -152,7 +152,7 @@ buildlib() {
 	cflags=$(bm "$dir" -V CFLAGS | sed "s|-I\${.OBJDIR}|-I$o|g" |
 	    sed -E 's/ -Werror / /; s/ -Wsystem-headers / /')
 	cflags="$cflags -Wno-unknown-warning-option"
-	echo "$srcs" | tr ' ' '\n' | grep -v '^$' > "$o/srcs"
+	echo "$srcs" | tr ' \t' '\n\n' | grep -v '^$' > "$o/srcs"
 	echo "$vpath" | tr ' ' '\n' | grep -v '^$' > "$o/vpath"
 	echo "$cflags" > "$o/cflags"
 	# Per-file flags (bsd.lib.mk's FLAGS_GROUPS): "file flags..." lines.
@@ -283,6 +283,46 @@ ldstatic() {
 	    --end-group "$l/crtend.o" "$l/crtn.o"
 }
 
+#
+# Any other library: lib DIR [extra cflags...]
+# Installs lib<LIB>.a and the library's INCS into the sysroot.
+#
+lib() {
+	sync
+	dir=$1; shift
+	name=$(bm "$dir" -V LIB)
+	buildlib "$dir" "$name"
+	o=$WOBJ/$dir
+	cflags="$(cat "$o/cflags") -I$o $*"
+	compile_list "$o" "$cflags"
+	rm -f "$SYSROOT/usr/lib/lib$name.a"
+	llvm-ar rcs "$SYSROOT/usr/lib/lib$name.a" $(sed 's|$|.o|; s|^|'"$o"'/|' "$o/objs")
+	for h in $(bm "$dir" -V INCS); do
+		[ -f "$DFLY_SRC/$dir/$h" ] && cp "$DFLY_SRC/$dir/$h" "$INC/"
+	done
+	echo "built $SYSROOT/usr/lib/lib$name.a"
+}
+
+#
+# A program: prog DIR [extra cflags...]
+# Links statically against the libraries its LDADD names; private
+# libraries (/usr/lib/priv) are left out until they are built.
+#
+prog() {
+	sync
+	dir=$1; shift
+	name=$(bm "$dir" -V PROG)
+	buildlib "$dir" "$name"
+	o=$WOBJ/$dir
+	cflags="$(cat "$o/cflags") -I$o $*"
+	compile_list "$o" "$cflags"
+	libs=$(bm "$dir" -V LDADD | tr ' ' '\n' | grep '^-l' | grep -v private | tr '\n' ' ')
+	ldstatic "$o/$name" $(sed 's|$|.o|; s|^|'"$o"'/|' "$o/objs") $libs
+	mkdir -p "$SYSROOT/$(dirname "$dir" | sed 's|usr.bin|usr/bin|; s|usr.sbin|usr/sbin|')"
+	cp "$o/$name" "$SYSROOT/$(dirname "$dir" | sed 's|usr.bin|usr/bin|; s|usr.sbin|usr/sbin|')/"
+	echo "built $dir"
+}
+
 # A smoke test: a small program using stdio, malloc, TLS and threads.
 hello() {
 	o=$WOBJ/hello; mkdir -p "$o"
@@ -293,6 +333,8 @@ hello() {
 
 case "${1:-all}" in
 csu)		csu ;;
+lib)		shift; lib "$@" ;;
+prog)		shift; prog "$@" ;;
 hello)		hello ;;
 sysroot)	sysroot ;;
 builtins)	builtins ;;

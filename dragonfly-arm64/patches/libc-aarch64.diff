@@ -180,3 +180,20 @@ index c44b35f65c..858a324f14 100644
  
  typedef int umtx_t;
  
+diff --git a/lib/libm/Makefile b/lib/libm/Makefile
+index b3337c48e4..405d77bd36 100644
+--- a/lib/libm/Makefile
++++ b/lib/libm/Makefile
+@@ -47,6 +47,12 @@ ARCH_SRCS = e_acos.S e_asin.S e_atan2.S e_exp.S e_fmod.S e_log.S e_log10.S \
+ 	    s_llrint.S s_llrintf.S s_lrint.S s_lrintf.S \
+ 	    s_rint.S s_rintf.S s_scalbnf.S s_significand.S \
+ 	    s_significandf.S s_sin.S s_sinf.S s_tan.S s_tanf.S
++.elif (${MACHINE_ARCH} == "aarch64")
++# No assembly; fenv.c for the FPCR/FPSR.  The 128-bit long double
++# functions (LONG_SRCS) need an ld128 source set, which is not in
++# contrib yet.
++.PATH:	${.CURDIR}/src/aarch64
++MACHINCS=   arm64/fenv.h arm64/ieee.h
+ .endif
+ 
+ COMMON_SRCS = b_exp__D.c b_log__D.c b_tgamma.c \

@@ -35,6 +35,7 @@
 #define	SYS_close	6
 #define	SYS_wait4	7
 #define	SYS_unlink	10
+#define	SYS_access	33
 #define	SYS_chdir	12
 #define	SYS_getpid	20
 #define	SYS_mount	21
@@ -134,6 +135,7 @@ pid_t	getppid(void) { return (syscall(SYS_getppid)); }
 int	close(int fd) { return (syscall(SYS_close, fd)); }
 int	dup2(int from, int to) { return (syscall(SYS_dup2, from, to)); }
 int	unlink(const char *path) { return (syscall(SYS_unlink, path)); }
+int	access(const char *path, int mode) { return (syscall(SYS_access, path, mode)); }
 int	mkdir(const char *path, int mode) { return (syscall(SYS_mkdir, path, mode)); }
 int	rmdir(const char *path) { return (syscall(SYS_rmdir, path)); }
 int	chdir(const char *path) { return (syscall(SYS_chdir, path)); }

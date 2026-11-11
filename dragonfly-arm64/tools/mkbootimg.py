@@ -119,6 +119,12 @@ def build(args):
 				sys.exit("kernel needs %d bytes from 0x%x but the %s "
 					 "is loaded at 0x%x" % (need, args.load_addr,
 								 what, addr))
+	# The ramdisk must also end before the device tree.
+	rd_end = geometry["ramdisk_addr"] + len(ramdisk)
+	if geometry["ramdisk_addr"] < args.dtb_addr < rd_end:
+		sys.exit("ramdisk (%d bytes at 0x%x) runs into the device tree "
+			 "at 0x%x" % (len(ramdisk), geometry["ramdisk_addr"],
+				      args.dtb_addr))
 	cmdline = args.cmdline.encode("ascii")
 	if len(cmdline) >= 512 + 1024:
 		sys.exit("command line too long")

@@ -311,7 +311,9 @@ int
 main(void)
 {
 	char ostype[32], machine[32];
-	char *sh_argv[] = { "sh", NULL };
+	char *sh_argv[] = { "sh", "-i", NULL };
+	char *sh_env[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin", "HOME=/",
+	    "TERM=vt100", "PS1=# ", NULL };
 	int status;
 	pid_t pid;
 
@@ -337,11 +339,27 @@ main(void)
 
 	selftest();
 
+	/*
+	 * A script of DragonFly's own programs, for a screen nobody can
+	 * type on yet (the Mi 5 has no input driver).
+	 */
+	if (access("/etc/demo.sh", R_OK) == 0) {
+		char *demo_argv[] = { "sh", "/etc/demo.sh", NULL };
+
+		pid = fork();
+		if (pid == 0) {
+			execve("/bin/sh", demo_argv, sh_env);
+			_exit(127);
+		}
+		while (waitpid(-1, &status, 0) != pid)
+			;
+	}
+
 	/* Keep a shell running; reap whatever else exits. */
 	for (;;) {
 		pid = fork();
 		if (pid == 0) {
-			execve("/bin/sh", sh_argv, environ);
+			execve("/bin/sh", sh_argv, sh_env);
 			printf("init: cannot exec /bin/sh (errno %d)\n", errno);
 			_exit(127);
 		}

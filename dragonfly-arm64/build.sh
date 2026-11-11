@@ -250,9 +250,27 @@ ramdisk() {
 		    -o "$root/$prog" "$OBJ/u$name.o" "$OBJ/ulibc.o"
 	done
 	# Programs built against the real C library by world.sh, if any.
+	# DragonFly's sh then becomes /bin/sh and the test shell /bin/tsh;
+	# the test init stays /sbin/init (the real one needs /etc/rc).
 	for f in "$HERE"/work/wobj/hello/hello; do
 		[ -x "$f" ] && cp "$f" "$root/bin/"
 	done
+	sr=$HERE/work/sysroot
+	if [ -x "$sr/bin/sh" ]; then
+		mv "$root/bin/sh" "$root/bin/tsh"
+		mkdir -p "$root/usr/bin" "$root/usr/sbin"
+		for d in bin sbin usr/bin usr/sbin; do
+			for f in "$sr/$d"/*; do
+				[ -f "$f" ] || continue
+				n=${f##*/}
+				[ "$d/$n" = sbin/init ] && n=init.dragonfly
+				cp "$f" "$root/$d/$n"
+			done
+		done
+		cp "$HERE/user/demo.sh" "$root/etc/demo.sh"
+		llvm-strip "$root"/bin/* "$root"/sbin/* "$root"/usr/bin/* \
+		    2>/dev/null || :
+	fi
 	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
 	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
 	echo "built $OBJ/root.iso"

@@ -79,6 +79,28 @@ static struct trapframe proc0_tf;
 
 long		physmem;
 vm_paddr_t	Maxmem;
+
+/* As on pc64: memory sizes userland reads through sysctl. */
+static int
+sysctl_hw_physmem(SYSCTL_HANDLER_ARGS)
+{
+	u_long pmem = ctob(physmem);
+
+	return (sysctl_handle_long(oidp, &pmem, 0, req));
+}
+SYSCTL_PROC(_hw, HW_PHYSMEM, physmem, CTLTYPE_ULONG|CTLFLAG_RD,
+	0, 0, sysctl_hw_physmem, "LU",
+	"Total system memory in bytes (number of pages * page size)");
+
+static int
+sysctl_hw_usermem(SYSCTL_HANDLER_ARGS)
+{
+	u_long usermem = ctob(physmem - vmstats.v_wire_count);
+
+	return (sysctl_handle_long(oidp, &usermem, 0, req));
+}
+SYSCTL_PROC(_hw, HW_USERMEM, usermem, CTLTYPE_ULONG|CTLFLAG_RD,
+	0, 0, sysctl_hw_usermem, "LU", "");
 vm_phystable_t	phys_avail[PHYS_AVAIL_ENTRIES];
 vm_phystable_t	dump_avail[PHYS_AVAIL_ENTRIES];
 static vm_paddr_t Realmem;
