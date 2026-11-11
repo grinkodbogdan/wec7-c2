@@ -314,7 +314,7 @@ main(void)
 	char *sh_argv[] = { "sh", "-i", NULL };
 	char *sh_env[] = { "PATH=/bin:/sbin:/usr/bin:/usr/sbin", "HOME=/",
 	    "TERM=vt100", "PS1=# ", NULL };
-	int status;
+	int status, fast;
 	pid_t pid;
 
 	if (getpid() != 1) {
@@ -343,13 +343,19 @@ main(void)
 	mkdir("/tmp/var/run/shm", 01777);
 	mkdir("/tmp/var/tmp", 01777);
 
-	selftest();
+	/*
+	 * /etc/fastboot (the phone's normal image): skip the self-tests and
+	 * the demo and go straight to the user interface.
+	 */
+	fast = access("/etc/fastboot", R_OK) == 0;
+	if (!fast)
+		selftest();
 
 	/*
 	 * A script of DragonFly's own programs, for a screen nobody can
 	 * type on yet (the Mi 5 has no input driver).
 	 */
-	if (access("/etc/demo.sh", R_OK) == 0) {
+	if (!fast && access("/etc/demo.sh", R_OK) == 0) {
 		char *demo_argv[] = { "sh", "/etc/demo.sh", NULL };
 
 		pid = fork();

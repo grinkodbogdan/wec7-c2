@@ -301,6 +301,7 @@ ramdisk() {
 		    2>/dev/null || :
 	fi
 	ln -s tmp/var "$root/var"
+	[ "${FASTBOOT:-0}" = 1 ] && touch "$root/etc/fastboot"
 	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
 	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
 	# The phone's boot image carries it compressed (the kernel
@@ -319,15 +320,23 @@ ramdisk() {
 # This follows the recipe proven on a real Mi 5 by the rpiios project
 # (mi5/dtb.sh, shim/build-mi5.sh).  Needs cpp and dtc.
 #
-# MI5_APPEND adds boot arguments.  It defaults to "-v", a verbose boot
-# that reports the memory layout and each early boot stage on screen,
-# which is what is wanted while bringing the phone up; MI5_APPEND=""
-# turns that off.
+# The phone image boots fast: a quiet kernel (every console line costs a
+# full panel refresh) and a ramdisk whose /etc/fastboot makes init skip
+# the self-tests and the demo and start Arcan.  MI5_DEBUG=1 instead
+# boots verbosely (-v: memory layout, each early boot stage) and runs
+# everything.  MI5_APPEND adds boot arguments.
 MI5_KERNEL_REPO=https://github.com/LineageOS/android_kernel_xiaomi_msm8996
 MI5_KERNEL_SHA=535079d2fa367e4a4ea2111e5903c62dced89cd2	# lineage-22.2
 
 mi5() {
 	[ -f "$OBJ/kernel.img" ] || build
+	if [ "${MI5_DEBUG:-0}" = 1 ]; then
+		mi5_args="-v ${MI5_APPEND:-}"
+		FASTBOOT=0 ramdisk >/dev/null
+	else
+		mi5_args="${MI5_APPEND:-}"
+		FASTBOOT=1 ramdisk >/dev/null
+	fi
 	[ -f "$OBJ/root.iso" ] || ramdisk
 	K="$OBJ/mi5-lineage-kernel"
 	if [ ! -d "$K/.git" ]; then
@@ -351,7 +360,7 @@ mi5() {
 	done
 	python3 "$HERE/tools/mkbootimg.py" --kernel "$OBJ/kernel.img" \
 	    --ramdisk "$OBJ/root.iso.gz" $dtbargs \
-	    --cmdline "vfs.root.mountfrom=cd9660:md0 ${MI5_APPEND--v}" \
+	    --cmdline "vfs.root.mountfrom=cd9660:md0 $mi5_args" \
 	    -o "$OBJ/dragonfly-mi5-boot.img"
 }
 
