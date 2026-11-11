@@ -159,14 +159,20 @@ clk_on(const char *name, vm_paddr_t cbcr)
 	return (0);
 }
 
-/* vdd_gfx in microvolts, or -1 */
+/*
+ * vdd_gfx in microvolts, or -1: min_uV + selector * step for the range
+ * (Linux's spmi_hw_selector_to_sw with the ftsmps / ftsmps2p5 tables;
+ * the Mi 5's S2 is subtype 0x09, FTS2.5).
+ */
 static int
-s2_uv(uint8_t range, uint8_t vset)
+s2_uv(uint8_t sub, uint8_t range, uint8_t vset)
 {
-	if (range == 0)
-		return (350000 + 5000 * vset);
-	if (range == 1)
-		return (1280000 + 10000 * vset);
+	if (sub == 0x09)		/* FTS2.5 */
+		return (range == 0 ? 80000 + 5000 * vset :
+		    range == 1 ? 160000 + 10000 * vset : -1);
+	if (sub == 0x08)		/* FTS */
+		return (range == 0 ? 5000 * vset :
+		    range == 1 ? 10000 * vset : -1);
 	return (-1);
 }
 
@@ -185,7 +191,7 @@ report(const char *when)
 	    when, type, sub, en, range, vset);
 	status("%s: vdd_gfx type %02x/%02x %s %duV (owner ee%d); "
 	    "gdsc gpu 0x%08x/0x%08x gx 0x%08x clamp 0x%x", when, type, sub,
-	    (en & EN_BIT) ? "on" : "off", s2_uv(range & 3, vset),
+	    (en & EN_BIT) ? "on" : "off", s2_uv(sub, range & 3, vset),
 	    msm8996_spmi_owner(S2_SID, S2_BASE), rd(GPU_GDSCR),
 	    rd(GPU_GDS_HW_CTRL), rd(GPU_GX_GDSCR), rd(GPU_GX_CLAMP_IO));
 	status("%s: clocks mmss_bimc_gfx 0x%08x bimc_gfx 0x%08x "
@@ -198,18 +204,19 @@ report(const char *when)
 static int
 power_up(void)
 {
-	uint8_t range, vset, en;
+	uint8_t sub = 0, range, vset, en;
 	int uv, error;
 
 	/* 1. the rail */
-	if (msm8996_spmi_read(S2_SID, S2_BASE + REG_EN, &en) ||
+	if (msm8996_spmi_read(S2_SID, S2_BASE + REG_SUBTYPE, &sub) ||
+	    msm8996_spmi_read(S2_SID, S2_BASE + REG_EN, &en) ||
 	    msm8996_spmi_read(S2_SID, S2_BASE + REG_RANGE, &range) ||
 	    msm8996_spmi_read(S2_SID, S2_BASE + REG_VSET, &vset)) {
 		status("cannot read vdd_gfx");
 		return (EIO);
 	}
 	if ((en & EN_BIT) == 0) {
-		uv = s2_uv(range & 3, vset);
+		uv = s2_uv(sub, range & 3, vset);
 		if (uv < 600000 || uv > 1015000) {
 			status("vdd_gfx is off and set to %duV; "
 			    "not turning it on", uv);
