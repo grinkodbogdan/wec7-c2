@@ -337,9 +337,9 @@ hello() {
 LIBS="lib/libutil lib/libcrypt lib/libm lib/libkvm lib/libkinfo"
 PROGS="bin/cat bin/chmod bin/cp bin/date bin/dd bin/df bin/echo bin/hostname
 	bin/kill bin/ln bin/mkdir bin/mv bin/ps bin/pwd bin/rm bin/sleep
-	bin/stty bin/test sbin/dmesg sbin/init sbin/mount sbin/reboot
-	sbin/sysctl usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname
-	usr.bin/wc"
+	bin/stty bin/test sbin/dmesg sbin/init sbin/mount sbin/umount sbin/reboot
+	sbin/sysctl sbin/mount_ext2fs usr.sbin/vnconfig usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname
+	usr.bin/wc usr.bin/tr"
 progs() {
 	for l in $LIBS; do lib "$l"; done
 	for p in $PROGS; do prog "$p"; done

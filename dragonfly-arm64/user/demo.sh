@@ -18,5 +18,18 @@ if [ -e /dev/ufs0 ]; then
 	t0=$(date +%s)
 	dd if=/dev/ufs0 of=/dev/null bs=128k count=512 2>&1 | tail -1
 	echo "64MB read in $(( $(date +%s) - t0 )) s"
+	# Android's ext4 partitions, read-only: persist (GPT entry 11)
+	# and cache (12).
+	for p in 11:persist 12:cache; do
+		n=${p%%:*}; name=${p#*:}
+		if mount_ext2fs -o ro /dev/ufs0s$n /mnt 2>/dev/null; then
+			echo "$name (ufs0s$n), ext4, mounted read-only:"
+			df -h /mnt | tail -1
+			ls /mnt | head -8 | tr '\n' ' '; echo
+			umount /mnt
+		else
+			echo "$name (ufs0s$n): could not mount"
+		fi
+	done
 fi
 echo "--- end of demo ---"

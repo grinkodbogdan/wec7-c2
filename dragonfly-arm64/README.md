@@ -186,7 +186,7 @@ Roughly in the order it blocks progress:
 |---|---|---|
 | Software to run | DragonFly's real libc, static linking only; init and the shell still use the stand-in | The runtime linker (`rtld-elf`) and shared libraries, then DragonFly's own programs (`sh`, `ls`, ...) |
 | User mode, remaining | Most of it works | Debugger support (`ptrace`, single step) |
-| Storage | Ramdisk root (read-only ISO 9660) and tmpfs | A device-tree bus so drivers can attach, bus DMA (`stubs.c` fails every request), then real disk drivers and a persistent filesystem |
+| Storage | Ramdisk root, tmpfs; on the Mi 5 the UFS flash read-only (`qcom_ufs.c`), ext4 mounts read-only | Writes; interrupts and queued requests; bringing the controller up without LK (FreeBSD's ufshci plus Linux's Qualcomm PHY/clock code); a device-tree bus and bus DMA for other drivers |
 | More than one CPU | Works in QEMU, untested on the phone | An audit of shared code that assumes x86's strong memory ordering; stopping the other cores on a panic (they keep running); a topology that knows the Mi 5's two clusters |
 | Interrupt controllers | GICv2 and GICv3, boot CPU only | Per-CPU setup for secondary CPUs, MSI (GICv2m or the GICv3 ITS) |
 | pmap performance | Correct but slow | One global lock, no address-space IDs (every process switch flushes the TLB), no large pages, dirty/accessed tracking by over-approximation |
@@ -443,6 +443,14 @@ partitions (`ssd`, `persist`, `cache`, `userdata` and others). So a
 driver can start with standard UFS commands and leave Qualcomm's clock,
 regulator and PHY bring-up (Linux's `ufs-qcom`) for later, when the
 kernel has to reinitialise the controller itself.
+
+**Fifteenth boot: the flash as disks.** The probe became a read-only
+driver (`qcom_ufs.c`): each LUN is `/dev/ufsN`, the kernel's slice code
+found a GPT on all six, and LUN 0's 14 partitions appeared as
+`ufs0s0`-`ufs0s13`. LBA 1 read back as `EFI PART`, and `dd` read 64MB in
+0.9 s (74.5 MB/s) polled, one request at a time, through a bounce
+buffer. The sixteenth image adds ext2fs (ext4 read-only, tested in QEMU
+through `vn`) and mounts Android's `persist` and `cache` read-only.
 
 ### What is untested or missing
 

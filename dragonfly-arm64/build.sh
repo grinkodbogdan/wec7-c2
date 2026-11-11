@@ -48,13 +48,18 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 # filesystem, so there is something to mount as root, and tmpfs for
 # somewhere to write.
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
-	dev/disk/md/md.c
+	dev/disk/md/md.c dev/disk/vn/vn.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
 	vfs/isofs/cd9660/cd9660_node.c vfs/isofs/cd9660/cd9660_rrip.c
 	vfs/isofs/cd9660/cd9660_util.c vfs/isofs/cd9660/cd9660_vfsops.c
 	vfs/isofs/cd9660/cd9660_vnops.c
 	vfs/tmpfs/tmpfs_fifoops.c vfs/tmpfs/tmpfs_subr.c
-	vfs/tmpfs/tmpfs_vfsops.c vfs/tmpfs/tmpfs_vnops.c"
+	vfs/tmpfs/tmpfs_vfsops.c vfs/tmpfs/tmpfs_vnops.c
+	vfs/ext2fs/ext2_alloc.c vfs/ext2fs/ext2_balloc.c vfs/ext2fs/ext2_bmap.c
+	vfs/ext2fs/ext2_csum.c vfs/ext2fs/ext2_extents.c vfs/ext2fs/ext2_hash.c
+	vfs/ext2fs/ext2_htree.c vfs/ext2fs/ext2_ihash.c vfs/ext2fs/ext2_inode.c
+	vfs/ext2fs/ext2_inode_cnv.c vfs/ext2fs/ext2_lookup.c
+	vfs/ext2fs/ext2_subr.c vfs/ext2fs/ext2_vfsops.c vfs/ext2fs/ext2_vnops.c"
 
 fetch() {
 	if [ ! -d "$DFLY_SRC/sys" ]; then
@@ -238,7 +243,8 @@ build() {
 # against the mini C library in user/libc.c.
 ramdisk() {
 	root="${OBJ:?}/root"
-	mkdir -p "$root/sbin" "$root/bin" "$root/dev" "$root/tmp" "$root/etc"
+	rm -rf "${OBJ:?}/root"
+	mkdir -p "$root/sbin" "$root/bin" "$root/dev" "$root/tmp" "$root/etc" "$root/mnt"
 	ucflags="--target=aarch64-unknown-none-elf -O2 -ffreestanding
 	    -fno-pic -fno-stack-protector -fno-builtin
 	    -fno-asynchronous-unwind-tables -Wall -Wextra -Werror -nostdinc"
