@@ -55,6 +55,8 @@
 #include <vm/pmap.h>
 #include <machine/pat.h>
 
+#include <dev/drm/msm/adreno_a5xx_dfly.h>	/* GPL-2.0, Linux-derived */
+
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
@@ -689,9 +691,30 @@ out:
 static void
 zap_thread(void *arg __unused)
 {
+	uint8_t *pm4 = NULL, *pfp = NULL;
+	size_t pm4_len, pfp_len;
 	int error = zap_load();
 
 	status("zap: finished, error %d", error);
+	if (error)
+		goto out;
+
+	/*
+	 * Start the GPU: Linux's a5xx_hw_init, cut down (the GPL part in
+	 * sys/dev/drm/msm), with the microcode the phone carries.
+	 */
+	if ((error = fw_read("/tmp/fw/a530_pm4.fw", &pm4, &pm4_len)) != 0 ||
+	    (error = fw_read("/tmp/fw/a530_pfp.fw", &pfp, &pfp_len)) != 0) {
+		status("a5xx: microcode: error %d", error);
+		goto out;
+	}
+	error = a5xx_dfly_start(status, pm4, pm4_len, pfp, pfp_len);
+	status("a5xx: start finished, error %d", error);
+out:
+	if (pm4 != NULL)
+		kfree(pm4, M_GPUFW);
+	if (pfp != NULL)
+		kfree(pfp, M_GPUFW);
 	kthread_exit();
 }
 

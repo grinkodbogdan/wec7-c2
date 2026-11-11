@@ -375,7 +375,7 @@ main(void)
 	if (access("/etc/arcan.sh", R_OK) == 0 &&
 	    access("/dev/fb0", R_OK) == 0 &&
 	    access("/dev/input/event0", R_OK) == 0) {
-		static char autorun[512] = "autorun=sysctl -n hw.mi5.rpm; sh /etc/gpufw.sh >/dev/null; sysctl hw.mi5.gpu_zap=1; sleep 8; sysctl -n hw.mi5.gpu | grep zap";
+		static char autorun[512] = "autorun=sh /etc/gpufw.sh >/dev/null; sysctl hw.mi5.gpu_zap=1; sleep 10; sysctl -n hw.mi5.gpu | grep -E 'zap: (calling|loaded|fin)|a5xx'";
 		char *ar_argv[] = { "sh", "/etc/arcan.sh", "term", autorun, NULL };
 		int afd, n;
 

@@ -44,6 +44,7 @@ and lays this directory's `sys/` tree over it.
 | `contrib/openbsd_libm/include/arm64/` | `<machine/ieee.h>` and `<machine/fenv.h>` for the math library |
 | `world.sh` | Builds userland: sysroot headers, compiler-rt builtins, libc, startup files, programs, the C++ runtime, Mesa, FreeType and Arcan |
 | `arcan/` | Arcan's `fbmem` video platform and the `term` and `hello` appls |
+| `sys/dev/drm/msm/` | GPL-2.0: the Adreno GPU driver, derived from Linux's drm/msm (kept apart from the BSD-licensed code) |
 | `patches/arcan/`, `patches/llvm/` | Changes to Arcan and to LLVM's libc++ for DragonFly/arm64 |
 | `tools/aarch64-dragonfly.cmake`, `tools/aarch64-dragonfly.meson.in` | Cross-build descriptions for CMake and Meson projects |
 | `tools/qemu-shot.py` | Boots QEMU with a framebuffer, types commands, saves the screen as PNG |
@@ -699,6 +700,18 @@ secure world returned* (its context for the call;
 `ARM_SMCCC_QUIRK_QCOM_A6`). `qcom_scm.c` passed back the original x6, so
 the call could never resume, and it retried forever without yielding
 the cpu. The fortieth image passes x6 back and yields between attempts.
+
+**Fortieth boot: the zap shader is in.** PAS_INIT_IMAGE (6684 bytes of
+metadata), PAS_MEM_SETUP (relocatable, at 0x90f00000), the copy (8192
+bytes) and PAS_AUTH_AND_RESET all returned 0: the secure world accepted
+Xiaomi's signed GPU firmware. The forty-first image starts the GPU after
+it: `sys/dev/drm/msm/adreno_a5xx_dfly.c`, the first Linux-derived (GPL)
+file, is a cut-down `a5xx_hw_init()`: the GPU's stream through its SMMU
+in bypass, the phone's own `a530_pm4.fw`/`a530_pfp.fw` loaded, the
+register set-up, the ring, `CP_ME_INIT`, `CP_SET_SECURE_MODE 0` (the zap
+shader's job), and one `CP_MEM_WRITE` read back from memory to show the
+GPU runs commands. Clock gating, the GPMU, preemption, interrupts and the
+GPU's own page tables come later.
 
 ### GPU
 
