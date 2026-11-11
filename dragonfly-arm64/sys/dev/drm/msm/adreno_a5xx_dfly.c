@@ -134,6 +134,8 @@ static struct a5xx_dfly {
 	vm_paddr_t	scratch_pa;
 } a5;
 
+static void smmu_faults(void);
+
 static __inline uint32_t
 gpu_read(uint32_t reg)
 {
