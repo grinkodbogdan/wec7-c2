@@ -20,6 +20,7 @@ local cmds = {
 	"sysctl hw.mi5.gpu_read=1",
 	"sh /etc/gpufw.sh",
 	"sysctl hw.mi5.gpu_zap=1",
+	"sysctl -n hw.mi5.gpu | grep zap",
 	"dmesg | tail -20",
 	"sysctl hw.mi5.vibrate=300",
 	"sysctl hw.mi5.led=0x00ff00",

@@ -441,7 +441,8 @@ fw_read(const char *path, uint8_t **bufp, size_t *lenp)
 	if (error == 0) {
 		buf = kmalloc(va.va_size, M_GPUFW, M_WAITOK);
 		error = vn_rdwr(UIO_READ, vp, (caddr_t)buf, va.va_size, 0,
-		    UIO_SYSSPACE, IO_NODELOCKED, curthread->td_ucred, &resid);
+		    UIO_SYSSPACE, IO_NODELOCKED, curthread->td_ucred ?
+		    curthread->td_ucred : proc0.p_ucred, &resid);
 		if (error == 0 && resid != 0)
 			error = EIO;
 		if (error)
@@ -672,6 +673,17 @@ out:
 	return (error);
 }
 
+static int zap_started;
+
+static void
+zap_thread(void *arg __unused)
+{
+	int error = zap_load();
+
+	status("zap: finished, error %d", error);
+	kthread_exit();
+}
+
 static int
 sysctl_gpu_zap(SYSCTL_HANDLER_ARGS)
 {
@@ -682,8 +694,15 @@ sysctl_gpu_zap(SYSCTL_HANDLER_ARGS)
 		return (error);
 	if (!gpu_powered)
 		return (ENXIO);
-	error = zap_load();
-	return (error);
+	/*
+	 * In a thread of its own: should a secure call or the copy hang,
+	 * only that thread does, and sysctl hw.mi5.gpu shows the step.
+	 */
+	if (zap_started)
+		return (EBUSY);
+	zap_started = 1;
+	kthread_create(zap_thread, NULL, NULL, "gpuzap");
+	return (0);
 }
 SYSCTL_PROC(_hw_mi5, OID_AUTO, gpu_zap, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
     sysctl_gpu_zap, "I", "load the GPU's zap shader from /tmp/fw");
