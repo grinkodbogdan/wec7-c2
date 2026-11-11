@@ -335,7 +335,7 @@ hello() {
 # The libraries and programs the ramdisk carries.  ls is built without
 # colour and sh without line editing until ncurses and libedit are.
 LIBS="lib/libutil lib/libcrypt lib/libm lib/libkvm lib/libkinfo"
-PROGS="bin/cat bin/chmod bin/cp bin/date bin/df bin/echo bin/hostname
+PROGS="bin/cat bin/chmod bin/cp bin/date bin/dd bin/df bin/echo bin/hostname
 	bin/kill bin/ln bin/mkdir bin/mv bin/ps bin/pwd bin/rm bin/sleep
 	bin/stty bin/test sbin/dmesg sbin/init sbin/mount sbin/reboot
 	sbin/sysctl usr.bin/env usr.bin/head usr.bin/tail usr.bin/uname

@@ -18,21 +18,21 @@
  */
 
 /*
- * A read-only look at the Snapdragon 820's UFS storage, before there is
- * a driver.
+ * Read-only driver for the Snapdragon 820's UFS storage, using the
+ * controller as LK leaves it.
  *
  * The full path to the flash is FreeBSD's ufshci(4) (the UFS host
  * controller standard) plus Qualcomm's clock, regulator and PHY bring-up,
  * which only Linux has (ufs-qcom, phy-qcom-qmp-ufs).  But LK reads the
- * flash itself before it starts us, so the controller may still be
- * enabled with the link up.  This probe finds out: it reports the
- * controller state, and if it is usable takes over the transfer request
- * list and issues standard SCSI commands through it:
+ * flash itself before it starts us and leaves the controller enabled
+ * with the link up, so standard UTP transfer requests work as they are.
+ * This driver takes the transfer request list over and serves each LUN
+ * as a disk, /dev/ufsN, whose GPT the kernel's slice code reads.
  *
- *	INQUIRY, READ CAPACITY(10) on each LUN, READ(10) of LUN 0's GPT.
- *
- * It sends no command that writes to the flash.  Polled, one request at
- * a time, no interrupts.  Boot argument msm8996.ufsprobe=0 skips it.
+ * Writes are refused (EROFS) until the driver has been trusted with the
+ * phone's data.  One request at a time, polled, from a worker thread;
+ * transfers go through a 128KB bounce buffer.  Boot argument
+ * msm8996.ufs=0 skips it.
  *
  * Register layout and descriptor formats: JEDEC JESD223 (UFSHCI) and
  * JESD220 (UFS), as FreeBSD's ufshci_reg.h encodes them.
@@ -42,6 +42,16 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/buf.h>
+#include <sys/buf2.h>
+#include <sys/conf.h>
+#include <sys/disk.h>
+#include <sys/devicestat.h>
+#include <sys/fcntl.h>
+#include <sys/kthread.h>
+#include <sys/lock.h>
+#include <sys/spinlock.h>
+#include <sys/spinlock2.h>
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -99,7 +109,7 @@ struct prdt_entry {
 	uint32_t	count;		/* byte count - 1, bits 17:0 */
 };
 
-#define	DATA_SIZE	(32 * 1024)
+#define	DATA_SIZE	(128 * 1024)
 
 struct ufs_probe {
 	vm_paddr_t	base;
@@ -109,6 +119,23 @@ struct ufs_probe {
 	vm_paddr_t	utrl_pa, ucd_pa, data_pa;
 	uint8_t		tag;
 };
+
+static struct ufs_probe ufs_softc;
+
+#define	UFS_MAXLUN	8
+struct ufs_lun {
+	int		lun;
+	uint32_t	bsize;
+	uint64_t	blocks;
+	struct disk	disk;
+	cdev_t		dev;
+	struct devstat	stats;
+};
+static struct ufs_lun *ufs_luns[UFS_MAXLUN];
+
+static struct spinlock	ufs_spin = SPINLOCK_INITIALIZER(ufs_spin, "ufsq");
+static struct bio_queue_head ufs_queue;
+static struct thread	*ufs_td;
 
 static __inline uint32_t
 ufs_rd(struct ufs_probe *u, u_int reg)
@@ -216,7 +243,7 @@ ufs_scsi(struct ufs_probe *u, int lun, const uint8_t *cdb, int cdblen,
 		/* Sense data follows the 32-byte header (2-byte length). */
 		if (sense != NULL)
 			*sense = resp[32 + 2 + 2] & 0x0f;
-		if (sense == NULL || *sense != 6)	/* unit attention */
+		if (sense == NULL)	/* callers with sense report it */
 			kprintf("ufs: lun %d cmd 0x%02x: response 0x%x "
 			    "status 0x%x sense key %d\n", lun, cdb[0],
 			    resp[6], resp[7], resp[32 + 2 + 2] & 0x0f);
@@ -319,20 +346,155 @@ ufs_gpt(struct ufs_probe *u, uint32_t bsize)
 	kprintf("\nufs: lun 0: %u partitions\n", shown);
 }
 
+static d_open_t	ufs_open;
+static d_close_t	ufs_close;
+static d_strategy_t	ufs_strategy;
+
+static struct dev_ops ufs_ops = {
+	{ "ufs", 0, D_DISK | D_MPSAFE },
+	.d_open =	ufs_open,
+	.d_close =	ufs_close,
+	.d_read =	physread,
+	.d_write =	physwrite,
+	.d_strategy =	ufs_strategy,
+};
+
+static int
+ufs_open(struct dev_open_args *ap)
+{
+	if (ap->a_oflags & FWRITE)
+		return (EROFS);
+	return (0);
+}
+
+static int
+ufs_close(struct dev_close_args *ap __unused)
+{
+	return (0);
+}
+
+static int
+ufs_strategy(struct dev_strategy_args *ap)
+{
+	struct bio *bio = ap->a_bio;
+	struct buf *bp = bio->bio_buf;
+
+	bio->bio_driver_info = ap->a_head.a_dev->si_drv1;
+	if (bp->b_cmd != BUF_CMD_READ) {
+		bp->b_error = (bp->b_cmd == BUF_CMD_WRITE) ? EROFS : EOPNOTSUPP;
+		bp->b_flags |= B_ERROR;
+		bp->b_resid = bp->b_bcount;
+		biodone(bio);
+		return (0);
+	}
+	spin_lock(&ufs_spin);
+	bioq_insert_tail(&ufs_queue, bio);
+	spin_unlock(&ufs_spin);
+	wakeup(&ufs_queue);
+	return (0);
+}
+
+/* Serve one read, in bounce-buffer sized pieces. */
+static void
+ufs_do_read(struct ufs_lun *l, struct bio *bio)
+{
+	struct ufs_probe *u = &ufs_softc;
+	struct buf *bp = bio->bio_buf;
+	off_t off = bio->bio_offset;
+	size_t done = 0, n;
+	int error = 0;
+
+	if (off % l->bsize || bp->b_bcount % l->bsize ||
+	    off / l->bsize + bp->b_bcount / l->bsize > l->blocks) {
+		error = EINVAL;
+	}
+	while (error == 0 && done < (size_t)bp->b_bcount) {
+		n = MIN((size_t)bp->b_bcount - done, DATA_SIZE);
+		error = ufs_read(u, l->lun, (uint32_t)((off + done) / l->bsize),
+		    (int)(n / l->bsize), l->bsize);
+		if (error == 0)
+			bcopy(u->data, (char *)bp->b_data + done, n);
+		done += n;
+	}
+	if (error) {
+		bp->b_error = error;
+		bp->b_flags |= B_ERROR;
+		bp->b_resid = bp->b_bcount;
+	} else {
+		bp->b_resid = 0;
+	}
+}
+
+static void
+ufs_thread(void *arg __unused)
+{
+	struct bio *bio;
+	struct ufs_lun *l;
+
+	for (;;) {
+		spin_lock(&ufs_spin);
+		bio = bioq_takefirst(&ufs_queue);
+		if (bio == NULL) {
+			ssleep(&ufs_queue, &ufs_spin, 0, "ufsidle", 0);
+			spin_unlock(&ufs_spin);
+			continue;
+		}
+		spin_unlock(&ufs_spin);
+		l = bio->bio_driver_info;
+		devstat_start_transaction(&l->stats);
+		ufs_do_read(l, bio);
+		devstat_end_transaction_buf(&l->stats, bio->bio_buf);
+		biodone(bio);
+	}
+}
+
+static void
+ufs_attach_lun(int lun, uint32_t bsize, uint64_t blocks, const char *vendor,
+    const char *product)
+{
+	struct disk_info info;
+	struct ufs_lun *l;
+
+	l = kmalloc(sizeof(*l), M_DEVBUF, M_WAITOK | M_ZERO);
+	l->lun = lun;
+	l->bsize = bsize;
+	l->blocks = blocks;
+	devstat_add_entry(&l->stats, "ufs", lun, bsize,
+	    DEVSTAT_NO_ORDERED_TAGS,
+	    DEVSTAT_TYPE_DIRECT | DEVSTAT_TYPE_IF_OTHER,
+	    DEVSTAT_PRIORITY_DISK);
+	l->dev = disk_create(lun, &l->disk, &ufs_ops);
+	l->dev->si_drv1 = l;
+	l->dev->si_iosize_max = DATA_SIZE;
+	disk_setdisktype(&l->disk, "UFS");
+
+	bzero(&info, sizeof(info));
+	info.d_media_blksize = bsize;
+	info.d_media_blocks = blocks;
+	info.d_secpertrack = 1024;
+	info.d_nheads = 1;
+	info.d_secpercyl = info.d_secpertrack * info.d_nheads;
+	info.d_ncylinders = (u_int)(blocks / info.d_secpercyl);
+	disk_setdiskinfo(&l->disk, &info);
+	ufs_luns[lun] = l;
+	kprintf("ufs%d: %s %s, %ju MB, read-only\n", lun, vendor, product,
+	    (uintmax_t)(blocks * bsize >> 20));
+}
+
 static void
 msm8996_ufs_probe(void *dummy __unused)
 {
 	static const uint8_t inquiry[6] = { 0x12, 0, 0, 0, 36, 0 };
 	static const uint8_t readcap[10] = { 0x25 };
-	struct ufs_probe up, *u = &up;
-	uint32_t cap, hcs, rsr, bsize, lba0bsize = 0;
+	struct ufs_probe *u = &ufs_softc;
+	uint32_t cap, hcs, rsr, bsize;
 	uint64_t blocks;
 	char vendor[9], product[17];
-	int enable = 1, lun, i;
+	int enable = 1, lun, i, nluns = 0;
 
 	if (!msm8996_is_present())
 		return;
-	TUNABLE_INT_FETCH("msm8996.ufsprobe", &enable);
+	TUNABLE_INT_FETCH("msm8996.ufs", &enable);
 	if (!enable)
 		return;
 
@@ -341,10 +503,11 @@ msm8996_ufs_probe(void *dummy __unused)
 	cap = ufs_rd(u, UFS_CAP);
 	hcs = ufs_rd(u, UFS_HCS);
 	rsr = ufs_rd(u, UFS_UTRLRSR);
-	kprintf("ufs: controller version 0x%x, cap 0x%x, %d slots; "
-	    "enable %d, status 0x%x, run-stop %d, list at 0x%x%08x\n",
-	    ufs_rd(u, UFS_VER), cap, CAP_NUTRS(cap), ufs_rd(u, UFS_HCE),
-	    hcs, rsr, ufs_rd(u, UFS_UTRLBAU), ufs_rd(u, UFS_UTRLBA));
+	if (bootverbose) {
+		kprintf("ufs: controller version 0x%x, cap 0x%x; enable %d, "
+		    "status 0x%x, run-stop %d\n", ufs_rd(u, UFS_VER), cap,
+		    ufs_rd(u, UFS_HCE), hcs, rsr);
+	}
 	if ((ufs_rd(u, UFS_HCE) & 1) == 0 || (hcs & HCS_DP) == 0 ||
 	    (hcs & HCS_UTRLRDY) == 0) {
 		kprintf("ufs: the bootloader did not leave the controller "
@@ -354,11 +517,11 @@ msm8996_ufs_probe(void *dummy __unused)
 
 	/* Our own request list, command descriptor and data buffer. */
 	u->utrl = contigmalloc(PAGE_SIZE, M_DEVBUF, M_WAITOK | M_ZERO,
-	    0, 0xffffffffUL, PAGE_SIZE, 0);
+	    0, ~(vm_paddr_t)0, PAGE_SIZE, 0);
 	u->ucd = contigmalloc(PAGE_SIZE * 2, M_DEVBUF, M_WAITOK | M_ZERO,
-	    0, 0xffffffffUL, PAGE_SIZE, 0);
+	    0, ~(vm_paddr_t)0, PAGE_SIZE, 0);
 	u->data = contigmalloc(DATA_SIZE, M_DEVBUF, M_WAITOK | M_ZERO,
-	    0, 0xffffffffUL, PAGE_SIZE, 0);
+	    0, ~(vm_paddr_t)0, PAGE_SIZE, 0);
 	if (u->utrl == NULL || u->ucd == NULL || u->data == NULL) {
 		kprintf("ufs: no DMA memory\n");
 		return;
@@ -386,12 +549,10 @@ msm8996_ufs_probe(void *dummy __unused)
 	ufs_wr(u, UFS_UTRLRSR, 1);
 	cpu_mfence();
 
-	for (lun = 0; lun < 8; ++lun) {
-		if (ufs_ready(u, lun) != 0) {
-			if (lun == 0)
-				kprintf("ufs: lun 0 not ready\n");
+	bioq_init(&ufs_queue);
+	for (lun = 0; lun < UFS_MAXLUN; ++lun) {
+		if (ufs_ready(u, lun) != 0)
 			continue;
-		}
 		if (ufs_scsi(u, lun, inquiry, sizeof(inquiry), 36, NULL) != 0)
 			continue;
 		bcopy(u->data + 8, vendor, 8);
@@ -399,17 +560,20 @@ msm8996_ufs_probe(void *dummy __unused)
 		vendor[8] = product[16] = 0;
 		for (i = 7; i >= 0 && vendor[i] == ' '; --i)
 			vendor[i] = 0;
+		for (i = 15; i >= 0 && product[i] == ' '; --i)
+			product[i] = 0;
 		if (ufs_scsi(u, lun, readcap, sizeof(readcap), 8, NULL) != 0)
 			continue;
 		blocks = (uint64_t)be32(u->data) + 1;
 		bsize = be32(u->data + 4);
-		if (lun == 0)
-			lba0bsize = bsize;
-		kprintf("ufs: lun %d: %s %s, %ju blocks of %u = %ju MB\n",
-		    lun, vendor, product, (uintmax_t)blocks, bsize,
-		    (uintmax_t)(blocks * bsize >> 20));
+		if (bsize < 512 || bsize > DATA_SIZE)
+			continue;
+		if (bootverbose && lun == 0)
+			ufs_gpt(u, bsize);
+		ufs_attach_lun(lun, bsize, blocks, vendor, product);
+		++nluns;
 	}
-	if (lba0bsize >= 512 && lba0bsize <= 8192)
-		ufs_gpt(u, lba0bsize);
+	if (nluns > 0)
+		kthread_create(ufs_thread, NULL, &ufs_td, "ufs");
 }
 SYSINIT(msm8996ufs, SI_SUB_CONFIGURE, SI_ORDER_ANY, msm8996_ufs_probe, NULL);
