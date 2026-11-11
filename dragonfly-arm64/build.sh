@@ -285,6 +285,9 @@ ramdisk() {
 	fi
 	echo "DragonFly/arm64 test ramdisk" > "$root/etc/motd"
 	genisoimage -quiet -R -o "$OBJ/root.iso" "$root"
+	# The phone's boot image carries it compressed (the kernel
+	# inflates it), leaving room under the bootloader's limit.
+	gzip -9 -n -c "$OBJ/root.iso" > "$OBJ/root.iso.gz"
 	echo "built $OBJ/root.iso"
 }
 
@@ -329,7 +332,7 @@ mi5() {
 		dtbargs="$dtbargs --dtb $OBJ/mi5-dtbs/$n.dtb"
 	done
 	python3 "$HERE/tools/mkbootimg.py" --kernel "$OBJ/kernel.img" \
-	    --ramdisk "$OBJ/root.iso" $dtbargs \
+	    --ramdisk "$OBJ/root.iso.gz" $dtbargs \
 	    --cmdline "vfs.root.mountfrom=cd9660:md0 ${MI5_APPEND--v}" \
 	    -o "$OBJ/dragonfly-mi5-boot.img"
 }
@@ -339,7 +342,7 @@ run() {
 	[ -f "$OBJ/root.iso" ] || ramdisk
 	exec qemu-system-aarch64 -M virt -cpu ${QEMU_CPU:-cortex-a72} \
 	    -m ${QEMU_MEM:-1G} -smp ${QEMU_SMP:-1} -nographic -nic none \
-	    -kernel "$OBJ/kernel.img" -initrd "$OBJ/root.iso" \
+	    -kernel "$OBJ/kernel.img" -initrd "${INITRD:-$OBJ/root.iso}" \
 	    -append "vfs.root.mountfrom=cd9660:md0 $QEMU_APPEND" \
 	    $QEMU_EXTRA
 }

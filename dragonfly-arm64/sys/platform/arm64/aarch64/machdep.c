@@ -32,6 +32,11 @@
 #include <sys/eventhandler.h>
 #include <sys/random.h>
 #include <sys/sysctl.h>
+#include <vfs/hammer2/zlib/hammer2_zlib.h>
+
+/* In the kernel zlib, not declared by its header. */
+int	inflateInit2_(z_streamp strm, int windowBits, const char *version,
+	    int stream_size);
 #include <sys/linker.h>
 #include <sys/malloc.h>
 #include <sys/libkern.h>
@@ -188,13 +193,22 @@ preload_add(uint32_t *p, uint32_t type, const void *data, uint32_t size)
  * becomes md0.  There is no loader(8) to preload modules, so fabricate
  * the one metadata record md(4) looks for.
  */
+static void preload_initrd_va(vm_offset_t addr, size_t size);
+static vm_paddr_t initrd_pa_start, initrd_pa_end;
+
 static void
 preload_initrd(vm_paddr_t start, vm_paddr_t end)
 {
+	initrd_pa_start = start;
+	initrd_pa_end = end;
+	preload_initrd_va(PHYS_TO_DMAP(start), end - start);
+}
+
+static void
+preload_initrd_va(vm_offset_t addr, size_t size)
+{
 	static const char name[] = "initrd";
 	static const char type[] = "md_image";
-	vm_offset_t addr = PHYS_TO_DMAP(start);
-	size_t size = end - start;
 	uint32_t *p = preload_buf;
 
 	p = preload_add(p, MODINFO_NAME, name, sizeof(name));
@@ -205,6 +219,72 @@ preload_initrd(vm_paddr_t start, vm_paddr_t end)
 	*p++ = 0;
 	preload_metadata = (caddr_t)preload_buf;
 }
+
+/*
+ * A gzip-compressed ramdisk (the boot image's ramdisk can be
+ * root.iso.gz): inflate it into kernel memory just before md(4) attaches
+ * the preloaded image, and point the preload record at the result.  The
+ * bootloader's region limits the compressed size, not the uncompressed.
+ * Uses the zlib HAMMER2 brings into the kernel; it has no gzip wrapper
+ * support, so the gzip header is parsed here and the data inflated raw.
+ */
+static void
+initrd_gunzip(void *dummy __unused)
+{
+	const uint8_t *gz;
+	size_t len, hdr, out_size;
+	z_stream z;
+	uint8_t flg;
+	void *out;
+	int error;
+
+	if (initrd_pa_end <= initrd_pa_start)
+		return;
+	gz = (const uint8_t *)PHYS_TO_DMAP(initrd_pa_start);
+	len = initrd_pa_end - initrd_pa_start;
+	if (len < 18 || gz[0] != 0x1f || gz[1] != 0x8b || gz[2] != 8)
+		return;			/* not gzip: use it as it is */
+
+	flg = gz[3];
+	hdr = 10;
+	if (flg & 0x04)			/* FEXTRA */
+		hdr += 2 + (gz[hdr] | gz[hdr + 1] << 8);
+	if (flg & 0x08)			/* FNAME */
+		while (hdr < len && gz[hdr++] != 0)
+			;
+	if (flg & 0x10)			/* FCOMMENT */
+		while (hdr < len && gz[hdr++] != 0)
+			;
+	if (flg & 0x02)			/* FHCRC */
+		hdr += 2;
+	out_size = gz[len - 4] | gz[len - 3] << 8 | gz[len - 2] << 16 |
+	    (size_t)gz[len - 1] << 24;	/* ISIZE: size mod 4GB */
+
+	out = (void *)kmem_alloc(kernel_map, round_page(out_size),
+	    VM_SUBSYS_UNKNOWN);
+	if (out == NULL) {
+		kprintf("initrd: no memory to inflate %zu bytes\n", out_size);
+		return;
+	}
+	bzero(&z, sizeof(z));
+	z.next_in = __DECONST(uint8_t *, gz + hdr);
+	z.avail_in = len - hdr - 8;
+	z.next_out = out;
+	z.avail_out = out_size;
+	error = inflateInit2(&z, -MAX_WBITS);
+	if (error == Z_OK)
+		error = inflate(&z, Z_FINISH);
+	inflateEnd(&z);
+	if (error != Z_STREAM_END || z.total_out != out_size) {
+		kprintf("initrd: inflate failed (%d, %lu of %zu bytes)\n",
+		    error, (u_long)z.total_out, out_size);
+		kmem_free(kernel_map, (vm_offset_t)out, round_page(out_size));
+		return;
+	}
+	kprintf("initrd: inflated %zu bytes to %zu\n", len, out_size);
+	preload_initrd_va((vm_offset_t)out, out_size);
+}
+SYSINIT(initrd_gunzip, SI_SUB_DRIVERS, SI_ORDER_FIRST, initrd_gunzip, NULL);
 
 /*
  * Add [start, end) to phys_avail[], leaving out any part that
