@@ -49,6 +49,7 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 # somewhere to write.
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
 	dev/disk/md/md.c dev/disk/vn/vn.c
+	dev/misc/evdev/cdev.c dev/misc/evdev/evdev.c dev/misc/evdev/evdev_mt.c dev/misc/evdev/evdev_utils.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
 	vfs/isofs/cd9660/cd9660_node.c vfs/isofs/cd9660/cd9660_rrip.c
 	vfs/isofs/cd9660/cd9660_util.c vfs/isofs/cd9660/cd9660_vfsops.c
@@ -259,7 +260,7 @@ ramdisk() {
 	# Programs built against the real C library by world.sh, if any.
 	# DragonFly's sh then becomes /bin/sh and the test shell /bin/tsh;
 	# the test init stays /sbin/init (the real one needs /etc/rc).
-	for f in "$HERE"/work/wobj/hello/hello; do
+	for f in "$HERE"/work/wobj/hello/hello "$HERE"/work/wobj/hello/keymenu; do
 		[ -x "$f" ] && cp "$f" "$root/bin/"
 	done
 	sr=$HERE/work/sysroot
@@ -278,6 +279,7 @@ ramdisk() {
 			done
 		done
 		cp "$HERE/user/demo.sh" "$root/etc/demo.sh"
+		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
 		llvm-strip "$root"/bin/* "$root"/sbin/* "$root"/usr/bin/* \
 		    2>/dev/null || :
 	fi

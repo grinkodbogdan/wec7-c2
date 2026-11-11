@@ -42,6 +42,9 @@
 #include <sys/kernel.h>
 #include <sys/kthread.h>
 
+#include <dev/misc/evdev/input.h>
+#include <dev/misc/evdev/evdev.h>
+
 #include <machine/cpufunc.h>
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
@@ -127,14 +130,22 @@ spmi_read(int apid, uint16_t addr, uint8_t *val)
 
 static int pon_apid = -1, gpio2_apid = -1;
 
-#define	KEY_POWER	0x01
-#define	KEY_VOLDOWN	0x02
-#define	KEY_VOLUP	0x04
-#define	KEY_HOME	0x08
+#define	KB_POWER	0x01
+#define	KB_VOLDOWN	0x02
+#define	KB_VOLUP	0x04
+#define	KB_HOME	0x08
 
 static const char *const key_names[] = {
 	"power", "volume down", "volume up", "home"
 };
+
+/* Linux input codes, as the device tree's linux,code properties give. */
+static const uint16_t key_codes[] = {
+	KEY_POWER, KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_HOME
+};
+
+static struct evdev_dev *keys_evdev;	/* /dev/input/eventN */
+static int keys_verbose = 1;
 
 static u_int
 keys_sample(void)
@@ -144,16 +155,16 @@ keys_sample(void)
 
 	if (pon_apid >= 0 && spmi_read(pon_apid, PON_BASE + PON_RT_STS, &v) == 0) {
 		if (v & PON_KPDPWR)
-			k |= KEY_POWER;
+			k |= KB_POWER;
 		if (v & PON_RESIN)
-			k |= KEY_VOLDOWN;
+			k |= KB_VOLDOWN;
 	}
 	if (gpio2_apid >= 0 &&
 	    spmi_read(gpio2_apid, GPIO2_BASE + GPIO_RT_STS, &v) == 0 &&
 	    (v & 1) == 0)
-		k |= KEY_VOLUP;
+		k |= KB_VOLUP;
 	if ((rd(TLMM_IN_OUT(HOME_GPIO)) & 1) == 0)
-		k |= KEY_HOME;
+		k |= KB_HOME;
 	return (k);
 }
 
@@ -190,12 +201,19 @@ keys_thread(void *arg __unused)
 			continue;
 		for (i = 0; i < 4; ++i) {
 			if (changed & (1U << i)) {
-				kprintf("key: %s %s\n", key_names[i],
-				    (now & (1U << i)) ? "pressed" : "released");
+				if (keys_verbose)
+					kprintf("key: %s %s\n", key_names[i],
+					    (now & (1U << i)) ? "pressed" :
+					    "released");
+				if (keys_evdev != NULL)
+					evdev_push_key(keys_evdev, key_codes[i],
+					    (now & (1U << i)) != 0);
 				if (now & (1U << i))
 					++keys_pressed_count;
 			}
 		}
+		if (keys_evdev != NULL)
+			evdev_sync(keys_evdev);
 		last = now;
 		keys_down = now;
 	}
@@ -226,6 +244,21 @@ msm8996_keys_init(void *dummy __unused)
 	    "PMIC GPIO2 channel %d (0x%02x 0x%02x), home GPIO %d = %d\n",
 	    rd(ARB_CORE), pon_apid, pon, gpio2_apid, g1, g2, HOME_GPIO,
 	    rd(TLMM_IN_OUT(HOME_GPIO)) & 1);
+	TUNABLE_INT_FETCH("msm8996.keys_verbose", &keys_verbose);
+
+	/* An evdev device, the interface Arcan and others read. */
+	keys_evdev = evdev_alloc();
+	evdev_set_name(keys_evdev, "Mi 5 buttons");
+	evdev_set_phys(keys_evdev, "pm8994-pon+gpio");
+	evdev_set_id(keys_evdev, BUS_HOST, 0, 0, 0);
+	evdev_support_event(keys_evdev, EV_SYN);
+	evdev_support_event(keys_evdev, EV_KEY);
+	for (int i = 0; i < 4; ++i)
+		evdev_support_key(keys_evdev, key_codes[i]);
+	if (evdev_register(keys_evdev) != 0) {
+		evdev_free(keys_evdev);
+		keys_evdev = NULL;
+	}
 	kthread_create(keys_thread, NULL, &td, "keys");
 }
 SYSINIT(msm8996keys, SI_SUB_CONFIGURE, SI_ORDER_ANY, msm8996_keys_init, NULL);

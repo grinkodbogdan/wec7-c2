@@ -57,6 +57,8 @@ static struct {
 	u_int		scale;		/* pixels per font pixel */
 	u_int		cols, rows;
 	u_int		col, row;
+	int		esc;		/* 0, 1 after ESC, 2 inside CSI */
+	u_int		arg;		/* CSI numeric argument */
 } fb;
 
 /* Set by board code whose panel needs an explicit refresh. */
@@ -161,9 +163,52 @@ fb_newline(void)
 void
 fbcons_putc(int c)
 {
+	u_int r;
+
 	if (fb.base == NULL)
 		return;
+
+	/*
+	 * Just enough of ANSI X3.64 for full-screen text programs:
+	 * ESC [ 2 J (clear), ESC [ H (home), ESC [ K (clear to end of
+	 * line).  Other sequences are swallowed.
+	 */
+	if (fb.esc == 1) {
+		fb.esc = (c == '[') ? 2 : 0;
+		fb.arg = 0;
+		return;
+	}
+	if (fb.esc == 2) {
+		if (c >= '0' && c <= '9') {
+			fb.arg = fb.arg * 10 + (c - '0');
+			return;
+		}
+		if (c == ';')
+			return;
+		fb.esc = 0;
+		switch (c) {
+		case 'J':
+			if (fb.arg == 2) {
+				for (r = 0; r < fb.rows; ++r)
+					fb_clear_row(r);
+				fb.row = fb.col = 0;
+				fbcons_flush();
+			}
+			break;
+		case 'H':
+			fb.row = fb.col = 0;
+			break;
+		case 'K':
+			for (r = fb.col; r < fb.cols; ++r)
+				fb_glyph(r, fb.row, ' ');
+			break;
+		}
+		return;
+	}
 	switch (c) {
+	case 0x1b:
+		fb.esc = 1;
+		break;
 	case '\n':
 		fb_newline();
 		fbcons_flush();

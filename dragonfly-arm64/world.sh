@@ -327,9 +327,11 @@ prog() {
 # A smoke test: a small program using stdio, malloc, TLS and threads.
 hello() {
 	o=$WOBJ/hello; mkdir -p "$o"
-	cc -O2 -Wall -c "$HERE/user/hello.c" -o "$o/hello.o"
-	ldstatic "$o/hello" "$o/hello.o"
-	echo "built $o/hello"
+	for p in hello keymenu; do
+		cc -O2 -Wall -c "$HERE/user/$p.c" -o "$o/$p.o"
+		ldstatic "$o/$p" "$o/$p.o"
+		echo "built $o/$p"
+	done
 }
 
 # The libraries and programs the ramdisk carries.  ls is built without

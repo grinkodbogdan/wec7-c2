@@ -355,6 +355,23 @@ main(void)
 			;
 	}
 
+	/*
+	 * With buttons and no keyboard (the Mi 5), run the button menu;
+	 * otherwise, and if it ever exits, a shell.
+	 */
+	if (access("/dev/input/event0", R_OK) == 0 &&
+	    access("/bin/keymenu", R_OK) == 0) {
+		char *km_argv[] = { "keymenu", NULL };
+
+		pid = fork();
+		if (pid == 0) {
+			execve("/bin/keymenu", km_argv, sh_env);
+			_exit(127);
+		}
+		while (waitpid(-1, &status, 0) != pid)
+			;
+	}
+
 	/* Keep a shell running; reap whatever else exits. */
 	for (;;) {
 		pid = fork();

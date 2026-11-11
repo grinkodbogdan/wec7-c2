@@ -348,3 +348,17 @@ Debugger(const char *msg)
 {
 	kprintf("Debugger(\"%s\") called (no in-kernel debugger)\n", msg);
 }
+
+/*
+ * evdev's keyboard glue (LED and repeat ioctls passed back to a
+ * keyboard driver) needs this; there is no keyboard driver yet.
+ */
+struct keyboard;
+int	kbd_ioctl(struct keyboard *kbd, u_long cmd, caddr_t data);
+
+int
+kbd_ioctl(struct keyboard *kbd __unused, u_long cmd __unused,
+	  caddr_t data __unused)
+{
+	return (ENODEV);
+}

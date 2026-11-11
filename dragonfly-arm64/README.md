@@ -482,6 +482,15 @@ read-only as ext4 from the UFS flash, and the HAMMER2 test passed on the
 phone: a 1.1GB volume formatted, filled with 33 programs, remounted, and
 every file identical.
 
+**Nineteenth boot: buttons.** Power, volume down (PM8994 PON over SPMI),
+volume up (PM8994 GPIO 2) and home (TLMM GPIO 34) all report presses and
+releases (`qcom_pmic_keys.c`, polled every 20ms, SPMI reads after Linux's
+`spmi-pmic-arb`). The twentieth image delivers them through evdev as
+`/dev/input/event0` (the interface Arcan reads) and adds `keymenu`, which
+init runs when buttons exist: volume up/down choose a command, power runs
+it. The console now understands ANSI clear-screen and cursor-home, so the
+menu redraws in place.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes
