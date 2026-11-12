@@ -237,6 +237,20 @@ naming what is missing, so hitting one is obvious.
    DMA, then the Mi 5's storage (UFS), touch, USB and display.
 8. **Arcan**, on the real userland and the display, GPU and touch drivers.
 9. **Self-hosting.** Native toolchain, `buildworld` on arm64.
+10. **Wi-Fi.** PCIe, then ath10k for the QCA6174, net80211, wpa_supplicant.
+11. **FreeBSD binary compatibility.** Run FreeBSD/arm64 programs and
+    packages unchanged: the syscalls and structures that drifted since the
+    fork (`stat`, `dirent`, `kevent`, `thr_new`/`_umtx_op`), Capsicum
+    stubbed, FreeBSD's own runtime linker as the interpreter.
+12. **Wayland through Arcan, with a phone shell**, for the Linux phone apps
+    (libadwaita, Kirigami) and Angelfish that FreeBSD already packages.
+13. **Android apps through the Android Translation Layer, ported to BSD.**
+    ART runs as an ordinary program and ATL implements the app APIs itself,
+    so there is no binder and no Linux compatibility layer: the Bionic shim
+    is retargeted from glibc to the BSD libc, and ART's Linux assumptions
+    (futex, ashmem/memfd, `/proc/self/maps`, signal frames for null and
+    stack-overflow checks) are replaced with BSD equivalents. Drawing goes
+    through GTK4 and Wayland to Arcan, GL ES through freedreno.
 
 ## Xiaomi Mi 5
 
@@ -812,6 +826,9 @@ the secure monitor), then build Mesa's freedreno for Arcan.
   mode-setting interface and OpenGL ES, so it needs, in order: a real
   userland (libc, C++ runtime, Lua), the phone's display driver, the GPU
   driver with Mesa's freedreno, and touch input delivered as evdev events.
+- **App ecosystems.** Native and FreeBSD packages first, then Android
+  apps through ATL ported to BSD, never through a Linux compatibility
+  layer. iOS apps are out of reach (closed frameworks, encrypted binaries).
 - **Arcan adapted to this system.** Where it helps, change Arcan to make
   full use of HAMMER2 and the BSD base rather than treating them as a
   generic POSIX target: for example snapshots of application state and
