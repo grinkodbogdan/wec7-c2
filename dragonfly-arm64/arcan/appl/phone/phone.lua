@@ -2055,6 +2055,18 @@ end
 -- Settings
 local settings_app = {id = "settings", name = "Settings", glyph = "gear"}
 
+-- hw.mi5.wlan: the athp driver's progress, one line
+function wifi_driver_state()
+	local st = string.gsub(run("sysctl -n hw.mi5.wlan"), "\n", "")
+	if st == "" then
+		st = "Not in this kernel"
+	end
+	if #st > 44 then
+		st = string.sub(st, 1, 43) .. "…"
+	end
+	return st
+end
+
 local function settings_draw(inst)
 	clear_children(inst.a)
 	inst.hits = {}
@@ -2142,6 +2154,18 @@ local function settings_draw(inst)
 					run("sysctl -q hw.mi5.pcie_up=1")
 					settings_draw(inst)
 				end})
+		end},
+		{label = "Driver", sub = wifi_driver_state(),
+		right = function(p, ry, rh)
+			box(p, W - 122, ry + rh / 2 - 18, 86, 36, accent(), "pill", 1.0, 4)
+			text_c(p, W - 79, ry + rh / 2 - 9, "Start", 12, INK, F_SB, 5)
+			table.insert(inst.hits, {x = W - 132, y = ry, w = 110, h = rh,
+				fn = function()
+					-- attaching takes seconds; let it run on its own
+					run("sysctl -q hw.mi5.wlan_attach=1 >/dev/null 2>&1 &")
+					inst.wifi_until = CLOCK + 25 * 90
+					settings_draw(inst)
+				end})
 		end}})
 	y = y + 12
 
@@ -2169,6 +2193,15 @@ local function settings_draw(inst)
 		{label = "Graphics", value = sys.renderer},
 	}
 	group(inst.a, y, inst.about, 40)
+end
+
+-- while the Wi-Fi driver starts, refresh once a second
+function settings_app.tick(inst)
+	if inst.wifi_until and CLOCK < inst.wifi_until and
+		CLOCK >= (inst.wifi_next or 0) then
+		inst.wifi_next = CLOCK + 25
+		settings_draw(inst)
+	end
 end
 
 function settings_app.create(inst)

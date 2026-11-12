@@ -1,0 +1,175 @@
+diff --git a/sys/netproto/802_11/ieee80211_crypto.h b/sys/netproto/802_11/ieee80211_crypto.h
+index 98f1d35781..8a01553bd9 100644
+--- a/sys/netproto/802_11/ieee80211_crypto.h
++++ b/sys/netproto/802_11/ieee80211_crypto.h
+@@ -84,6 +84,9 @@ struct ieee80211_key {
+ #define	IEEE80211_KEY_SWENMIC	0x0040	/* host-based enmic */
+ #define	IEEE80211_KEY_SWDEMIC	0x0080	/* host-based demic */
+ #define	IEEE80211_KEY_DEVKEY	0x0100	/* device key request completed */
++#define	IEEE80211_KEY_NOIV	0x0200	/* firmware adds the IV (offload) */
++#define	IEEE80211_KEY_NOIVMGT	0x0400	/* ... for management frames too */
++#define	IEEE80211_KEY_NOMIC	0x0800	/* firmware adds the MIC (offload) */
+ #define	IEEE80211_KEY_CIPHER0	0x1000	/* cipher-specific action 0 */
+ #define	IEEE80211_KEY_CIPHER1	0x2000	/* cipher-specific action 1 */
+ 	ieee80211_keyix	wk_keyix;	/* h/w key index */
+@@ -102,7 +105,8 @@ struct ieee80211_key {
+ 	(IEEE80211_KEY_XMIT | IEEE80211_KEY_RECV | IEEE80211_KEY_GROUP | \
+ 	 IEEE80211_KEY_NOREPLAY)
+ #define	IEEE80211_KEY_DEVICE		/* flags owned by device driver */\
+-	(IEEE80211_KEY_DEVKEY|IEEE80211_KEY_CIPHER0|IEEE80211_KEY_CIPHER1)
++	(IEEE80211_KEY_DEVKEY|IEEE80211_KEY_CIPHER0|IEEE80211_KEY_CIPHER1| \
++	 IEEE80211_KEY_NOIV|IEEE80211_KEY_NOIVMGT|IEEE80211_KEY_NOMIC)
+ 
+ #define	IEEE80211_KEY_SWCRYPT \
+ 	(IEEE80211_KEY_SWENCRYPT | IEEE80211_KEY_SWDECRYPT)
+@@ -223,6 +227,8 @@ ieee80211_crypto_enmic(struct ieee80211vap *vap,
+ 	struct ieee80211_key *k, struct mbuf *m, int force)
+ {
+ 	const struct ieee80211_cipher *cip = k->wk_cipher;
++	if (k->wk_flags & IEEE80211_KEY_NOMIC)
++		return (1);
+ 	return (cip->ic_miclen > 0 ? cip->ic_enmic(k, m, force) : 1);
+ }
+ 
+diff --git a/sys/netproto/802_11/ieee80211_dragonfly.h b/sys/netproto/802_11/ieee80211_dragonfly.h
+index 12c7bf2759..c4abda4754 100644
+--- a/sys/netproto/802_11/ieee80211_dragonfly.h
++++ b/sys/netproto/802_11/ieee80211_dragonfly.h
+@@ -523,6 +523,42 @@ int	ieee80211_get_xmit_params(struct mbuf *m,
+ #define	IEEE80211_R_FREQ	0x0000080	/* Freq value populated, MHz */
+ #define	IEEE80211_R_IEEE	0x0000100	/* IEEE value populated */
+ #define	IEEE80211_R_BAND	0x0000200	/* Frequency band populated */
++#define	IEEE80211_R_TSF32	0x0004000	/* 32 bit TSF */
++#define	IEEE80211_R_TSF64	0x0008000	/* 64 bit TSF */
++#define	IEEE80211_R_TSF_START	0x0010000	/* TSF is sampled at start of frame */
++#define	IEEE80211_R_TSF_END	0x0020000	/* TSF is sampled at end of frame */
++
++/* c_pktflags, as in FreeBSD's net80211 (used by offloading drivers) */
++#define	IEEE80211_RX_F_STBC		0x00000001
++#define	IEEE80211_RX_F_LDPC		0x00000002
++#define	IEEE80211_RX_F_AMSDU		0x00000004
++#define	IEEE80211_RX_F_AMSDU_MORE	0x00000008
++#define	IEEE80211_RX_F_AMPDU		0x00000010
++#define	IEEE80211_RX_F_AMPDU_MORE	0x00000020
++#define	IEEE80211_RX_F_FAIL_FCSCRC	0x00000040
++#define	IEEE80211_RX_F_FAIL_MIC		0x00000080
++#define	IEEE80211_RX_F_DECRYPTED	0x00000100	/* hardware decrypted */
++#define	IEEE80211_RX_F_IV_STRIP		0x00000200	/* IV stripped */
++#define	IEEE80211_RX_F_MMIC_STRIP	0x00000400	/* Michael MIC stripped */
++#define	IEEE80211_RX_F_SHORTGI		0x00000800
++#define	IEEE80211_RX_F_CCK		0x00001000
++#define	IEEE80211_RX_F_OFDM		0x00002000
++#define	IEEE80211_RX_F_HT		0x00004000
++#define	IEEE80211_RX_F_VHT		0x00008000
++#define	IEEE80211_RX_F_PN_VALIDATED	0x00010000
++#define	IEEE80211_RX_F_FAIL_MMIC	0x00020000
++
++#define	IEEE80211_RX_FW_20MHZ		1
++#define	IEEE80211_RX_FW_40MHZ		2
++#define	IEEE80211_RX_FW_80MHZ		3
++#define	IEEE80211_RX_FW_160MHZ		4
++#define	IEEE80211_RX_FW_80P80MHZ	5
++
++#define	IEEE80211_RX_FP_11B		1
++#define	IEEE80211_RX_FP_11G		2
++#define	IEEE80211_RX_FP_11A		3
++#define	IEEE80211_RX_FP_11NA		4
++#define	IEEE80211_RX_FP_11NG		5
+ 
+ struct ieee80211_rx_stats {
+ 	uint32_t r_flags;		/* IEEE80211_R_* flags */
+@@ -537,6 +573,14 @@ struct ieee80211_rx_stats {
+ 					/* per-chain, per-pilot EVM values */
+ 	uint16_t c_freq;
+ 	uint8_t c_ieee;
++	/* FreeBSD 12 additions, for drivers whose firmware does the work */
++	uint32_t c_pktflags;		/* IEEE80211_RX_F_* */
++	uint64_t c_rx_tsf;
++	uint32_t c_width;		/* IEEE80211_RX_FW_* */
++	uint32_t c_phytype;		/* IEEE80211_RX_FP_* */
++	uint32_t c_vhtnss;
++	uint8_t c_rate;			/* legacy rate (500k) or MCS */
++	uint8_t c_band;
+ };
+ 
+ struct ieee80211_rx_params {
+diff --git a/sys/netproto/802_11/ieee80211_var.h b/sys/netproto/802_11/ieee80211_var.h
+index a7c9694acb..9aaa421c89 100644
+--- a/sys/netproto/802_11/ieee80211_var.h
++++ b/sys/netproto/802_11/ieee80211_var.h
+@@ -294,6 +294,8 @@ struct ieee80211com {
+ 	/* node state management */
+ 	struct ieee80211_node*	(*ic_node_alloc)(struct ieee80211vap *,
+ 				    const uint8_t [IEEE80211_ADDR_LEN]);
++	/* driver setup once the node is filled in (FreeBSD 12) */
++	int			(*ic_node_init)(struct ieee80211_node *);
+ 	void			(*ic_node_free)(struct ieee80211_node *);
+ 	void			(*ic_node_cleanup)(struct ieee80211_node *);
+ 	void			(*ic_node_age)(struct ieee80211_node *);
+diff --git a/sys/netproto/802_11/wlan/ieee80211_crypto.c b/sys/netproto/802_11/wlan/ieee80211_crypto.c
+index 2f3dfddca9..a75352012a 100644
+--- a/sys/netproto/802_11/wlan/ieee80211_crypto.c
++++ b/sys/netproto/802_11/wlan/ieee80211_crypto.c
+@@ -571,6 +571,8 @@ ieee80211_crypto_encap(struct ieee80211_node *ni, struct mbuf *m)
+ 
+ 	if ((k = ieee80211_crypto_get_txkey(ni, m)) != NULL) {
+ 		cip = k->wk_cipher;
++		if (k->wk_flags & IEEE80211_KEY_NOIV)
++			return (k);	/* the firmware inserts it */
+ 		return (cip->ic_encap(k, m) ? k : NULL);
+ 	}
+ 
+diff --git a/sys/netproto/802_11/wlan/ieee80211_node.c b/sys/netproto/802_11/wlan/ieee80211_node.c
+index 954bc5ad12..f0f313bf88 100644
+--- a/sys/netproto/802_11/wlan/ieee80211_node.c
++++ b/sys/netproto/802_11/wlan/ieee80211_node.c
+@@ -1235,6 +1235,11 @@ ieee80211_alloc_node(struct ieee80211_node_table *nt,
+ 
+ 	ieee80211_ratectl_node_init(ni);
+ 
++	if (ic->ic_node_init != NULL && ic->ic_node_init(ni) != 0) {
++		vap->iv_stats.is_rx_nodealloc++;
++		ieee80211_free_node(ni);
++		return NULL;
++	}
+ 	return ni;
+ }
+ 
+@@ -1274,6 +1279,11 @@ ieee80211_tmp_node(struct ieee80211vap *vap,
+ 		ieee80211_psq_init(&ni->ni_psq, "unknown");
+ 
+ 		ieee80211_ratectl_node_init(ni);
++		if (ic->ic_node_init != NULL && ic->ic_node_init(ni) != 0) {
++			vap->iv_stats.is_rx_nodealloc++;
++			ieee80211_free_node(ni);
++			ni = NULL;
++		}
+ 	} else {
+ 		/* XXX msg */
+ 		vap->iv_stats.is_rx_nodealloc++;
+diff --git a/sys/netproto/802_11/wlan/ieee80211_sta.c b/sys/netproto/802_11/wlan/ieee80211_sta.c
+index dbe76718d9..6c35a45afd 100644
+--- a/sys/netproto/802_11/wlan/ieee80211_sta.c
++++ b/sys/netproto/802_11/wlan/ieee80211_sta.c
+@@ -738,7 +738,20 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
+ 		 * crypto cipher modules used to do delayed update
+ 		 * of replay sequence numbers.
+ 		 */
+-		if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
++		if ((wh->i_fc[1] & IEEE80211_FC1_PROTECTED) &&
++		    rxs != NULL && (rxs->c_pktflags & IEEE80211_RX_F_DECRYPTED)) {
++			/*
++			 * The firmware decrypted it and stripped the IV and
++			 * MIC (athp); hand it on as plain data.
++			 */
++			if (rxs->c_pktflags & (IEEE80211_RX_F_FAIL_MIC |
++			    IEEE80211_RX_F_FAIL_MMIC)) {
++				vap->iv_stats.is_rx_demicfail++;
++				goto out;
++			}
++			wh->i_fc[1] &= ~IEEE80211_FC1_PROTECTED;
++			key = NULL;
++		} else if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
+ 			if ((vap->iv_flags & IEEE80211_F_PRIVACY) == 0) {
+ 				/*
+ 				 * Discard encrypted frames when privacy is off.

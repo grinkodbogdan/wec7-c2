@@ -193,6 +193,22 @@ CFLAGS="--target=aarch64-unknown-none-elf -D__DragonFly__ -D_KERNEL \
 # The shared kernel is written for GCC and is not warning-clean under
 # clang; the port's own code is held to -Wall -Werror.
 MI_CFLAGS="$CFLAGS -w"
+# The QCA6174 Wi-Fi driver: athp, Adrian Chadd's FreeBSD port of ath10k
+# (ISC), with a shim header for what DragonFly spells differently.
+ATHP_CFLAGS="-I$S/dev/netif/athp/dfly -I$S/dev/netif/athp $MI_CFLAGS \
+	-include athp_dfly.h -DATHP_DFLY"
+ATHP_SRCS=${ATHP_SRCS-"athp_idr.c if_athp_bmi.c if_athp_buf.c if_athp_core.c
+	if_athp_debug.c if_athp_debug_stats.c if_athp_desc.c if_athp_dfly.c
+	if_athp_fwlog.c if_athp_hal_compl.c if_athp_htc.c if_athp_htt.c
+	if_athp_htt_rx.c if_athp_htt_tx.c if_athp_mac.c if_athp_main.c
+	if_athp_pci.c if_athp_pci_ce.c if_athp_pci_chip.c if_athp_pci_config.c
+	if_athp_pci_hif.c if_athp_pci_pipe.c if_athp_regio.c if_athp_regs.c
+	if_athp_spectral.c if_athp_swap.c if_athp_taskq.c if_athp_thermal.c
+	if_athp_trace.c if_athp_txrx.c if_athp_wmi.c if_athp_wmi_tlv.c
+	regd/regd.c"}
+# Its firmware, from linux-firmware (redistributable, LICENCE.atheros_firmware),
+# linked into the kernel; there is no firmware loader from disk.
+ATHP_FW_URL=https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/ath10k/QCA6174/hw3.0
 MD_CFLAGS="$CFLAGS -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
 	-Wno-missing-field-initializers -Wno-pointer-sign -Werror"
 
@@ -254,14 +270,40 @@ build() {
 		echo "platform/arm64/aarch64/$f"
 	done > "$OBJ/md.files"
 
+	for f in $ATHP_SRCS; do
+		echo "dev/netif/athp/$f"
+	done > "$OBJ/athp.files"
+
 	compile_list "$MI_CFLAGS" "$OBJ/mi.files"
 	compile_list "$MD_CFLAGS" "$OBJ/md.files"
+	compile_list "$ATHP_CFLAGS" "$OBJ/athp.files"
 
 	objs=""
-	for f in $(cat "$OBJ/md.files" "$OBJ/mi.files"); do
+	for f in $(cat "$OBJ/md.files" "$OBJ/mi.files" "$OBJ/athp.files"); do
 		o=$(echo "$f" | sed "s#^$OBJ/##; s#^$S/##" | tr / _)
 		objs="$objs $OBJ/o/${o%.*}.o"
 	done
+	if [ -n "$ATHP_SRCS" ]; then
+		fw=$HERE/work/firmware/athp
+		mkdir -p "$fw"
+		for f in firmware-4.bin board.bin; do
+			[ -s "$fw/$f" ] || curl -sSfL -o "$fw/$f" "$ATHP_FW_URL/$f" ||
+			    rm -f "$fw/$f"
+		done
+		if [ -s "$fw/firmware-4.bin" ] && [ -s "$fw/board.bin" ]; then
+			# symbols _binary_athp_fw4_bin_start etc. (if_athp_dfly.c)
+			mkdir -p "$OBJ/fw"
+			cp "$fw/firmware-4.bin" "$OBJ/fw/athp_fw4.bin"
+			cp "$fw/board.bin" "$OBJ/fw/athp_board.bin"
+			for f in athp_fw4 athp_board; do
+				(cd "$OBJ/fw" && $OBJCOPY -I binary \
+				    -O elf64-littleaarch64 \
+				    --rename-section .data=.rodata,alloc,load,readonly,data,contents \
+				    $f.bin $f.o)
+				objs="$objs $OBJ/fw/$f.o"
+			done
+		fi
+	fi
 	$LD -nostdlib -static -T "$P/conf/ldscript.aarch64" \
 	    -o "$OBJ/kernel.elf" $objs
 	$OBJCOPY -O binary "$OBJ/kernel.elf" "$OBJ/kernel.img"
