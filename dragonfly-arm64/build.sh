@@ -24,6 +24,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 DFLY_REPO=${DFLY_REPO:-https://github.com/DragonFlyBSD/DragonFlyBSD.git}
 DFLY_COMMIT=${DFLY_COMMIT:-94448f622a06cde90ba42d688e9cab2448ad9ab3}
 DEJAVU_VERSION=${DEJAVU_VERSION:-2.37}
+INTER_VERSION=${INTER_VERSION:-4.0}
 DFLY_SRC=${DFLY_SRC:-$HERE/work/dragonfly}
 OBJ=${OBJ:-$HERE/work/obj}
 CC=${CC:-clang}
@@ -309,6 +310,17 @@ ramdisk() {
 			    DejaVuSansMono; do
 				cp "$fd/$f.ttf" "$root/usr/share/arcan/resources/fonts/"
 			done
+			# Inter (as QRT's shell uses), OFL-licensed
+			iz=$HERE/work/fonts/Inter-$INTER_VERSION.zip
+			[ -f "$iz" ] || curl -sSfL -o "$iz" \
+			    "https://github.com/rsms/inter/releases/download/v$INTER_VERSION/Inter-$INTER_VERSION.zip"
+			for f in Inter-Regular Inter-Medium Inter-SemiBold \
+			    InterDisplay-Light; do
+				unzip -p "$iz" "extras/ttf/$f.ttf" \
+				    > "$root/usr/share/arcan/resources/fonts/$f.ttf"
+			done
+			unzip -p "$iz" LICENSE.txt \
+			    > "$root/usr/share/arcan/resources/fonts/Inter-LICENSE.txt"
 			cp "$HERE/user/arcan.sh" "$root/etc/arcan.sh"
 		fi
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
