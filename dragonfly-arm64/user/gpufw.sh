@@ -18,6 +18,9 @@ look() {	# device, filesystem
 }
 for d in /dev/ufs*s*; do
 	[ -c "$d" ] || continue
+	# stop once the zap shader and both microcode files are in hand
+	[ -f /tmp/fw/a530_zap.mdt ] && [ -f /tmp/fw/a530_pm4.fw ] &&
+	    [ -f /tmp/fw/a530_pfp.fw ] && break
 	if mount_msdos -o ro "$d" /mnt 2>/dev/null; then
 		look "$d" fat; umount /mnt
 	elif mount_ext2fs -o ro "$d" /mnt 2>/dev/null; then

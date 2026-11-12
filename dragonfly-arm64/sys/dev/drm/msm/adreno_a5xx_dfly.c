@@ -230,7 +230,17 @@ a5xx_flush(void)
 	gpu_write(REG_A5XX_CP_RB_WPTR, a5.wptr);
 }
 
-/* a5xx_idle, polled: the CP has read everything and the GPU is quiet */
+/*
+ * a5xx_idle, polled: the CP has read everything and the GPU is quiet.
+ * Linux waits for RBBM_STATUS without HI_BUSY (bit 0) to read 0, but on
+ * this phone, with no GPMU and no hardware clock gating yet, the summary
+ * bits GPU_BUSY_NOHC (31), GPU_BUSY (30) and GPU_BUSY_HYST (8) are
+ * already set before the CP first runs (0xc0000101) and stay set.  So
+ * only the per-block busy bits count: the CP's (1-7) and the pipeline's
+ * (9-29).  Whether commands really ran is checked by CP_MEM_WRITE.
+ */
+#define	A5XX_RBBM_STATUS_BLOCKS	0x3ffffefe
+
 static int
 a5xx_idle(const char *what)
 {
@@ -238,7 +248,8 @@ a5xx_idle(const char *what)
 
 	for (i = 0; i < 100000; ++i) {
 		if (gpu_read(REG_A5XX_CP_RB_RPTR) == a5.wptr &&
-		    (gpu_read(REG_A5XX_RBBM_STATUS) & 0x7ffffffe) == 0)
+		    (gpu_read(REG_A5XX_RBBM_STATUS) &
+		    A5XX_RBBM_STATUS_BLOCKS) == 0)
 			return (0);
 		DELAY(10);
 	}
