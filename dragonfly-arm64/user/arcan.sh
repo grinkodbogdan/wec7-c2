@@ -30,11 +30,18 @@ if [ "${ARCAN_GPU:-1}" = 1 ] && sysctl -n hw.mi5.gpu_ready >/dev/null 2>&1; then
 	fi
 	if [ "$(sysctl -n hw.mi5.gpu_ready)" = 1 ]; then
 		export OSMESA_DRM_DEVICE=/dev/dri/card0
+		# the GPU draws the panel's full 1080x1920: sharp text, smooth
+		# edges (software rendering stays at half resolution)
+		export ARCAN_FBMEM_SCALE=1
 		echo "arcan: rendering on the GPU" > /tmp/arcan/renderer
 	else
 		echo "arcan: GPU not ready, software rendering" > /tmp/arcan/renderer
 	fi
 fi
+# phone.scale on the kernel command line overrides the canvas scale
+sc=$(kenv -q phone.scale 2>/dev/null)
+[ -n "$sc" ] && export ARCAN_FBMEM_SCALE=$sc
+
 # The phone shell (arcan/appl/phone) reads sysctl, ls and ps itself.
 export ARCAN_SYSTEM_IO=1
 # No arguments: the phone shell, with anything from /etc/arcan.autorun

@@ -25,9 +25,45 @@
 -- (opens a view at start, for QEMU screenshots), touchw=N (touch panel
 -- width in pixels, 1080).
 
+-- Layout is in a space of 540 x 960 logical pixels; S maps it onto the
+-- canvas: 2 at the panel's full 1080 x 1920 (with the GPU), 1 at half
+-- resolution (software rendering).  Everything that takes a position or
+-- a size goes through these wrappers (they replace Arcan's own in this
+-- appl's environment); text is rasterised at the final size, so it
+-- stays sharp.
+local S = 1
+local A = {move = move_image, resize = resize_image, color = color_surface,
+	null = null_surface, alloc = alloc_surface,
+	props = image_surface_properties, hint = target_displayhint}
+local function px(n)
+	return math.max(1, math.floor(n * S + 0.5))
+end
+function move_image(v, x, y, t, i)
+	return A.move(v, x * S, y * S, t, i)
+end
+function resize_image(v, w, h, t, i)
+	return A.resize(v, w * S, h * S, t, i)
+end
+function color_surface(w, h, r, g, b)
+	return A.color(px(w), px(h), r, g, b)
+end
+function null_surface(w, h)
+	return A.null(px(w), px(h))
+end
+function alloc_surface(w, h)
+	return A.alloc(px(w), px(h))
+end
+function image_surface_properties(v)
+	local p = A.props(v)
+	return {width = p.width / S, height = p.height / S, x = p.x, y = p.y}
+end
+function target_displayhint(v, w, h, ...)
+	return A.hint(v, px(w), px(h), ...)
+end
+
 local W, H
-local SB = 32			-- status bar
-local HB = 92			-- an app's header
+local SB = 34			-- status bar
+local HB = 100			-- an app's header
 local touch_w = 1080
 local tscale = 1
 
@@ -48,6 +84,7 @@ local C = {
 	inset = {4, 5, 7},		-- wells inside glass
 	tile = {0x26, 0x2a, 0x31},
 	gloss = {0x0b, 0x0d, 0x11},
+	disc = {0x3a, 0x3e, 0x46},	-- icon discs: graphite, not black
 }
 -- the ambiences: cities at night (wallpapers/CREDITS)
 local SCENES = {
@@ -78,6 +115,7 @@ local O_EDGE, O_KBD, O_LOCK, O_SB, O_QS, O_BANNER = 170, 180, 190, 200, 300, 350
 local shaders = {}
 
 local SH_HEAD = [[
+uniform float PX;
 uniform float obj_opacity;
 uniform vec3 obj_col;
 uniform vec2 obj_output_sz;
@@ -110,9 +148,10 @@ void main()
 }]]
 
 -- warm frosted glass: the blurred wallpaper under the surface, tinted
-local function glass_f(amount, radius)
+local function glass_f(amount, radius, tint)
 	return [[
 uniform sampler2D map_tu0;
+uniform float PX;
 uniform float obj_opacity;
 uniform vec2 obj_output_sz;
 uniform vec2 screen;
@@ -134,11 +173,11 @@ void main()
 		(texture2D(map_tu0, uv + ox).rgb + texture2D(map_tu0, uv - ox).rgb +
 		texture2D(map_tu0, uv + oy).rgb + texture2D(map_tu0, uv - oy).rgb) *
 		0.2;
-	vec3 tint = vec3(0.016, 0.019, 0.025);
+	vec3 tint = ]] .. (tint or "vec3(0.016, 0.019, 0.025)") .. [[;
 	vec3 c = mix(b, tint, ]] .. amount .. [[);
 	// the gloss: a sheen over the upper part, a bright rim at the top
 	c += vec3(0.075) * (1.0 - smoothstep(0.0, 0.42, texco.y));
-	float rim = 1.0 - smoothstep(0.0, 1.5, abs(d + 1.0));
+	float rim = 1.0 - smoothstep(0.0, 1.5 * PX, abs(d + PX));
 	c += vec3(0.30) * rim * (1.0 - smoothstep(0.0, 0.5, texco.y)) +
 		vec3(0.06) * rim;
 	gl_FragColor = vec4(c, obj_opacity * clamp(0.5 - d, 0.0, 1.0));
@@ -153,7 +192,7 @@ local function build_shaders()
 void main()
 {
 	vec2 sz = obj_output_sz;
-	float d = rr(texco * sz, sz, min(0.5 * min(sz.x, sz.y), 18.0));
+	float d = rr(texco * sz, sz, min(0.5 * min(sz.x, sz.y), 18.0 * PX));
 	gl_FragColor = vec4(obj_col, obj_opacity * cover(d));
 }]])
 	mk("pill", [[
@@ -175,16 +214,16 @@ void main()
 void main()
 {
 	vec2 sz = obj_output_sz;
-	float r = 0.5 * min(sz.x, sz.y) - 1.2;
-	float d = abs(length(texco * sz - 0.5 * sz) - r) - 1.1;
+	float r = 0.5 * min(sz.x, sz.y) - 1.2 * PX;
+	float d = abs(length(texco * sz - 0.5 * sz) - r) - 1.1 * PX;
 	gl_FragColor = vec4(obj_col, obj_opacity * cover(d));
 }]])
 	mk("lrect", [[
 void main()
 {
 	vec2 sz = obj_output_sz;
-	float d = abs(rr(texco * sz - vec2(1.2), sz - vec2(2.4), min(0.28 *
-		min(sz.x, sz.y), 6.0))) - 1.1;
+	float d = abs(rr(texco * sz - vec2(1.2 * PX), sz - vec2(2.4 * PX),
+		min(0.28 * min(sz.x, sz.y), 6.0 * PX))) - 1.1 * PX;
 	gl_FragColor = vec4(obj_col, obj_opacity * cover(d));
 }]])
 	-- the avatar: a glossy black sphere
@@ -208,7 +247,7 @@ void main()
 	vec2 sz = obj_output_sz;
 	float d = length(texco * sz - 0.5 * sz) - 0.5 * min(sz.x, sz.y);
 	vec3 c = obj_col + vec3(0.16) * (1.0 - smoothstep(0.0, 0.5, texco.y));
-	c += vec3(0.28) * (1.0 - smoothstep(0.0, 1.4, abs(d + 1.0)));
+	c += vec3(0.28) * (1.0 - smoothstep(0.0, 1.4 * PX, abs(d + PX)));
 	gl_FragColor = vec4(c, obj_opacity * cover(d));
 }]])
 	-- a soft shadow, 12 px of blur
@@ -216,16 +255,17 @@ void main()
 void main()
 {
 	vec2 sz = obj_output_sz;
-	float d = rr(texco * sz - vec2(12.0), sz - vec2(24.0),
-		min(0.3 * min(sz.x, sz.y), 26.0));
-	gl_FragColor = vec4(obj_col, obj_opacity * (1.0 - smoothstep(-8.0,
-		12.0, d)));
+	float d = rr(texco * sz - vec2(12.0 * PX), sz - vec2(24.0 * PX),
+		min(0.3 * min(sz.x, sz.y), 26.0 * PX));
+	gl_FragColor = vec4(obj_col, obj_opacity * (1.0 - smoothstep(-8.0 * PX,
+		12.0 * PX, d)));
 }]])
 	-- a texture with round corners (an app, a thumbnail); crop is the
 	-- share of the texture's height shown (texture coordinates are
 	-- scaled to it)
 	local rimg = [[
 uniform sampler2D map_tu0;
+uniform float PX;
 uniform float obj_opacity;
 uniform vec2 obj_output_sz;
 uniform float crop;
@@ -239,27 +279,30 @@ void main()
 	vec4 t = texture2D(map_tu0, texco);
 	gl_FragColor = vec4(t.rgb, t.a * obj_opacity * clamp(0.5 - d, 0.0, 1.0));
 }]]
-	shaders.rimg = build_shader(nil, (string.gsub(rimg, "RAD", "26.0")),
-		"phone_rimg")
-	shaders.rthumb = build_shader(nil, (string.gsub(rimg, "RAD", "16.0")),
-		"phone_rthumb")
-	shaders.rcrop = build_shader(nil, (string.gsub(rimg, "RAD", "16.0")),
-		"phone_rcrop")
+	shaders.rimg = build_shader(nil, (string.gsub(rimg, "RAD",
+		"(26.0 * PX)")), "phone_rimg")
+	shaders.rthumb = build_shader(nil, (string.gsub(rimg, "RAD",
+		"(16.0 * PX)")), "phone_rthumb")
+	shaders.rcrop = build_shader(nil, (string.gsub(rimg, "RAD",
+		"(16.0 * PX)")), "phone_rcrop")
 	for _, s in ipairs({shaders.rimg, shaders.rthumb, shaders.rcrop}) do
 		shader_uniform(s, "crop", "f", 1.0)
 	end
 
 	-- the glass family
-	local function mkg(name, amount, radius)
-		shaders[name] = build_shader(GLASS_V, glass_f(amount, radius),
+	local function mkg(name, amount, radius, tint)
+		shaders[name] = build_shader(GLASS_V, glass_f(amount, radius, tint),
 			"phone_" .. name)
-		shader_uniform(shaders[name], "screen", "ff", W, H)
+		shader_uniform(shaders[name], "screen", "ff", W * S, H * S)
 	end
-	mkg("glass", "0.64", "min(0.5 * min(sz.x, sz.y), 28.0)")
-	mkg("glass_dark", "0.80", "min(0.5 * min(sz.x, sz.y), 22.0)")
+	mkg("glass", "0.64", "min(0.5 * min(sz.x, sz.y), 28.0 * PX)")
+	mkg("glass_dark", "0.80", "min(0.5 * min(sz.x, sz.y), 22.0 * PX)")
 	mkg("glass_pill", "0.68", "0.5 * min(sz.x, sz.y)")
-	mkg("glass_sheet", "0.74", "30.0")
+	mkg("glass_sheet", "0.74", "30.0 * PX")
 	mkg("glass_flat", "0.84", "0.0")
+	-- buttons and app faces: a lighter, graphite glass
+	mkg("glass_grey", "0.70", "min(0.5 * min(sz.x, sz.y), 22.0 * PX)",
+		"vec3(0.19, 0.20, 0.225)")
 
 	-- a scene's photograph in a circle: the swatches.  The texture
 	-- coordinates take a square from the middle of the portrait picture
@@ -277,6 +320,12 @@ void main()
 	vec4 t = texture2D(map_tu0, texco);
 	gl_FragColor = vec4(t.rgb, obj_opacity * clamp(0.5 - d, 0.0, 1.0));
 }]], "phone_swatch")
+	-- the pixel constants scale with the canvas
+	for k, sh in pairs(shaders) do
+		if k ~= "swatch" then
+			shader_uniform(sh, "PX", "f", S)
+		end
+	end
 end
 
 ------------------------------------------------------------------------
@@ -346,7 +395,7 @@ end
 -- text; the string goes in raw (never as a format string)
 local function text(parent, x, y, str, size, color, font, order)
 	local v = render_text({string.format([[\f%s,%d\#%s]], font or F_REG,
-		size, color or C.text), tostring(str)})
+		px(size), color or C.text), tostring(str)})
 	if not valid_vid(v) then
 		return nil, 0, 0
 	end
@@ -374,8 +423,8 @@ end
 
 -- the width a string would take
 local function measure(str, size, font)
-	local v = render_text({string.format([[\f%s,%d]], font or F_REG, size),
-		tostring(str)})
+	local v = render_text({string.format([[\f%s,%d]], font or F_REG,
+		px(size)), tostring(str)})
 	if not valid_vid(v) then
 		return 0
 	end
@@ -745,6 +794,11 @@ local function draw_status()
 		sbar.bg = box(nil, 0, 0, W, SB, {0, 0, 0}, nil, 0.0, O_SB)
 		sbar.a = anchor(nil, 0, 0, W, SB, O_SB + 1)
 	end
+	local key = clock_str() .. sys.battery .. sys.charger .. tostring(focus)
+	if key == sbar.key then
+		return
+	end
+	sbar.key = key
 	clear_children(sbar.a)
 	-- a light shade under the bar while an app is in front
 	blend_image(sbar.bg, focus and 0.30 or 0.0, 4)
@@ -779,7 +833,7 @@ local function show_banner(kind, title, body)
 	local v = anchor(nil, 14, -100, W - 28, 76, O_BANNER)
 	box(v, -6, 0, W - 16, 88, {0, 0, 0}, "shadow", 0.45, 1)
 	glass(v, 0, 0, W - 28, 76, "glass_dark", 2)
-	box(v, 14, 16, 44, 44, C.gloss, "gloss", 1.0, 3)
+	box(v, 14, 16, 44, 44, C.disc, "gloss", 1.0, 3)
 	icons[kind] (v, 36, 38, 22, 4)
 	text(v, 72, 16, title, 13, C.text, F_SB, 4)
 	text(v, 72, 42, body, 11, C.text2, F_REG, 4)
@@ -813,7 +867,7 @@ local ICON = 62
 local function draw_icon(parent, x, y, app, size, with_label, kind)
 	size = size or ICON
 	local cell = anchor(parent, x, y, size, size, 1)
-	glass(cell, 0, 0, size, size, kind or "glass_dark", 1)
+	glass(cell, 0, 0, size, size, kind or "glass_grey", 1)
 	icons[app.glyph](cell, size / 2, size / 2, size * 0.42, 3)
 	if with_label then
 		text_c(cell, size / 2, size + 8, app.name, 10, C.text, F_MED, 3)
@@ -846,89 +900,75 @@ local function card_header(p, x, y, w, icon, title)
 	icons.arrow(p, x + w - 30, y + 26, 20, 5)
 end
 
-local function storage()
-	local out = run("df -k /")
-	local size, used = string.match(out, "\n%S+%s+(%d+)%s+(%d+)")
-	return tonumber(size), tonumber(used)
-end
 
 local function draw_home(p)
 	clear_children(p.a)
 	p.hits = {}
-	local x0, cw = 18, W - 36
+	local x0, cw = 22, W - 44
+	local gap = 24
 
 	-- at a glance
 	local y = SB + 18
-	box(p.a, x0 - 6, y + 4, cw + 12, 174, {0, 0, 0}, "shadow", 0.35, 1)
-	glass(p.a, x0, y, cw, 164, "glass", 2)
-	eyebrow(p.a, x0 + 22, y + 22, "At a glance")
+	local gh = 168
+	box(p.a, x0 - 8, y + 4, cw + 16, gh + 14, {0, 0, 0}, "shadow", 0.35, 1)
+	glass(p.a, x0, y, cw, gh, "glass", 2)
+	eyebrow(p.a, x0 + 24, y + 24, "At a glance")
 	local g1, g2 = greeting()
-	text(p.a, x0 + 22, y + 46, g1, 25, C.text, F_SB)
-	text(p.a, x0 + 22, y + 80, g2, 25, "9aa6b8", F_SB)
-	text_c(p.a, x0 + cw * 0.53, y + 54, clock_str(), 24, C.text, F_SB)
-	text_c(p.a, x0 + cw * 0.53, y + 88, short_date(), 10, C.text2, F_MED)
-	local bx = x0 + cw * 0.76
-	text_c(p.a, bx, y + 52, sys.battery >= 0 and sys.battery .. "%" or "—",
+	text(p.a, x0 + 24, y + 50, g1, 25, C.text, F_SB)
+	text(p.a, x0 + 24, y + 86, g2, 25, "9aa6b8", F_SB)
+	text_c(p.a, x0 + cw * 0.52, y + 58, clock_str(), 24, C.text, F_SB)
+	text_c(p.a, x0 + cw * 0.52, y + 94, short_date(), 10, C.text2, F_MED)
+	local bx = x0 + cw * 0.75
+	text_c(p.a, bx, y + 56, sys.battery >= 0 and sys.battery .. "%" or "—",
 		22, C.text, F_SB)
-	text_c(p.a, bx, y + 84, "Battery", 10, C.text2, F_MED)
-	text_c(p.a, bx, y + 100, charge_state(), 10, C.text3, F_REG)
-	inset(p.a, x0 + cw - 58, y + 52, 42, 42, 3, "rrect", 0.55)
-	icons.pencil(p.a, x0 + cw - 37, y + 73, 22, 5)
-	table.insert(p.hits, {x = x0 + cw - 66, y = y + 40, w = 62, h = 66,
-		app = app_by_id.settings, ix = x0 + cw - 58, iy = y + 52})
-	table.insert(p.hits, {x = x0, y = y, w = cw, h = 164, qs = true})
+	text_c(p.a, bx, y + 90, "Battery", 10, C.text2, F_MED)
+	text_c(p.a, bx, y + 107, charge_state(), 10, C.text3, F_REG)
+	glass(p.a, x0 + cw - 62, y + 58, 44, 44, "glass_grey", 3)
+	icons.pencil(p.a, x0 + cw - 40, y + 80, 22, 5)
+	table.insert(p.hits, {x = x0 + cw - 70, y = y + 46, w = 66, h = 68,
+		app = app_by_id.settings, ix = x0 + cw - 62, iy = y + 58})
+	table.insert(p.hits, {x = x0, y = y, w = cw, h = gh, qs = true})
 
-	-- Files
-	y = y + 180
-	local fh = 304
-	box(p.a, x0 - 6, y + 4, cw + 12, fh + 10, {0, 0, 0}, "shadow", 0.35, 1)
+	-- Files: a search row, folder chips, the root
+	y = y + gh + gap
+	local fh = 228
+	box(p.a, x0 - 8, y + 4, cw + 16, fh + 14, {0, 0, 0}, "shadow", 0.35, 1)
 	glass(p.a, x0, y, cw, fh, "glass", 2)
-	card_header(p.a, x0, y, cw, "folder", "Files")
-	table.insert(p.hits, {x = x0, y = y, w = cw, h = 50,
+	card_header(p.a, x0, y + 4, cw, "folder", "Files")
+	table.insert(p.hits, {x = x0, y = y, w = cw, h = 56,
 		app = app_by_id.files, ix = x0, iy = y})
-	inset(p.a, x0 + 14, y + 54, cw - 28, 54, 3, "rrect", 0.6)
-	icons.search(p.a, x0 + 40, y + 81, 24, 5)
-	text(p.a, x0 + 62, y + 72, "Search folders and files", 12, C.text2, F_REG)
-	icons.arrow(p.a, x0 + cw - 40, y + 81, 20, 5)
-	table.insert(p.hits, {x = x0 + 14, y = y + 54, w = cw - 28, h = 54,
-		app = app_by_id.files, ix = x0 + 14, iy = y + 54})
+	inset(p.a, x0 + 16, y + 62, cw - 32, 56, 3, "rrect", 0.6)
+	icons.search(p.a, x0 + 44, y + 90, 24, 5)
+	text(p.a, x0 + 68, y + 81, "Search folders and files", 12, C.text2, F_REG)
+	icons.arrow(p.a, x0 + cw - 44, y + 90, 20, 5)
+	table.insert(p.hits, {x = x0 + 16, y = y + 62, w = cw - 32, h = 56,
+		app = app_by_id.files, ix = x0 + 16, iy = y + 62})
 	local chips = {"/", "etc", "tmp", "usr"}
-	local cxp = x0 + 14
+	local cxp = x0 + 16
 	for _, c in ipairs(chips) do
-		local w = measure(c, 11, F_MED) + 52
-		inset(p.a, cxp, y + 120, w, 40, 3, "pill", 0.55)
-		icons.folder(p.a, cxp + 21, y + 140, 17, 5)
-		text(p.a, cxp + 34, y + 131, c, 11, C.text, F_MED)
-		table.insert(p.hits, {x = cxp, y = y + 120, w = w, h = 40,
+		local w = measure(c, 11, F_MED) + 56
+		inset(p.a, cxp, y + 132, w, 42, 3, "pill", 0.55)
+		icons.folder(p.a, cxp + 23, y + 153, 17, 5)
+		text(p.a, cxp + 37, y + 144, c, 11, C.text, F_MED)
+		table.insert(p.hits, {x = cxp, y = y + 132, w = w, h = 42,
 			path = c == "/" and "/" or "/" .. c})
-		cxp = cxp + w + 8
+		cxp = cxp + w + 10
 	end
-	-- the storage well
-	inset(p.a, x0 + 14, y + 172, cw - 28, 76, 3, "rrect", 0.45)
-	local size, used = storage()
-	eyebrow(p.a, x0 + 30, y + 186, "Storage")
-	local frac = (size and size > 0) and used / size or 0
-	text_r(p.a, x0 + cw - 30, y + 182, size and string.format("%d of %d MB",
-		math.floor(used / 1024), math.floor(size / 1024)) or "—", 10, C.text2,
+	icons.pin(p.a, x0 + 30, y + 202, 20, 5)
+	text(p.a, x0 + 50, y + 193, "/  ·  the root file system", 11, C.text2,
 		F_MED)
-	box(p.a, x0 + 30, y + 214, cw - 60, 8, WHITE, "pill", 0.16, 4)
-	box(p.a, x0 + 30, y + 214, math.max(8, (cw - 60) * frac), 8, peach(),
-		"pill", 1.0, 5)
-	icons.pin(p.a, x0 + 28, y + 274, 20, 5)
-	text(p.a, x0 + 46, y + 265, "/  ·  the root file system", 11, C.text,
-		F_MED)
-	icons.arrow(p.a, x0 + cw - 30, y + 274, 20, 5)
-	table.insert(p.hits, {x = x0, y = y + 250, w = cw, h = 54, path = "/"})
+	icons.arrow(p.a, x0 + cw - 32, y + 202, 20, 5)
+	table.insert(p.hits, {x = x0, y = y + 180, w = cw, h = 48, path = "/"})
 
 	-- the recent app, or the terminal
-	y = y + fh + 16
-	local rh = 194
-	box(p.a, x0 - 6, y + 4, cw + 12, rh + 10, {0, 0, 0}, "shadow", 0.35, 1)
+	y = y + fh + gap
+	local rh = math.max(150, H - 196 - gap - y)
+	box(p.a, x0 - 8, y + 4, cw + 16, rh + 14, {0, 0, 0}, "shadow", 0.35, 1)
 	glass(p.a, x0, y, cw, rh, "glass", 2)
 	local recent = run_order[1] and running[run_order[1]]
-	card_header(p.a, x0, y, cw, recent and "recents" or "terminal",
+	card_header(p.a, x0, y + 4, cw, recent and "recents" or "terminal",
 		recent and recent.app.name or "Terminal")
-	local px, py, pw, ph = x0 + 14, y + 52, cw - 28, rh - 66
+	local px, py, pw, ph = x0 + 16, y + 60, cw - 32, rh - 76
 	local src = recent and (recent.rt or recent.vid)
 	if src and valid_vid(src) then
 		local t = null_surface(pw, ph)
@@ -944,16 +984,15 @@ local function draw_home(p)
 		table.insert(p.hits, {x = px, y = py, w = pw, h = ph,
 			open = recent.app.id})
 	else
-		inset(p.a, px, py, pw, ph, 3, "rrect", 0.65)
-		text(p.a, px + 20, py + 18, "A quiet start.", 13, C.text, F_SB)
-		text(p.a, px + 20, py + 42, "sh on DragonFly BSD", 10, C.text3,
+		inset(p.a, px, py, pw, ph, 3, "rrect", 0.6)
+		text(p.a, px + 22, py + 20, "A quiet start.", 13, C.text, F_SB)
+		text(p.a, px + 22, py + 46, "sh on DragonFly BSD", 10, C.text3,
 			F_MONO)
 		table.insert(p.hits, {x = px, y = py, w = pw, h = ph,
 			app = app_by_id.term, ix = px, iy = py})
 	end
-	box(p.a, px + pw / 2 - 28, py + ph / 2 - 28, 56, 56, {0x2a, 0x1c, 0x17},
-		"circle", 0.72, 5)
-	icons.play(p.a, px + pw / 2, py + ph / 2, 30, 6)
+	glass(p.a, px + pw - 74, py + ph - 74, 56, 56, "glass_grey", 5)
+	icons.play(p.a, px + pw - 46, py + ph - 46, 30, 6)
 
 	-- the search pill and the avatar
 	local sy = H - 178
@@ -974,14 +1013,14 @@ local function draw_home(p)
 	glass(p.a, 18, dy, W - 36, 80, "glass_pill", 2)
 	local items = {
 		{app = app_by_id.term}, {app = app_by_id.files},
-		{app = app_by_id.calc}, {app = app_by_id.settings},
-		{glyph = "grid", drawer = true}, {glyph = "recents", recents = true},
+		{app = app_by_id.settings}, {glyph = "grid", drawer = true},
+		{glyph = "recents", recents = true},
 	}
-	local step = (W - 36 - 24) / #items
+	local step = (W - 36 - 32) / #items
 	for i, it in ipairs(items) do
-		local cx = math.floor(30 + (i - 0.5) * step)
+		local cx = math.floor(34 + (i - 0.5) * step)
 		local by = dy + 12
-		glass(p.a, cx - 28, by, 56, 56, "glass_dark", 3)
+		glass(p.a, cx - 28, by, 56, 56, "glass_grey", 3)
 		icons[it.app and it.app.glyph or it.glyph](p.a, cx, by + 28, 27, 5)
 		if it.app and running[it.app.id] then
 			box(p.a, cx - 2, by + 60, 4, 4, peach(), "circle", 1.0, 5)
@@ -1018,7 +1057,7 @@ local function draw_events(p)
 			break
 		end
 		glass(p.a, 16, y, W - 32, 82, "glass", 2)
-		box(p.a, 32, y + 19, 44, 44, C.gloss, "gloss", 1.0, 3)
+		box(p.a, 32, y + 19, 44, 44, C.disc, "gloss", 1.0, 3)
 		icons[e.kind](p.a, 54, y + 41, 22, 5)
 		text(p.a, 92, y + 18, e.title, 13, C.text, F_SB)
 		text(p.a, 92, y + 45, e.body, 11, C.text2, F_REG)
@@ -1049,10 +1088,10 @@ local function draw_switcher(p)
 		local r = math.floor((i - 1) / 2)
 		local x = math.floor((W - 2 * cw - 20) / 2) + c * (cw + 20)
 		local y = SB + 104 + r * (ch + 66)
-		glass(p.a, x, y, 30, 30, "glass_dark", 2)
+		glass(p.a, x, y, 30, 30, "glass_grey", 2)
 		icons[inst.app.glyph](p.a, x + 15, y + 15, 14, 4)
 		text(p.a, x + 38, y + 6, inst.app.name, 12, C.text, F_SB)
-		glass(p.a, x + cw - 30, y, 30, 30, "glass_dark", 2)
+		glass(p.a, x + cw - 30, y, 30, 30, "glass_grey", 2)
 		icons.close(p.a, x + cw - 15, y + 15, 12, 4)
 		table.insert(p.hits, {x = x + cw - 46, y = y - 12, w = 54, h = 50,
 			close = id})
@@ -1074,7 +1113,10 @@ local function draw_switcher(p)
 	end
 end
 
-redraw_pages = function()
+local pages_dirty = false
+
+local function redraw_pages_now()
+	pages_dirty = false
 	if pages[1] then
 		draw_events(pages[1])
 		draw_home(pages[2])
@@ -1082,10 +1124,14 @@ redraw_pages = function()
 	end
 end
 
+redraw_pages = function()
+	pages_dirty = true
+end
+
 set_page = function(n, t)
 	page = math.max(1, math.min(3, n))
 	instant_image_transform(strip)
-	move_image(strip, -(page - 1) * W, 0, t or 7, INTERP_EXPOUT)
+	move_image(strip, -(page - 1) * W, 0, t or 10, INTERP_EXPOUT)
 end
 
 ------------------------------------------------------------------------
@@ -1105,7 +1151,7 @@ end
 drawer_show = function(open, t)
 	drawer.open = open
 	instant_image_transform(drawer.a)
-	move_image(drawer.a, 0, open and 0 or H, t or 7, INTERP_EXPOUT)
+	move_image(drawer.a, 0, open and 0 or H, t or 10, INTERP_EXPOUT)
 end
 
 ------------------------------------------------------------------------
@@ -1172,7 +1218,7 @@ end
 
 -- grouped rows inside glass
 local function group(parent, y, rows, rh)
-	rh = rh or 58
+	rh = rh or 64
 	inset(parent, 16, y, W - 32, rh * #rows, 2, "rrect", 0.42)
 	for i, r in ipairs(rows) do
 		local ry = y + (i - 1) * rh
@@ -1197,8 +1243,8 @@ local function group(parent, y, rows, rh)
 end
 
 local function section(parent, y, title)
-	eyebrow(parent, 22, y, title)
-	return y + 22
+	eyebrow(parent, 24, y, title)
+	return y + 26
 end
 
 ------------------------------------------------------------------------
@@ -1295,12 +1341,12 @@ draw_qs = function()
 		}
 		for i, t in ipairs(tiles) do
 			local tx = x0 + 14 + ((i - 1) % 2) * (cw2 + 12)
-			local tyy = y + math.floor((i - 1) / 2) * 76
-			tile(qs.a, tx, tyy, cw2, 64, t[1], t[2], t[5] or (t[3] and "On" or
+			local tyy = y + math.floor((i - 1) / 2) * 86
+			tile(qs.a, tx, tyy, cw2, 72, t[1], t[2], t[5] or (t[3] and "On" or
 				"Off"), t[3], 3)
-			table.insert(qs.hits, {x = tx, y = tyy, w = cw2, h = 64, fn = t[4]})
+			table.insert(qs.hits, {x = tx, y = tyy, w = cw2, h = 72, fn = t[4]})
 		end
-		y = y + 166
+		y = y + 190
 		-- brightness
 		icons.sun(qs.a, x0 + 26, y + 8, 16, 5)
 		text(qs.a, x0 + 44, y, "Brightness", 12, C.text, F_MED)
@@ -1309,7 +1355,7 @@ draw_qs = function()
 			F_MED)
 		qs.slider = slider(qs.a, x0 + 22, y + 36, w - 44,
 			bl_to_frac(sys.backlight), 4)
-		y = y + 66
+		y = y + 76
 		-- actions
 		local acts = {
 			{"lock", "Lock now", function()
@@ -1332,11 +1378,11 @@ draw_qs = function()
 		}
 		for i, a in ipairs(acts) do
 			local ax = x0 + 14 + ((i - 1) % 2) * (cw2 + 12)
-			local ay = y + math.floor((i - 1) / 2) * 56
-			action(qs.a, ax, ay, cw2, 46, a[1], a[2], 3)
-			table.insert(qs.hits, {x = ax, y = ay, w = cw2, h = 46, fn = a[3]})
+			local ay = y + math.floor((i - 1) / 2) * 64
+			action(qs.a, ax, ay, cw2, 52, a[1], a[2], 3)
+			table.insert(qs.hits, {x = ax, y = ay, w = cw2, h = 52, fn = a[3]})
 		end
-		y = y + 122
+		y = y + 140
 		box(qs.a, x0 + 22, y, w - 44, 1, WHITE, nil, 0.10, 3)
 		y = y + 18
 		text(qs.a, x0 + 22, y, "Ambience", 13, C.text, F_SB)
@@ -1363,7 +1409,7 @@ draw_qs = function()
 				break
 			end
 			inset(qs.a, x0 + 14, y, w - 28, 72, 3, "rrect", 0.45)
-			box(qs.a, x0 + 28, y + 16, 40, 40, C.gloss, "gloss", 1.0, 4)
+			box(qs.a, x0 + 28, y + 16, 40, 40, C.disc, "gloss", 1.0, 4)
 			icons[e.kind](qs.a, x0 + 48, y + 36, 20, 6)
 			text(qs.a, x0 + 82, y + 15, e.title, 12, C.text, F_SB)
 			text(qs.a, x0 + 82, y + 39, e.body, 10, C.text2, F_REG)
@@ -1404,7 +1450,7 @@ qs_show = function(open, t)
 		draw_qs()
 	end
 	instant_image_transform(qs.a)
-	move_image(qs.a, 0, open and QS_Y or -QS_H - 40, t or 7, INTERP_EXPOUT)
+	move_image(qs.a, 0, open and QS_Y or -QS_H - 40, t or 10, INTERP_EXPOUT)
 end
 
 local function qs_slide(x, final)
@@ -1442,7 +1488,7 @@ local function draw_lock()
 		local e = events[1]
 		y = y + 110
 		glass(lock.a, 22, y, W - 44, 76, "glass_dark", 3)
-		box(lock.a, 38, y + 16, 44, 44, C.gloss, "gloss", 1.0, 4)
+		box(lock.a, 38, y + 16, 44, 44, C.disc, "gloss", 1.0, 4)
 		icons[e.kind](lock.a, 60, y + 38, 22, 6)
 		text(lock.a, 96, y + 16, e.title, 12, C.text, F_SB, 5)
 		text(lock.a, 96, y + 41, e.body, 10, C.text2, F_REG, 5)
@@ -1464,7 +1510,7 @@ lock_screen = function(on, t)
 			qs_show(false, 0)
 		end
 	else
-		move_image(lock.a, 0, -H, t or 8, INTERP_EXPOUT)
+		move_image(lock.a, 0, -H, t or 11, INTERP_EXPOUT)
 	end
 end
 
@@ -1524,7 +1570,7 @@ end
 ------------------------------------------------------------------------
 -- on-screen keyboard, for the terminal
 
-local kbd = {layer = "lower", keys = {}, ctrl = false, h = 0, key_h = 50}
+local kbd = {layer = "lower", keys = {}, ctrl = false, h = 0, key_h = 62}
 local SHIFT, SYM, CTRL = {}, {}, {}
 local BKSP, ENTER, TAB, ESC = "\127", "\r", "\t", "\027"
 
@@ -1616,7 +1662,7 @@ local function kbd_build(parent, y)
 			if k[1] ~= "" then
 				local sym = string.byte(k[1]) >= 0x80
 				local t = render_text({string.format([[\f%s,%d\#ffffff]],
-					sym and F_SYM or F_MED, #k[1] > 1 and not sym and 10 or 15),
+					sym and F_SYM or F_MED, px(#k[1] > 1 and not sym and 12 or 18)),
 					k[1]})
 				if valid_vid(t) then
 					local p = image_surface_properties(t)
@@ -1654,15 +1700,15 @@ end
 local function header(inst, eb, title, back)
 	local tx = back and 72 or 24
 	if back then
-		glass(inst.a, 18, 34, 42, 42, "glass_dark", 20)
-		icons.back(inst.a, 39, 55, 18, 22)
+		glass(inst.a, 18, 38, 44, 44, "glass_grey", 20)
+		icons.back(inst.a, 40, 60, 18, 22)
 	end
-	eyebrow(inst.a, tx + 2, 22, eb, 22)
-	text(inst.a, tx, 38, title, 24, C.text, F_SB, 22)
+	eyebrow(inst.a, tx + 2, 26, eb, 22)
+	text(inst.a, tx, 44, title, 26, C.text, F_SB, 22)
 	for i = 1, 2 do
-		local cx = W - 38 - (2 - i) * 52
-		glass(inst.a, cx - 21, 34, 42, 42, "glass_dark", 20)
-		icons[i == 1 and "minus" or "close"](inst.a, cx, 55, 16, 22)
+		local cx = W - 42 - (2 - i) * 56
+		glass(inst.a, cx - 22, 38, 44, 44, "glass_grey", 20)
+		icons[i == 1 and "minus" or "close"](inst.a, cx, 60, 16, 22)
 	end
 	inst.back = back
 end
@@ -1698,7 +1744,7 @@ local function list_view(inst, y0, rows, row_h, ontap)
 		if r.icon then
 			local iy = y + row_h / 2
 			clip(box(inst.content, 22, iy - 19, 38, 38, r.dir and
-				{0x2c, 0x33, 0x40} or C.gloss, "gloss", 1.0, 2))
+				{0x4a, 0x55, 0x66} or C.disc, "gloss", 1.0, 2))
 			local before = image_children(inst.content) or {}
 			local seen = {}
 			for _, v in ipairs(before) do
@@ -1800,7 +1846,7 @@ function term_app.create(inst)
 	kbd_build(inst.a, inst.ah - kbd.h)
 	inst.vid = launch_avfeed("", "terminal", function(source, status)
 		if status.kind == "preroll" or status.kind == "registered" then
-			target_fonthint(source, F_MONO, 4.0, 2)
+			target_fonthint(source, F_MONO, 3.6 * S, 2)
 			target_displayhint(source, W - 40, inst.th - 8, 0)
 		elseif status.kind == "resized" then
 			resize_image(source, status.width, status.height)
@@ -2473,14 +2519,14 @@ open_app = function(id, from, opts)
 		end
 		blend_image(s, 0.3)
 		force_image_blend(s, BLEND_NORMAL)
-		move_image(s, 0, SB, 7, INTERP_EXPOUT)
-		resize_image(s, W, ah, 7, INTERP_EXPOUT)
-		blend_image(s, 0.996, 5)
+		move_image(s, 0, SB, 10, INTERP_EXPOUT)
+		resize_image(s, W, ah, 10, INTERP_EXPOUT)
+		blend_image(s, 0.996, 7)
 	else
 		move_image(s, 0, SB + 50)
 		blend_image(s, 0.0)
-		move_image(s, 0, SB, 6, INTERP_EXPOUT)
-		blend_image(s, 1.0, 5)
+		move_image(s, 0, SB, 9, INTERP_EXPOUT)
+		blend_image(s, 1.0, 7)
 	end
 	draw_status()
 	redraw_pages()
@@ -2497,16 +2543,16 @@ leave_app = function(dir)
 	if inst.rt then
 		inst.freeze_at = CLOCK + 3
 		if (dir or 0) == 0 then
-			move_image(s, W * 0.2, SB + inst.ah * 0.2, 6, INTERP_EXPOUT)
-			resize_image(s, W * 0.6, inst.ah * 0.6, 6, INTERP_EXPOUT)
+			move_image(s, W * 0.2, SB + inst.ah * 0.2, 9, INTERP_EXPOUT)
+			resize_image(s, W * 0.6, inst.ah * 0.6, 9, INTERP_EXPOUT)
 		else
-			move_image(s, dir * W, SB, 6, INTERP_EXPOUT)
+			move_image(s, dir * W, SB, 9, INTERP_EXPOUT)
 		end
 	else
 		move_image(s, (dir or 0) * W, SB + ((dir or 0) == 0 and 60 or 0),
 			6, INTERP_EXPOUT)
 	end
-	blend_image(s, 0.0, 6)
+	blend_image(s, 0.0, 8)
 	draw_status()
 	redraw_pages()
 end
@@ -2530,16 +2576,16 @@ close_app = function(id)
 	if valid_vid(s) then
 		instant_image_transform(s)
 		if inst.rt then
-			move_image(s, W * 0.15, SB + inst.ah * 0.15, 6, INTERP_EXPIN)
-			resize_image(s, W * 0.7, inst.ah * 0.7, 6, INTERP_EXPIN)
+			move_image(s, W * 0.15, SB + inst.ah * 0.15, 8, INTERP_EXPIN)
+			resize_image(s, W * 0.7, inst.ah * 0.7, 8, INTERP_EXPIN)
 		else
-			move_image(s, 0, H, 6, INTERP_EXPIN)
+			move_image(s, 0, H, 8, INTERP_EXPIN)
 		end
-		blend_image(s, 0.0, 6)
-		expire_image(s, 7)
+		blend_image(s, 0.0, 8)
+		expire_image(s, 9)
 	end
 	if inst.rt and valid_vid(inst.a) then
-		expire_image(inst.a, 7)
+		expire_image(inst.a, 9)
 	end
 	draw_status()
 	redraw_pages()
@@ -2760,10 +2806,10 @@ local function on_tap(x, y)
 	if focus then
 		local inst = running[focus]
 		local ay = y - SB
-		if ay < HB and ay > 24 and x > W - 64 then
+		if ay < HB and ay > 24 and x > W - 70 then
 			close_app(focus)
 			return
-		elseif ay < HB and ay > 24 and x > W - 116 and x <= W - 64 then
+		elseif ay < HB and ay > 24 and x > W - 126 and x <= W - 70 then
 			leave_app(0)
 			return
 		end
@@ -2801,7 +2847,7 @@ local function on_up()
 		if dy < -H / 5 then
 			lock_screen(false)
 		else
-			move_image(lock.a, 0, 0, 5, INTERP_EXPOUT)
+			move_image(lock.a, 0, 0, 8, INTERP_EXPOUT)
 			blend_image(lock.a, 1.0, 5)
 		end
 	elseif m == "pan" then
@@ -2828,7 +2874,7 @@ local function on_up()
 		if math.abs(dx) > W / 4 then
 			leave_app(dx > 0 and 1 or -1)
 		else
-			move_image(surface(running[focus]), 0, SB, 5, INTERP_EXPOUT)
+			move_image(surface(running[focus]), 0, SB, 8, INTERP_EXPOUT)
 		end
 	elseif m == "close" then
 		if dy > H / 4 then
@@ -2836,9 +2882,9 @@ local function on_up()
 		else
 			local inst = running[focus]
 			local s = surface(inst)
-			move_image(s, 0, SB, 5, INTERP_EXPOUT)
+			move_image(s, 0, SB, 8, INTERP_EXPOUT)
 			if inst.rt then
-				resize_image(s, W, inst.ah, 5, INTERP_EXPOUT)
+				resize_image(s, W, inst.ah, 8, INTERP_EXPOUT)
 			end
 			blend_image(s, inst.rt and 0.996 or 1.0, 5)
 		end
@@ -2899,7 +2945,8 @@ local function build_wallpaper()
 end
 
 function phone(args)
-	W, H = VRESW, VRESH
+	S = math.max(1, math.floor(VRESW / 540 + 0.5))
+	W, H = VRESW / S, VRESH / S
 	for _, a in ipairs(args or {}) do
 		local v = string.match(a, "^autorun=(.*)")
 		if v then
@@ -2950,6 +2997,7 @@ function phone(args)
 
 	draw_status()
 	draw_drawer()
+	pages_dirty = true
 	add_event("bell", "Welcome to DragonFly BSD",
 		"Swipe sideways for events and open apps", true)
 	add_event("chip", sys.gpu and "Graphics: Adreno 530" or
@@ -3055,6 +3103,9 @@ end
 local last_min, next_status = "", 0
 
 function phone_clock_pulse()
+	if pages_dirty and not g then
+		redraw_pages_now()
+	end
 	if test_steps and test_steps[1] and CLOCK >= test_steps[1][1] then
 		table.remove(test_steps, 1)[2]()
 	end

@@ -167,6 +167,39 @@ waitbits(vm_paddr_t pa, uint32_t mask, uint32_t want, int us)
 	return (ETIMEDOUT);
 }
 
+/*
+ * The core clock from GPLL0 instead of the crystal: gfx3d_clk_src's
+ * parent map in Linux's mmcc-msm8996 has GPLL0 at source 5; divided by 2
+ * (the RCG's divider field holds 2 * div - 1) that is 300 MHz, against
+ * 19.2 MHz from XO, at the 1.0 V vdd_gfx already set.  The RCG takes a
+ * new configuration on CMD's UPDATE bit, which clears once the switch is
+ * done; if it does not, or the root reports itself off, go back to XO.
+ */
+static int gpu_mhz = 19;
+SYSCTL_INT(_hw_mi5, OID_AUTO, gpu_mhz, CTLFLAG_RD, &gpu_mhz, 0,
+    "GPU core clock, MHz");
+
+static void
+gfx3d_speed_up(void)
+{
+	uint32_t cfg = rd(GFX3D_RCG + 4);
+
+	wr(GFX3D_RCG + 4, (cfg & ~0x71fU) | (5U << 8) | 3U);
+	wr(GFX3D_RCG, rd(GFX3D_RCG) | 1U);
+	if (waitbits(GFX3D_RCG, 1U, 0, 2000) == 0 &&
+	    (rd(GFX3D_RCG) & (1U << 31)) == 0) {
+		gpu_mhz = 300;
+		status("gfx3d: 300 MHz from GPLL0 (cmd 0x%08x cfg 0x%08x)",
+		    rd(GFX3D_RCG), rd(GFX3D_RCG + 4));
+		return;
+	}
+	status("gfx3d: GPLL0 did not take (cmd 0x%08x cfg 0x%08x); back to XO",
+	    rd(GFX3D_RCG), rd(GFX3D_RCG + 4));
+	wr(GFX3D_RCG + 4, cfg);
+	wr(GFX3D_RCG, rd(GFX3D_RCG) | 1U);
+	(void)waitbits(GFX3D_RCG, 1U, 0, 2000);
+}
+
 static int
 clk_on(const char *name, vm_paddr_t cbcr)
 {
@@ -304,6 +337,7 @@ power_up(void)
 	DELAY(1);
 	status("gx gdsc on (0x%08x), clamp 0x%x", rd(GPU_GX_GDSCR),
 	    rd(GPU_GX_CLAMP_IO));
+	gfx3d_speed_up();
 
 	/*
 	 * 4a. the multimedia AHB interface clock, which the Mi 5's own GPU

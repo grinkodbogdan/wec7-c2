@@ -813,6 +813,14 @@ quick-settings sheet with tabs.
   ambience.
 - **Buttons**: power locks and blanks the screen, home goes home, volume
   sets the brightness.
+- **Resolution**: with the GPU the shell draws the panel's full 1080x1920
+  (`ARCAN_FBMEM_SCALE=1`), so text and edges are rasterised at the
+  panel's own pixels; layout is in a 540x960 logical space that the appl
+  scales (`phone.scale=N` on the kernel command line overrides). Software
+  rendering stays at half resolution.
+- **GPU clock**: the kernel moves the Adreno's core clock from the 19.2 MHz
+  crystal to GPLL0 / 2, 300 MHz (`sysctl hw.mi5.gpu_mhz`), and falls back
+  to the crystal if the switch does not take.
 - **Apps**: Terminal (with an on-screen keyboard), Files, System,
   Settings, Calculator and Clock.
 
