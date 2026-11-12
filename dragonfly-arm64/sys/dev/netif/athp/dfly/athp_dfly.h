@@ -203,6 +203,7 @@ mbufq_concat(struct mbufq *to, struct mbufq *from)
 
 /* progress for the shell, in hw.mi5.wlan (if_athp_dfly.c) */
 void	athp_dfly_status(const char *fmt, ...) __printflike(1, 2);
+void	athp_dfly_note(const char *fmt, ...) __printflike(1, 2);
 extern volatile int athp_dfly_in_reset;	/* chip resetting: BAR off limits */
 
 

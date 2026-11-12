@@ -192,6 +192,17 @@ athp_dfly_attach(void)
 	return (0);
 }
 
+/* the same without the pause or the console line: for progress in loops */
+void
+athp_dfly_note(const char *fmt, ...)
+{
+	__va_list ap;
+
+	__va_start(ap, fmt);
+	kvsnprintf(wlan_status, sizeof(wlan_status), fmt, ap);
+	__va_end(ap);
+}
+
 /* if_athp_core.c reports progress here */
 void
 athp_dfly_status(const char *fmt, ...)

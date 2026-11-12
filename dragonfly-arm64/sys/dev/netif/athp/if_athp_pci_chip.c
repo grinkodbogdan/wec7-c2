@@ -949,8 +949,17 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 
 	//for (i = 0; i < ATH10K_PCI_TARGET_WAIT / 10; i++) {
 #ifdef ATHP_DFLY
-	/* Linux waits 3 s (ATH10K_PCI_TARGET_WAIT); 0.3 s is too short here */
-	for (i = 0; i < 3000; i++) {
+	/*
+	 * Linux waits 3 s (ATH10K_PCI_TARGET_WAIT); 0.3 s was too short.
+	 * Bounded by the clock, since a read can itself be slow, and each
+	 * read is reported first: if one hangs the SoC, the screen says
+	 * which.
+	 */
+	int t0 = ticks;
+	val = 0;
+	for (i = 0; ticks - t0 < 3 * hz; i++) {
+		athp_dfly_note("target wait: read %d, last %08x, link %d", i,
+		    val, msm8996_pcie_link_ok());
 #else
 	for (i = 0; i < 300; i++) {
 #endif
@@ -988,7 +997,8 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 	ath10k_pci_irq_msi_fw_mask(ar_pci);
 
 #ifdef ATHP_DFLY
-	athp_dfly_status("target indicator 0x%08x after %d ms", val, i);
+	athp_dfly_status("target indicator 0x%08x after %d reads, %d ms", val,
+	    i, (ticks - t0) * 1000 / hz);
 #endif
 	if (val == 0xffffffff) {
 		ath10k_err(ar, "failed to read device register, device is gone\n");
