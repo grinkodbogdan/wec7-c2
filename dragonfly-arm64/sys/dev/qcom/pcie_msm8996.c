@@ -393,6 +393,23 @@ wlan_power(void)
 	 * (MODE_CTL: mode 1 in bits 6:4, source 0, invert 1)
 	 */
 	/*
+	 * Power-cycle the chip first: the bootloader may have left WLAN_EN
+	 * and the 3.3 V switch on, and a QCA6174 powered up without its
+	 * sleep clock keeps its always-on domain dead (RTC_STATE 0) until
+	 * it is switched off.  PERST# low, WLAN_EN low, 3.3 V off, 200 ms.
+	 * MODE_CTL 0x10 is digital output, constant, not inverted: low.
+	 */
+	tlmm_out(PERST_GPIO, 0, 0);
+	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(8) + 0x40, &v);
+	st("pm8994 gpio8 (WLAN_EN) was 0x%02x; power-cycling", v);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x40, 0x10);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x46, 0x80);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x40, 0x10);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x46, 0x80);
+	tlmm_out(BOOTSTRAP_GPIO, 0, 0);
+	DELAY(200000);
+
+	/*
 	 * PM8994 GPIO 18, "Rome Sleep Clock" in Xiaomi's board file: the
 	 * PMIC's 32 kHz sleep clock out to the chip (digital output, VIN2,
 	 * source "function 2", medium drive).  Without it the QCA6174's
@@ -419,7 +436,7 @@ wlan_power(void)
 	st("pm8994 gpio8 (WLAN_EN) mode 0x%02x", v);
 	/* the bootstrap pin, high, 16 mA */
 	tlmm_out(BOOTSTRAP_GPIO, 1, 1);
-	DELAY(10000);
+	DELAY(100000);		/* crystal and always-on domain settle */
 }
 
 static int
