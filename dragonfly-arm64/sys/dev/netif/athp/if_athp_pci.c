@@ -439,7 +439,8 @@ athp_dfly_poll(void *arg)
 	struct ath10k *ar = &ar_pci->sc_sc;
 
 	while (athp_dfly_poll_state == 1) {
-		if (!ar->sc_invalid &&
+		if (!ar->sc_invalid && !athp_dfly_in_reset &&
+		    msm8996_pcie_link_ok() &&
 		    ath10k_pci_interrupt_handler(ar_pci) == FILTER_SCHEDULE_THREAD)
 			ath10k_pci_tasklet(ar_pci);
 		tsleep(__DEVOLATILE(void *, &athp_dfly_poll_state), 0,

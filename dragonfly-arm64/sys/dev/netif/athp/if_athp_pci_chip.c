@@ -51,6 +51,9 @@
 #include <netinet/ip.h>
 
 #include <dev/pci/pcivar.h>
+#ifdef ATHP_DFLY
+#include <dev/qcom/pcie_msm8996.h>
+#endif
 #include <dev/pci/pcireg.h>
 
 #include <net80211/ieee80211_var.h>
@@ -773,19 +776,31 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 
 	/* FIXME: QCA6174 requires cold + warm reset to work. */
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("chip reset: cold");
+#endif
 	ret = ath10k_pci_cold_reset(ar_pci);
 	if (ret) {
 		ath10k_warn(ar, "failed to cold reset: %d\n", ret);
 		return ret;
 	}
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("chip reset: waiting for target");
+#endif
 	ret = ath10k_pci_wait_for_target_init(ar_pci);
 	if (ret) {
 		ath10k_warn(ar, "failed to wait for target after cold reset: %d\n",
 				ret);
+#ifdef ATHP_DFLY
+		athp_dfly_status("chip reset: target not up (%d)", ret);
+#endif
 		return ret;
 	}
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("chip reset: warm");
+#endif
 	ret = ath10k_pci_warm_reset(ar_pci);
 	if (ret) {
 		ath10k_warn(ar, "failed to warm reset: %d\n", ret);
@@ -1002,6 +1017,9 @@ ath10k_pci_cold_reset(struct ath10k_pci *ar_pci)
 	/* Put Target, including PCIe, into RESET. */
 	val = athp_pci_reg_read32(ar, SOC_GLOBAL_RESET_ADDRESS);
 	val |= 1;
+#ifdef ATHP_DFLY
+	athp_dfly_in_reset = 1;		/* the poller keeps off the BAR */
+#endif
 	athp_pci_reg_write32(ar, SOC_GLOBAL_RESET_ADDRESS, val);
 
 	/* After writing into SOC_GLOBAL_RESET to put device into
@@ -1016,6 +1034,18 @@ ath10k_pci_cold_reset(struct ath10k_pci *ar_pci)
 	athp_pci_reg_write32(ar, SOC_GLOBAL_RESET_ADDRESS, val);
 
 	DELAY(20 * 1000);
+
+#ifdef ATHP_DFLY
+	/*
+	 * On MSM8996 a read over a link that is still retraining hangs
+	 * the SoC: wait for the root complex to see the link again.
+	 */
+	if (msm8996_pcie_relink(1000) != 0) {
+		athp_dfly_status("cold reset: PCIe link did not come back");
+		return (-EIO);
+	}
+	athp_dfly_in_reset = 0;
+#endif
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot cold reset complete\n");
 

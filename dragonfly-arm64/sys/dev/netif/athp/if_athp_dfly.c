@@ -144,6 +144,7 @@ athp_dfly_fw_register(void)
 }
 
 /* ---- attach on demand ---- */
+volatile int athp_dfly_in_reset;
 static char wlan_status[96] = "Not started";
 static device_t athp_dev;
 static thread_t athp_attach_td;	/* paces its steps for the UI */

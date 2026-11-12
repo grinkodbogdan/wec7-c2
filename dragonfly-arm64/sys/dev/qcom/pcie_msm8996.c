@@ -544,6 +544,49 @@ pcie0_up(void)
 	return (0);
 }
 
+/* Is the link trained?  Reads only root-complex registers: always safe. */
+int
+msm8996_pcie_link_ok(void)
+{
+	return ((rd(ELBI + ELBI_SYS_STTS) & XMLH_LINK_UP) &&
+	    (rd(DBI + DBI_LINK_STATUS) & (1U << 29)));
+}
+
+/*
+ * After the endpoint reset itself (ath10k's cold reset takes its PCIe
+ * core down too): wait up to ms for the link to train again, then put
+ * back BAR0 and memory/bus-master enable if the reset cleared them.
+ * Until this returns 0, nothing may read through the BAR: a read over a
+ * dead link stalls the whole SoC.
+ */
+int
+msm8996_pcie_relink(int ms)
+{
+	uint32_t v;
+	int i;
+
+	for (i = 0; i < ms && !msm8996_pcie_link_ok(); ++i)
+		DELAY(1000);
+	if (!msm8996_pcie_link_ok()) {
+		st("relink: no link after %d ms (ltssm 0x%x)", ms,
+		    (rd(ELBI + ELBI_SYS_STTS) >> 12) & 0x3f);
+		return (EIO);
+	}
+	/* configuration requests may be retried for a while */
+	v = msm8996_pcie_cfg_read(0);
+	for (i = 0; i < 100 && (v == 0xffffffffU || v == 0); ++i) {
+		DELAY(1000);
+		v = msm8996_pcie_cfg_read(0);
+	}
+	if ((msm8996_pcie_cfg_read(0x10) & ~0xfU) != (uint32_t)BARS) {
+		msm8996_pcie_cfg_write(0x10, (uint32_t)BARS);
+		st("relink: BAR0 restored");
+	}
+	if ((msm8996_pcie_cfg_read(0x04) & 0x6) != 0x6)
+		msm8996_pcie_cfg_write(0x04, msm8996_pcie_cfg_read(0x04) | 0x6);
+	return (0);
+}
+
 int
 msm8996_pcie_up(void)
 {

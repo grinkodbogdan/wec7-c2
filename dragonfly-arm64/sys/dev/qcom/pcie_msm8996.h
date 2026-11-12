@@ -7,5 +7,7 @@ int		msm8996_pcie_up(void);		/* 0 once the endpoint answers */
 uint32_t	msm8996_pcie_cfg_read(int off);	/* bus 1, dev 0, fn 0 */
 void		msm8996_pcie_cfg_write(int off, uint32_t v);
 vm_paddr_t	msm8996_pcie_bar0(void);	/* physical, 0 if none */
+int		msm8996_pcie_link_ok(void);	/* RC side only, always safe */
+int		msm8996_pcie_relink(int ms);	/* after an endpoint reset */
 
 #endif
