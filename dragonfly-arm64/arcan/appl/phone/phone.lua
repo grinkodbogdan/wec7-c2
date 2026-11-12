@@ -2077,14 +2077,14 @@ local function settings_draw(inst)
 				end})
 		end
 	end}})
-	y = y + 18
+	y = y + 12
 
 	y = section(inst.a, y, "Display")
 	y = group(inst.a, y, {{label = "Brightness", right = function(p, ry, rh)
 		inst.slider = slider(p, 160, ry + rh / 2 - 3, W - 206,
 			bl_to_frac(sys.backlight), 4)
 	end}})
-	y = y + 18
+	y = y + 12
 
 	y = section(inst.a, y, "Notification light")
 	local colours = {{0, {0x6a, 0x5c, 0x56}}, {0x00ff40, {0x5a, 0xc8, 0x7a}},
@@ -2118,7 +2118,32 @@ local function settings_draw(inst)
 					end})
 			end},
 	})
-	y = y + 18
+	y = y + 12
+
+	y = section(inst.a, y, "Wi-Fi")
+	local wid = tonumber(run("sysctl -n hw.mi5.wlan_id")) or 0
+	local probed = (tonumber(run("sysctl -n hw.mi5.pcie_up")) or 0) ~= 0
+	local last = ""
+	for l in string.gmatch(run("sysctl -n hw.mi5.pcie"), "[^\n]+") do
+		last = l
+	end
+	local state = wid == 0x168c003e and "QCA6174 found on PCIe" or
+		(wid ~= 0 and string.format("PCIe device %08x", wid) or
+		(probed and (last ~= "" and last or "not found") or "Not probed yet"))
+	if #state > 44 then
+		state = string.sub(state, 1, 43) .. "…"
+	end
+	y = group(inst.a, y, {{label = "Wi-Fi chip", sub = state,
+		right = function(p, ry, rh)
+			box(p, W - 122, ry + rh / 2 - 18, 86, 36, accent(), "pill", 1.0, 4)
+			text_c(p, W - 79, ry + rh / 2 - 9, "Probe", 12, INK, F_SB, 5)
+			table.insert(inst.hits, {x = W - 132, y = ry, w = 110, h = rh,
+				fn = function()
+					run("sysctl -q hw.mi5.pcie_up=1")
+					settings_draw(inst)
+				end})
+		end}})
+	y = y + 12
 
 	y = section(inst.a, y, "Vibration")
 	y = group(inst.a, y, {{label = "Test the motor",
@@ -2130,7 +2155,7 @@ local function settings_draw(inst)
 					sysctl_set("hw.mi5.vibrate", 300)
 				end})
 		end}})
-	y = y + 18
+	y = y + 12
 
 	y = section(inst.a, y, "About")
 	inst.about = inst.about or {
@@ -2143,7 +2168,7 @@ local function settings_draw(inst)
 			math.floor((tonumber(run("sysctl -n hw.physmem")) or 0) / 1048576))},
 		{label = "Graphics", value = sys.renderer},
 	}
-	group(inst.a, y, inst.about, 46)
+	group(inst.a, y, inst.about, 40)
 end
 
 function settings_app.create(inst)

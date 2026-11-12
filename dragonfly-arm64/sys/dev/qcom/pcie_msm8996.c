@@ -1,0 +1,577 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * PCIe root complex 0 of the MSM8996, which carries the Mi 5's Wi-Fi chip
+ * (QCA6174, "Rome"): power, clocks, the 14 nm QMP PHY, link training, and
+ * the endpoint's configuration space and first BAR.
+ *
+ * The sequence, register offsets and PHY values follow the phone's own
+ * kernel, drivers/pci/host/pci-msm.c (LineageOS android_kernel_xiaomi_
+ * msm8996), Copyright (c) 2014-2017 The Linux Foundation, GPL-2.0, as
+ * msm_pcie_enable() runs it for RC0 with the device tree's settings
+ * (qcom,pcie-phy-ver = <3>, qcom,common-phy, perst-gpio = <&tlmm 35 0>).
+ * Hence this file's licence: it lives apart from the BSD-licensed tree,
+ * as sys/dev/drm/msm does.
+ *
+ *   sysctl hw.mi5.pcie_up=1	bring the link up (once)
+ *   sysctl hw.mi5.pcie		what happened, step by step
+ *   sysctl hw.mi5.wlan_id	the endpoint's vendor:device, 0 if none
+ */
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/kernel.h>
+#include <sys/sysctl.h>
+#include <sys/lock.h>
+
+#include <vm/vm.h>
+#include <vm/pmap.h>
+
+#include <machine/md_var.h>
+#include <machine/vmparam.h>
+
+#include "pcie_msm8996.h"
+
+/* GCC */
+#define	GCC			0x00300000UL
+#define	GCC_PCIE_0_SLV_AXI_CBCR	(GCC + 0x6b008)
+#define	GCC_PCIE_0_MSTR_AXI_CBCR (GCC + 0x6b00c)
+#define	GCC_PCIE_0_CFG_AHB_CBCR	(GCC + 0x6b010)
+#define	GCC_PCIE_0_AUX_CBCR	(GCC + 0x6b014)
+#define	GCC_PCIE_0_PIPE_CBCR	(GCC + 0x6b018)
+#define	GCC_PCIE_0_GDSCR	(GCC + 0x6b004)
+#define	GCC_PCIE_AUX_CMD_RCGR	(GCC + 0x6c000)
+#define	GCC_PCIE_0_PHY_BCR	(GCC + 0x6c01c)
+#define	GCC_PCIE_PHY_BCR	(GCC + 0x6f000)
+#define	GCC_PCIE_PHY_CFG_AHB_CBCR (GCC + 0x6f004)
+#define	GCC_PCIE_PHY_AUX_CBCR	(GCC + 0x6f008)
+#define	GCC_PCIE_PHY_NOCSR_COM_PHY_BCR (GCC + 0x6f00c)
+#define	GCC_PCIE_PHY_COM_BCR	(GCC + 0x6f014)
+#define	GCC_SMMU_AGGRE0_AXI_CBCR (GCC + 0x81014)
+#define	GCC_AGGRE0_NOC_GDSCR	(GCC + 0x81004)
+#define	GCC_PCIE_CLKREF_EN	(GCC + 0x88010)
+
+/* TLMM */
+#define	TLMM_CFG(n)		(0x01010000UL + 0x1000 * (n))
+#define	TLMM_IO(n)		(0x01010000UL + 0x1000 * (n) + 4)
+#define	PERST_GPIO		35
+#define	BOOTSTRAP_GPIO		46
+
+/* RC0 */
+#define	PARF			0x00600000UL
+#define	PHY			0x00034000UL
+#define	DBI			0x0c000000UL
+#define	ELBI			0x0c000f20UL
+#define	CONF			0x0c100000UL
+#define	BARS			0x0c300000UL
+#define	BARS_SIZE		0x00d00000UL
+
+#define	PARF_SYS_CTRL		0x000
+#define	PARF_PHY_CTRL		0x040
+#define	PARF_DBI_BASE_ADDR	0x168
+#define	PARF_SLV_ADDR_SPACE_SIZE 0x16c
+#define	PARF_MHI_CLOCK_RESET_CTRL 0x174
+#define	PARF_LTSSM		0x1b0
+#define	PARF_SID_OFFSET		0x234
+#define	PARF_BDF_TRANSLATE_CFG	0x24c
+
+#define	ELBI_SYS_STTS		0x08
+#define	XMLH_LINK_UP		0x400
+
+#define	DBI_COMMAND_STATUS	0x04
+#define	DBI_BUSNUMBERS		0x18
+#define	DBI_MEMORY_BASE_LIMIT	0x20
+#define	DBI_LINK_STATUS		0x80
+#define	DBI_DEVICE_CONTROL_STATUS 0x78
+#define	DBI_ACK_F_ASPM_CTRL	0x70c
+#define	DBI_AUX_CLK_FREQ	0xb40
+#define	IATU_VIEWPORT		0x900
+#define	IATU_CTRL1		0x904
+#define	IATU_CTRL2		0x908
+#define	IATU_LBAR		0x90c
+#define	IATU_UBAR		0x910
+#define	IATU_LAR		0x914
+#define	IATU_LTAR		0x918
+#define	IATU_UTAR		0x91c
+#define	IATU_TYPE_MEM		0x00
+#define	IATU_TYPE_CFG0		0x04
+
+/* the 14 nm QMP PHY: common block, then port 0's TX, RX and PCS */
+#define	COM_BG_TIMER		0x00c
+#define	COM_SSC_EN_CENTER	0x010
+#define	COM_SSC_ADJ_PER1	0x014
+#define	COM_SSC_ADJ_PER2	0x018
+#define	COM_SSC_PER1		0x01c
+#define	COM_SSC_PER2		0x020
+#define	COM_SSC_STEP_SIZE1	0x024
+#define	COM_SSC_STEP_SIZE2	0x028
+#define	COM_BIAS_EN_CLKBUFLR_EN	0x034
+#define	COM_CLK_ENABLE1		0x038
+#define	COM_SYS_CLK_CTRL	0x03c
+#define	COM_SYSCLK_BUF_ENABLE	0x040
+#define	COM_PLL_IVCO		0x048
+#define	COM_LOCK_CMP1_MODE0	0x04c
+#define	COM_LOCK_CMP2_MODE0	0x050
+#define	COM_LOCK_CMP3_MODE0	0x054
+#define	COM_BG_TRIM		0x070
+#define	COM_CLK_EP_DIV		0x074
+#define	COM_CP_CTRL_MODE0	0x078
+#define	COM_PLL_RCTRL_MODE0	0x084
+#define	COM_PLL_CCTRL_MODE0	0x090
+#define	COM_SYSCLK_EN_SEL	0x0ac
+#define	COM_RESCODE_DIV_NUM	0x0c4
+#define	COM_LOCK_CMP_EN		0x0c8
+#define	COM_DEC_START_MODE0	0x0d0
+#define	COM_DIV_FRAC_START1_MODE0 0x0dc
+#define	COM_DIV_FRAC_START2_MODE0 0x0e0
+#define	COM_DIV_FRAC_START3_MODE0 0x0e4
+#define	COM_INTEGLOOP_GAIN0_MODE0 0x108
+#define	COM_INTEGLOOP_GAIN1_MODE0 0x10c
+#define	COM_VCO_TUNE_MAP	0x128
+#define	COM_VCO_TUNE_TIMER1	0x144
+#define	COM_VCO_TUNE_TIMER2	0x148
+#define	COM_CLK_SELECT		0x174
+#define	COM_HSCLK_SEL		0x178
+#define	COM_CORECLK_DIV		0x184
+#define	COM_CORE_CLK_EN		0x18c
+#define	COM_CMN_CONFIG		0x194
+#define	COM_SVS_MODE_CLK_SEL	0x19c
+#define	PCIE_COM_SW_RESET	0x400
+#define	PCIE_COM_POWER_DOWN_CONTROL 0x404
+#define	PCIE_COM_START_CONTROL	0x408
+#define	PCIE_COM_PCS_READY_STATUS 0x448
+
+/* port n = 0 with a common PHY: TX at 0x1000, RX 0x1200, PCS 0x1400 */
+#define	TX0			0x1000
+#define	RX0			0x1200
+#define	PCS0			0x1400
+
+#define	PM8994_SID		0
+#define	PM8994_GPIO(n)		(0xc000 + 0x100 * ((n) - 1))
+
+/* RPM resources (type, then keys), as little-endian ASCII */
+#define	RPM_LDOA		0x616f646c	/* "ldoa" */
+#define	RPM_MISC_CLK		0x306b6c63	/* "clk0" */
+#define	RPM_KEY_SWEN		0x6e657773	/* "swen" */
+#define	RPM_KEY_UV		0x00007675	/* "uv" */
+#define	RPM_KEY_ENAB		0x62616e45	/* "Enab" */
+#define	RPM_LN_BB_CLK		8
+
+static char pcie_status[1024];
+static int wlan_id;
+static int pcie_done;
+static struct lock pcie_lock = LOCK_INITIALIZER("pcie0", 0, 0);
+
+SYSCTL_DECL(_hw_mi5);
+SYSCTL_STRING(_hw_mi5, OID_AUTO, pcie, CTLFLAG_RD, pcie_status, 0,
+    "PCIe RC0 bring-up, step by step");
+SYSCTL_INT(_hw_mi5, OID_AUTO, wlan_id, CTLFLAG_RD, &wlan_id, 0,
+    "PCIe RC0 endpoint vendor:device (0x168c003e: QCA6174)");
+
+static void
+st(const char *fmt, ...)
+{
+	char line[160];
+	__va_list ap;
+	size_t len = strlen(pcie_status);
+
+	__va_start(ap, fmt);
+	kvsnprintf(line, sizeof(line), fmt, ap);
+	__va_end(ap);
+	kprintf("pcie0: %s\n", line);
+	if (len + strlen(line) + 2 < sizeof(pcie_status)) {
+		strlcat(pcie_status, line, sizeof(pcie_status));
+		strlcat(pcie_status, "\n", sizeof(pcie_status));
+	}
+}
+
+static inline uint32_t
+rd(vm_paddr_t pa)
+{
+	return (*(volatile uint32_t *)PHYS_TO_DMAP(pa));
+}
+
+static inline void
+wr(vm_paddr_t pa, uint32_t v)
+{
+	*(volatile uint32_t *)PHYS_TO_DMAP(pa) = v;
+	__asm __volatile("dsb sy" : : : "memory");
+}
+
+static inline void
+rmw(vm_paddr_t pa, uint32_t clear, uint32_t set)
+{
+	wr(pa, (rd(pa) & ~clear) | set);
+}
+
+static int
+wait_bits(vm_paddr_t pa, uint32_t mask, uint32_t want, int us)
+{
+	while (us-- > 0) {
+		if ((rd(pa) & mask) == want)
+			return (0);
+		DELAY(1);
+	}
+	return (ETIMEDOUT);
+}
+
+static void
+phy_wr(uint32_t off, uint32_t v)
+{
+	wr(PHY + off, v);
+}
+
+/* a branch clock on: its enable bit, then CLK_OFF (bit 31) clear */
+static int
+branch_on(const char *name, vm_paddr_t cbcr)
+{
+	wr(cbcr, rd(cbcr) | 1U);
+	if (wait_bits(cbcr, 1U << 31, 0, 500)) {
+		st("clock %s stays off (0x%08x)", name, rd(cbcr));
+		return (EIO);
+	}
+	return (0);
+}
+
+/* a GDSC on: clear SW_COLLAPSE, wait for PWR_ON (bit 31) */
+static int
+gdsc_on(const char *name, vm_paddr_t gdscr)
+{
+	if (rd(gdscr) & (1U << 31))
+		return (0);
+	wr(gdscr, rd(gdscr) & ~1U);
+	if (wait_bits(gdscr, 1U << 31, 1U << 31, 10000)) {
+		st("power domain %s stays off (0x%08x)", name, rd(gdscr));
+		return (EIO);
+	}
+	return (0);
+}
+
+/* a TLMM pin as a GPIO output at level v, drive 2 mA (or 16) */
+static void
+tlmm_out(int n, int v, int drive16)
+{
+	wr(TLMM_IO(n), v ? 2 : 0);
+	/* FUNC_SEL 0 (bits 5:2), DRV (8:6), OE (9) */
+	wr(TLMM_CFG(n), (rd(TLMM_CFG(n)) & ~0x3fcU) | ((drive16 ? 7U : 0U) << 6) |
+	    (1U << 9));
+	wr(TLMM_IO(n), v ? 2 : 0);
+}
+
+/* pci-msm.c's pcie_phy_init() for a 14 nm QMP PHY, phy_ver 3 */
+static void
+phy_common_init(void)
+{
+	phy_wr(PCIE_COM_POWER_DOWN_CONTROL, 0x01);
+	phy_wr(COM_BIAS_EN_CLKBUFLR_EN, 0x1c);
+	phy_wr(COM_CLK_ENABLE1, 0x10);
+	phy_wr(COM_CLK_SELECT, 0x33);
+	phy_wr(COM_CMN_CONFIG, 0x06);
+	phy_wr(COM_LOCK_CMP_EN, 0x42);
+	phy_wr(COM_VCO_TUNE_MAP, 0x00);
+	phy_wr(COM_VCO_TUNE_TIMER1, 0xff);
+	phy_wr(COM_VCO_TUNE_TIMER2, 0x1f);
+	phy_wr(COM_HSCLK_SEL, 0x01);
+	phy_wr(COM_SVS_MODE_CLK_SEL, 0x01);
+	phy_wr(COM_CORE_CLK_EN, 0x00);
+	phy_wr(COM_CORECLK_DIV, 0x0a);
+	phy_wr(COM_BG_TIMER, 0x09);
+	phy_wr(COM_DEC_START_MODE0, 0x82);
+	phy_wr(COM_DIV_FRAC_START3_MODE0, 0x03);
+	phy_wr(COM_DIV_FRAC_START2_MODE0, 0x55);
+	phy_wr(COM_DIV_FRAC_START1_MODE0, 0x55);
+	phy_wr(COM_LOCK_CMP3_MODE0, 0x00);
+	phy_wr(COM_LOCK_CMP2_MODE0, 0x1a);
+	phy_wr(COM_LOCK_CMP1_MODE0, 0x0a);
+	phy_wr(COM_CLK_SELECT, 0x33);
+	phy_wr(COM_SYS_CLK_CTRL, 0x02);
+	phy_wr(COM_SYSCLK_BUF_ENABLE, 0x1f);
+	phy_wr(COM_SYSCLK_EN_SEL, 0x04);
+	phy_wr(COM_CP_CTRL_MODE0, 0x0b);
+	phy_wr(COM_PLL_RCTRL_MODE0, 0x16);
+	phy_wr(COM_PLL_CCTRL_MODE0, 0x28);
+	phy_wr(COM_INTEGLOOP_GAIN1_MODE0, 0x00);
+	phy_wr(COM_INTEGLOOP_GAIN0_MODE0, 0x80);
+	phy_wr(COM_SSC_EN_CENTER, 0x01);
+	phy_wr(COM_SSC_PER1, 0x31);
+	phy_wr(COM_SSC_PER2, 0x01);
+	phy_wr(COM_SSC_ADJ_PER1, 0x02);
+	phy_wr(COM_SSC_ADJ_PER2, 0x00);
+	phy_wr(COM_SSC_STEP_SIZE1, 0x2f);
+	phy_wr(COM_SSC_STEP_SIZE2, 0x19);
+	phy_wr(COM_RESCODE_DIV_NUM, 0x15);
+	phy_wr(COM_BG_TRIM, 0x0f);
+	phy_wr(COM_PLL_IVCO, 0x0f);
+	phy_wr(COM_CLK_EP_DIV, 0x19);
+	phy_wr(COM_CLK_ENABLE1, 0x10);
+	/* phy_ver 3 */
+	phy_wr(COM_HSCLK_SEL, 0x00);
+	phy_wr(COM_RESCODE_DIV_NUM, 0x40);
+	phy_wr(PCIE_COM_SW_RESET, 0x00);
+	phy_wr(PCIE_COM_START_CONTROL, 0x03);
+}
+
+/* pci-msm.c's pcie_pcs_port_phy_init(), port 0 */
+static void
+phy_port_init(void)
+{
+	phy_wr(TX0 + 0x68, 0x45);	/* HIGHZ_TRANSCEIVEREN_BIAS_DRVR_EN */
+	phy_wr(TX0 + 0x94, 0x06);	/* LANE_MODE */
+	phy_wr(RX0 + 0x110, 0x1c);	/* SIGDET_ENABLES */
+	phy_wr(RX0 + 0x118, 0x17);	/* SIGDET_LVL */
+	phy_wr(RX0 + 0x0d8, 0x01);	/* RX_EQU_ADAPTOR_CNTRL2 */
+	phy_wr(RX0 + 0x0dc, 0x00);	/* RX_EQU_ADAPTOR_CNTRL3 */
+	phy_wr(RX0 + 0x0e0, 0xdb);	/* RX_EQU_ADAPTOR_CNTRL4 */
+	phy_wr(RX0 + 0x120, 0x18);	/* RX_BAND */
+	phy_wr(RX0 + 0x01c, 0x04);	/* UCDR_SO_GAIN */
+	phy_wr(RX0 + 0x010, 0x04);	/* UCDR_SO_GAIN_HALF */
+	phy_wr(PCS0 + 0x58, 0x4c);	/* RX_IDLE_DTCT_CNTRL */
+	phy_wr(PCS0 + 0xa0, 0x00);	/* PWRUP_RESET_DLY_TIME_AUXCLK */
+	phy_wr(PCS0 + 0xa4, 0x01);	/* LP_WAKEUP_DLY_TIME_AUXCLK */
+	phy_wr(PCS0 + 0xa8, 0x05);	/* PLL_LOCK_CHK_DLY_TIME */
+	phy_wr(RX0 + 0x048, 0x4b);	/* UCDR_SO_SATURATION_AND_ENABLE */
+	phy_wr(RX0 + 0x11c, 0x14);	/* SIGDET_DEGLITCH_CNTRL */
+	phy_wr(PCS0 + 0x54, 0x05);	/* ENDPOINT_REFCLK_DRIVE */
+	phy_wr(PCS0 + 0x04, 0x02);	/* POWER_DOWN_CONTROL */
+	phy_wr(PCS0 + 0x6c, 0x00);	/* POWER_STATE_CONFIG4 */
+	phy_wr(PCS0 + 0x60, 0xa3);	/* POWER_STATE_CONFIG1 */
+	/* phy_ver 3 */
+	phy_wr(RX0 + 0x118, 0x19);	/* SIGDET_LVL */
+	phy_wr(PCS0 + 0x28, 0x0e);	/* TXDEEMPH_M3P5DB_V0 */
+	phy_wr(PCS0 + 0x04, 0x03);	/* POWER_DOWN_CONTROL */
+	DELAY(11);
+	phy_wr(PCS0 + 0x00, 0x00);	/* SW_RESET */
+	phy_wr(PCS0 + 0x08, 0x0a);	/* START_CONTROL */
+}
+
+static void
+iatu(int nr, uint32_t type, uint64_t host, uint32_t host_end, uint64_t target)
+{
+	wr(DBI + IATU_VIEWPORT, nr);
+	wr(DBI + IATU_CTRL2, 0);
+	wr(DBI + IATU_CTRL1, type);
+	wr(DBI + IATU_LBAR, (uint32_t)host);
+	wr(DBI + IATU_UBAR, (uint32_t)(host >> 32));
+	wr(DBI + IATU_LAR, host_end);
+	wr(DBI + IATU_LTAR, (uint32_t)target);
+	wr(DBI + IATU_UTAR, (uint32_t)(target >> 32));
+	wr(DBI + IATU_CTRL2, 1U << 31);
+}
+
+/* the endpoint's configuration space (bus 1, device 0, function 0) */
+uint32_t
+msm8996_pcie_cfg_read(int off)
+{
+	return (rd(CONF + off));
+}
+
+void
+msm8996_pcie_cfg_write(int off, uint32_t v)
+{
+	wr(CONF + off, v);
+}
+
+static vm_paddr_t wlan_bar;
+
+vm_paddr_t
+msm8996_pcie_bar0(void)
+{
+	return (wlan_bar);
+}
+
+/* power for the QCA6174, the cnss node's regulators */
+static void
+wlan_power(void)
+{
+	uint8_t v = 0;
+
+	/* L30 1.8 V (the crystal), through the RPM */
+	msm8996_rpm_write(0, RPM_LDOA, 30, RPM_KEY_UV, 1800000);
+	msm8996_rpm_write(0, RPM_LDOA, 30, RPM_KEY_SWEN, 1);
+	/*
+	 * PM8994 GPIO 9 (the 3.3 V switch, set to constant high by the
+	 * board), then GPIO 8, WLAN_EN: digital output, VIN2, driven high
+	 * (MODE_CTL: mode 1 in bits 6:4, source 0, invert 1)
+	 */
+	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(9) + 0x40, &v);
+	st("pm8994 gpio9 (3.3 V) mode 0x%02x", v);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x40, 0x11);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x46, 0x80);
+	DELAY(4000);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x41, 2);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x40, 0x11);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x46, 0x80);
+	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(8) + 0x40, &v);
+	st("pm8994 gpio8 (WLAN_EN) mode 0x%02x", v);
+	/* the bootstrap pin, high, 16 mA */
+	tlmm_out(BOOTSTRAP_GPIO, 1, 1);
+	DELAY(10000);
+}
+
+static int
+pcie0_up(void)
+{
+	uint32_t v;
+	int i;
+
+	pcie_status[0] = 0;
+	if (!msm8996_rpm_ready()) {
+		st("the RPM is not up; try again later");
+		return (EAGAIN);
+	}
+
+	/* hold the endpoint in reset (PERST# low) */
+	tlmm_out(PERST_GPIO, 0, 0);
+	DELAY(1000);
+	wlan_power();
+
+	/* the controller's supplies: L12 1.8 V, L28 0.925 V */
+	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_UV, 1800000);
+	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_SWEN, 1);
+	msm8996_rpm_write(0, RPM_LDOA, 28, RPM_KEY_UV, 925000);
+	msm8996_rpm_write(0, RPM_LDOA, 28, RPM_KEY_SWEN, 1);
+	/* the PHY's reference clock: the RPM's ln_bb_clk */
+	msm8996_rpm_write(0, RPM_MISC_CLK, RPM_LN_BB_CLK, RPM_KEY_ENAB, 1);
+
+	/* power domains and clocks (msm_pcie_clk_init) */
+	if (gdsc_on("aggre0_noc", GCC_AGGRE0_NOC_GDSCR) ||
+	    gdsc_on("pcie_0", GCC_PCIE_0_GDSCR))
+		return (EIO);
+	/* aux clock source: XO / 19 through M/N, 1.0105 MHz */
+	wr(GCC_PCIE_AUX_CMD_RCGR + 0x08, 1);			/* M */
+	wr(GCC_PCIE_AUX_CMD_RCGR + 0x0c, ~(19U - 1U) & 0xffff);	/* N */
+	wr(GCC_PCIE_AUX_CMD_RCGR + 0x10, ~19U & 0xffff);		/* D */
+	wr(GCC_PCIE_AUX_CMD_RCGR + 0x04, (2U << 12) | (0U << 8));	/* dual edge */
+	wr(GCC_PCIE_AUX_CMD_RCGR, rd(GCC_PCIE_AUX_CMD_RCGR) | 1U);
+	(void)wait_bits(GCC_PCIE_AUX_CMD_RCGR, 1U, 0, 500);
+	if (branch_on("pcie_0_aux", GCC_PCIE_0_AUX_CBCR) ||
+	    branch_on("pcie_0_cfg_ahb", GCC_PCIE_0_CFG_AHB_CBCR) ||
+	    branch_on("pcie_0_mstr_axi", GCC_PCIE_0_MSTR_AXI_CBCR) ||
+	    branch_on("pcie_0_slv_axi", GCC_PCIE_0_SLV_AXI_CBCR) ||
+	    branch_on("smmu_aggre0_axi", GCC_SMMU_AGGRE0_AXI_CBCR) ||
+	    branch_on("pcie_phy_cfg_ahb", GCC_PCIE_PHY_CFG_AHB_CBCR) ||
+	    branch_on("pcie_phy_aux", GCC_PCIE_PHY_AUX_CBCR))
+		return (EIO);
+	wr(GCC_PCIE_CLKREF_EN, rd(GCC_PCIE_CLKREF_EN) | 1U);
+	/* resets released */
+	rmw(GCC_PCIE_PHY_BCR, 1U, 0);
+	rmw(GCC_PCIE_PHY_COM_BCR, 1U, 0);
+	rmw(GCC_PCIE_PHY_NOCSR_COM_PHY_BCR, 1U, 0);
+	rmw(GCC_PCIE_0_PHY_BCR, 1U, 0);
+	DELAY(10);
+	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
+
+	/* the controller (msm_pcie_enable) */
+	rmw(PARF + PARF_PHY_CTRL, 1U, 0);
+	wr(PARF + PARF_DBI_BASE_ADDR, 0);
+	wr(PARF + PARF_SYS_CTRL, 0x365e);
+	rmw(PARF + PARF_MHI_CLOCK_RESET_CTRL, 0, 1U << 4);
+	wr(PARF + PARF_SLV_ADDR_SPACE_SIZE, 0x01000000);	/* 16 MB */
+
+	/* the PHY, then its pipe clock */
+	phy_common_init();
+	DELAY(1000);
+	if (branch_on("pcie_0_pipe", GCC_PCIE_0_PIPE_CBCR))
+		st("(the pipe clock comes from the PHY; continuing)");
+	for (i = 0; i < 10; ++i) {
+		if (rd(PHY + PCIE_COM_PCS_READY_STATUS) & 1)
+			break;
+		DELAY(1000);
+	}
+	if (!(rd(PHY + PCIE_COM_PCS_READY_STATUS) & 1)) {
+		st("PHY not ready (pcs ready status 0x%08x)",
+		    rd(PHY + PCIE_COM_PCS_READY_STATUS));
+		return (EIO);
+	}
+	st("PHY ready after %d ms", i);
+	phy_port_init();
+	DELAY(10000);			/* qcom,ep-latency = <10> */
+
+	/* release PERST#, then train the link */
+	tlmm_out(PERST_GPIO, 1, 0);
+	DELAY(1000);
+	rmw(DBI + DBI_DEVICE_CONTROL_STATUS, 0x7000, 5U << 12);	/* TLP rd 4K */
+	rmw(PARF + PARF_LTSSM, 0, 1U << 8);
+	for (i = 0; i < 40; ++i) {
+		DELAY(5000);
+		v = rd(ELBI + ELBI_SYS_STTS);
+		if ((v & XMLH_LINK_UP) && (rd(DBI + DBI_LINK_STATUS) & (1U << 29)))
+			break;
+	}
+	if (!(v & XMLH_LINK_UP)) {
+		st("no link: ltssm state 0x%x (elbi 0x%08x)", (v >> 12) & 0x3f,
+		    v);
+		tlmm_out(PERST_GPIO, 0, 0);
+		return (EIO);
+	}
+	st("link up after %d ms: gen %u x%u", (i + 1) * 5,
+	    (rd(DBI + DBI_LINK_STATUS) >> 16) & 0xf,
+	    (rd(DBI + DBI_LINK_STATUS) >> 20) & 0x3f);
+
+	/* msm_pcie_config_controller */
+	iatu(0, IATU_TYPE_CFG0, CONF, CONF + 0xfff, 0x01000000);
+	rmw(DBI + DBI_ACK_F_ASPM_CTRL, 0, 1U << 15);
+	wr(DBI + DBI_AUX_CLK_FREQ, 0x01);
+	wr(PARF + PARF_BDF_TRANSLATE_CFG, 0);
+	wr(PARF + PARF_SID_OFFSET, 0);
+	/* the root port: bus 0 -> 1, memory window over the BAR space */
+	wr(DBI + DBI_BUSNUMBERS, 0x00010100);
+	wr(DBI + DBI_MEMORY_BASE_LIMIT,
+	    ((uint32_t)(BARS + BARS_SIZE - 1) & 0xfff00000U) |
+	    ((uint32_t)BARS >> 16));
+	rmw(DBI + DBI_COMMAND_STATUS, 0, 0x6);	/* memory + bus master */
+
+	v = msm8996_pcie_cfg_read(0);
+	wlan_id = (int)((v & 0xffff) << 16 | v >> 16);
+	st("root complex 0x%08x; endpoint vendor 0x%04x device 0x%04x%s",
+	    rd(DBI), v & 0xffff, v >> 16,
+	    v == 0x003e168c ? " (QCA6174)" : "");
+	if (v == 0xffffffffU || v == 0)
+		return (ENXIO);
+
+	/* BAR0 at the start of the BAR window, through iATU region 1 */
+	msm8996_pcie_cfg_write(0x10, 0xffffffffU);
+	v = msm8996_pcie_cfg_read(0x10);
+	st("BAR0 size mask 0x%08x", v);
+	msm8996_pcie_cfg_write(0x10, (uint32_t)BARS);
+	if ((v & 0x6) == 0x4)
+		msm8996_pcie_cfg_write(0x14, 0);
+	iatu(1, IATU_TYPE_MEM, BARS, (uint32_t)(BARS + BARS_SIZE - 1), BARS);
+	msm8996_pcie_cfg_write(0x04, msm8996_pcie_cfg_read(0x04) | 0x6);
+	wlan_bar = BARS;
+	/* QCA6174: SOC_CHIP_ID at RTC_SOC_BASE 0x800 + 0xf0 */
+	st("chip id 0x%08x (BAR0 at 0x%08lx)", rd(BARS + 0x8f0),
+	    (unsigned long)BARS);
+	return (0);
+}
+
+int
+msm8996_pcie_up(void)
+{
+	int error;
+
+	lockmgr(&pcie_lock, LK_EXCLUSIVE);
+	if (pcie_done) {
+		lockmgr(&pcie_lock, LK_RELEASE);
+		return (wlan_bar ? 0 : EIO);
+	}
+	error = pcie0_up();
+	pcie_done = 1;
+	lockmgr(&pcie_lock, LK_RELEASE);
+	return (error);
+}
+
+static int
+sysctl_pcie_up(SYSCTL_HANDLER_ARGS)
+{
+	int v = pcie_done, error;
+
+	error = sysctl_handle_int(oidp, &v, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (v)
+		(void)msm8996_pcie_up();
+	return (0);
+}
+
+SYSCTL_PROC(_hw_mi5, OID_AUTO, pcie_up, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
+    sysctl_pcie_up, "I", "bring PCIe RC0 (the Wi-Fi chip) up");

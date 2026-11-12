@@ -45,6 +45,7 @@ and lays this directory's `sys/` tree over it.
 | `world.sh` | Builds userland: sysroot headers, compiler-rt builtins, libc, startup files, programs, the C++ runtime, Mesa, FreeType and Arcan |
 | `arcan/` | Arcan's `fbmem` video platform and the `term` and `hello` appls |
 | `sys/dev/drm/msm/` | GPL-2.0: the Adreno GPU driver, derived from Linux's drm/msm (kept apart from the BSD-licensed code) |
+| `sys/dev/qcom/` | GPL-2.0: PCIe root complex 0 and its QMP PHY (the Wi-Fi chip's link), derived from the phone kernel's `pci-msm.c` |
 | `patches/arcan/`, `patches/llvm/` | Changes to Arcan and to LLVM's libc++ for DragonFly/arm64 |
 | `tools/aarch64-dragonfly.cmake`, `tools/aarch64-dragonfly.meson.in` | Cross-build descriptions for CMake and Meson projects |
 | `tools/qemu-shot.py` | Boots QEMU with a framebuffer, types commands, saves the screen as PNG |
@@ -830,6 +831,27 @@ gives the appl `io.open` and `io.popen`, so the shell can read and set
 sysctls and list files. The shell uses the Inter and DejaVu fonts,
 which `build.sh` downloads. `phone.args=test=VIEW` on the kernel command line
 opens a view at start, for `tools/qemu-shot.py`.
+
+### Wi-Fi
+
+The Mi 5's Wi-Fi is a QCA6174 ("Rome") on PCIe root complex 0. Making
+it work is four layers:
+
+1. **PCIe link** (`sys/dev/qcom/pcie_msm8996.c`, GPL): the chip's power
+   (PM8994 GPIO 8 = WLAN_EN, GPIO 9 = its 3.3 V switch, L30 for the
+   crystal, the bootstrap pin), the controller's supplies and the RPM's
+   `ln_bb_clk`, the PCIe GDSC and clocks, the 14 nm QMP PHY (the phone
+   kernel's v3 tables), PERST#, link training, then the endpoint's
+   configuration space and BAR0 through the iATU. `sysctl
+   hw.mi5.pcie_up=1` runs it, `hw.mi5.pcie` reports each step and
+   `hw.mi5.wlan_id` the endpoint (0x168c003e for the QCA6174); Settings
+   has a Probe button. Untested on the phone yet.
+2. **ath10k**: Linux's driver is ISC-licensed; it is to be ported onto
+   this link (BAR0 access, copy engines, MSI or legacy interrupts,
+   firmware download over BMI).
+3. **802.11**: DragonFly's net80211, with firmware from the phone's own
+   partitions (bdwlan30.bin for the board data) or linux-firmware.
+4. **wpa_supplicant**, DHCP and a Wi-Fi panel in the shell.
 
 ### What is untested or missing
 
