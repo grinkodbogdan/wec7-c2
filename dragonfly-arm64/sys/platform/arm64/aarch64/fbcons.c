@@ -167,6 +167,12 @@ fbcons_putc(int c)
 {
 	u_int r;
 
+	/*
+	 * A panic takes the screen back from the graphics client, so its
+	 * message can be read (and photographed) before the reboot.
+	 */
+	if (fb.base != NULL && fb.suspended && panicstr != NULL)
+		fbcons_suspend(0);
 	if (fb.base == NULL || fb.suspended)
 		return;
 

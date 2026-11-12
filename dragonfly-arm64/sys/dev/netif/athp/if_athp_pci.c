@@ -894,8 +894,9 @@ athp_pci_attach(device_t dev)
 	/* XXX here instead of in core_init because we need the lock init'ed */
 	callout_init_mtx(&ar->scan.timeout, &ar->sc_data_mtx, 0);
 
+	/* DragonFly's taskqueue_start_threads insists on this enqueue fn */
 	ar_pci->pipe_taskq = taskqueue_create("athp pipe taskq", M_NOWAIT,
-	    NULL, ar_pci);
+	    taskqueue_thread_enqueue, &ar_pci->pipe_taskq);
 	(void) taskqueue_start_threads(&ar_pci->pipe_taskq, 1, PI_NET, "%s pipe taskq",
 	    device_get_nameunit(dev));
 	if (ar_pci->pipe_taskq == NULL) {

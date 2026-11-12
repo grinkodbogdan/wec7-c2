@@ -183,7 +183,9 @@ configure() {
 	EOG
 }
 
+# PANIC_REBOOT_WAIT_TIME: a panic stays on screen for 90 s, not 15.
 CFLAGS="--target=aarch64-unknown-none-elf -D__DragonFly__ -D_KERNEL \
+	-DPANIC_REBOOT_WAIT_TIME=90 \
 	-DHAVE_KERNEL_OPTION_HEADERS -include opt_global.h \
 	-O2 -g -std=gnu99 -ffreestanding -fno-pic -fno-common \
 	-mgeneral-regs-only -mstrict-align -fno-strict-aliasing \
