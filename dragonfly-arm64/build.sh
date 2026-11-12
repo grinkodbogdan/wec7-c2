@@ -38,7 +38,7 @@ S=$DFLY_SRC/sys
 P=$S/platform/arm64
 
 # Platform sources, in link order (locore must come first).
-MD_SRCS="in_cksum_md.c locore.S exception.S swtch.S support.S
+MD_SRCS="in_cksum_md.c busdma_machdep.c locore.S exception.S swtch.S support.S
 	machdep.c mp_machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c

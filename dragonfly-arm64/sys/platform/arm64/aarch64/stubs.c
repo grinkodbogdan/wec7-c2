@@ -280,66 +280,6 @@ dump_drop_page(vm_paddr_t pa __unused)
 }
 
 /*
- * Bus DMA.  No driver that does DMA can attach yet (there is no bus
- * to attach to), so creation fails cleanly and the rest is unreachable.
- */
-int
-bus_dma_tag_create(bus_dma_tag_t parent __unused, bus_size_t alignment __unused,
-		   bus_size_t boundary __unused, bus_addr_t lowaddr __unused,
-		   bus_addr_t highaddr __unused, bus_size_t maxsize __unused,
-		   int nsegments __unused, bus_size_t maxsegsz __unused,
-		   int flags __unused, bus_dma_tag_t *dmat)
-{
-	*dmat = NULL;
-	return (ENOSYS);
-}
-
-int
-bus_dma_tag_destroy(bus_dma_tag_t dmat __unused)
-{
-	return (0);
-}
-
-int
-bus_dmamem_alloc(bus_dma_tag_t dmat __unused, void **vaddr,
-		 int flags __unused, bus_dmamap_t *mapp __unused)
-{
-	*vaddr = NULL;
-	return (ENOMEM);
-}
-
-void
-bus_dmamem_free(bus_dma_tag_t dmat __unused, void *vaddr __unused,
-		bus_dmamap_t map __unused)
-{
-}
-
-int
-bus_dmamap_load(bus_dma_tag_t dmat __unused, bus_dmamap_t map __unused,
-		void *buf __unused, bus_size_t buflen __unused,
-		bus_dmamap_callback_t *callback __unused,
-		void *callback_arg __unused, int flags __unused)
-{
-	return (ENOSYS);
-}
-
-int
-bus_dmamap_load_mbuf_segment(bus_dma_tag_t dmat __unused,
-			     bus_dmamap_t map __unused,
-			     struct mbuf *m0 __unused,
-			     bus_dma_segment_t *segs __unused,
-			     int maxsegs __unused, int *nsegs __unused,
-			     int flags __unused)
-{
-	return (ENOSYS);
-}
-
-void
-busdma_swi(void)
-{
-}
-
-/*
  * No in-kernel debugger yet: say where it would have stopped, and go on
  * as a kernel without DDB does.
  */

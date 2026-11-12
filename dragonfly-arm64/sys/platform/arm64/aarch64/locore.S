@@ -64,7 +64,7 @@
 #define	BLK_DEVICE	(PTE_BLOCK | PTE_AF | PTE_ATTR_DEVICE)
 
 /* MAIR: idx0 = normal write-back, idx1 = device nGnRE */
-#define	MAIR_VALUE	0x04ff
+#define	MAIR_VALUE	0x4404ff	/* 0 normal WB, 1 device nGnRE, 2 normal NC */
 
 /* T0SZ=T1SZ=16, 4K granules, WBWA inner-shareable walks */
 #define	TCR_VALUE	((16) | (16 << 16) | \

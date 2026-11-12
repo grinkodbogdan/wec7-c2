@@ -68,6 +68,7 @@ typedef	__uint64_t	pt_entry_t;	/* level 3 */
 /* MAIR_EL1 attribute indexes programmed by locore */
 #define	MAIR_IDX_NORMAL		0	/* write-back cacheable */
 #define	MAIR_IDX_DEVICE		1	/* device nGnRE */
+#define	MAIR_IDX_NC		2	/* normal non-cacheable */
 
 #define	PG_FRAME	(0x0000fffffffff000UL)
 #define	PG_PS_FRAME	(0x0000ffffffe00000UL)

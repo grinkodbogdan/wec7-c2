@@ -719,7 +719,12 @@ pmap_mapdev_attr(vm_paddr_t pa, vm_size_t size, int mode)
 	vm_offset_t va, tmpva, offset;
 	uint64_t idx;
 
-	idx = (mode == PAT_WRITE_BACK) ? MAIR_IDX_NORMAL : MAIR_IDX_DEVICE;
+	if (mode == PAT_WRITE_BACK)
+		idx = MAIR_IDX_NORMAL;
+	else if (mode == PAT_WRITE_COMBINING || mode == PAT_UNCACHED)
+		idx = MAIR_IDX_NC;	/* memory, no caching: DMA rings */
+	else
+		idx = MAIR_IDX_DEVICE;
 	offset = pa & PAGE_MASK;
 	size = roundup(offset + size, PAGE_SIZE);
 	pa = trunc_page(pa);
