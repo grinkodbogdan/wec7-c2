@@ -97,6 +97,11 @@
 #define	REG_A5XX_CP_PFP_ME_CNTL			0x0832
 #define	REG_A5XX_RBBM_STATUS			0x04f5
 #define	REG_A5XX_RBBM_SW_RESET_CMD		0x0037
+#define	REG_A5XX_GPMU_SP_POWER_CNTL		0xa881
+#define	REG_A5XX_GPMU_RBCCU_POWER_CNTL		0xa887
+#define	REG_A5XX_GPMU_SP_PWR_CLK_STATUS		0xa88b
+#define	REG_A5XX_GPMU_RBCCU_PWR_CLK_STATUS	0xa88d
+#define	A5XX_GPMU_PWR_ON			(1U << 20)
 #define	REG_A5XX_RBBM_INT_0_STATUS		0x04e1
 #define	REG_A5XX_CP_HW_FAULT			0x0b1a
 #define	REG_A5XX_CP_INTERRUPT_STATUS		0x0b18
@@ -478,6 +483,35 @@ a5xx_regs(void)
 }
 
 /*
+ * a5xx_pm_resume: power the RB/CCU and SP domains, which the GPMU
+ * controls and which are off after the GX GDSC comes up.  Without them
+ * the zap shader, a real shader program run by CP_SET_SECURE_MODE,
+ * never finishes (v44-v47: the ME stayed busy, nothing else was).
+ */
+static int
+a5xx_domains_on(a5xx_status_fn status)
+{
+	int i;
+
+	gpu_write(REG_A5XX_GPMU_RBCCU_POWER_CNTL, 0x778000);
+	DELAY(3);
+	for (i = 0; i < 20 && !(gpu_read(REG_A5XX_GPMU_RBCCU_PWR_CLK_STATUS) &
+	    A5XX_GPMU_PWR_ON); ++i)
+		DELAY(1);
+	gpu_write(REG_A5XX_GPMU_SP_POWER_CNTL, 0x778000);
+	for (i = 0; i < 20 && !(gpu_read(REG_A5XX_GPMU_SP_PWR_CLK_STATUS) &
+	    A5XX_GPMU_PWR_ON); ++i)
+		DELAY(1);
+	status("a5xx: RBCCU domain 0x%08x, SP domain 0x%08x (bit 20 = on)",
+	    gpu_read(REG_A5XX_GPMU_RBCCU_PWR_CLK_STATUS),
+	    gpu_read(REG_A5XX_GPMU_SP_PWR_CLK_STATUS));
+	if (!(gpu_read(REG_A5XX_GPMU_RBCCU_PWR_CLK_STATUS) & A5XX_GPMU_PWR_ON) ||
+	    !(gpu_read(REG_A5XX_GPMU_SP_PWR_CLK_STATUS) & A5XX_GPMU_PWR_ON))
+		return (ETIMEDOUT);
+	return (0);
+}
+
+/*
  * Registers, microcode, ring and CP_ME_INIT: the part of a5xx_hw_init
  * that is run again after a soft reset.
  */
@@ -552,6 +586,8 @@ a5xx_dfly_start(a5xx_status_fn status, int (*zap)(void), const uint8_t *pm4,
 	    "0x%jx", pm4_len, (uintmax_t)a5.pm4_pa, pfp_len,
 	    (uintmax_t)a5.pfp_pa, (uintmax_t)a5.rb_pa);
 
+	if ((error = a5xx_domains_on(status)) != 0)
+		return (error);
 	if ((error = a5xx_cp_init(status)) != 0)
 		return (error);
 
