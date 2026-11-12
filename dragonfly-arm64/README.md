@@ -249,8 +249,14 @@ naming what is missing, so hitting one is obvious.
     so there is no binder and no Linux compatibility layer: the Bionic shim
     is retargeted from glibc to the BSD libc, and ART's Linux assumptions
     (futex, ashmem/memfd, `/proc/self/maps`, signal frames for null and
-    stack-overflow checks) are replaced with BSD equivalents. Drawing goes
-    through GTK4 and Wayland to Arcan, GL ES through freedreno.
+    stack-overflow checks) are replaced with BSD equivalents. ATL draws
+    straight to Arcan, without GTK or Wayland: one shmif segment per
+    activity window, `android.graphics.Canvas` on Skia into the segment's
+    buffer, EGL surfaces (SurfaceView, GLSurfaceView) on freedreno passed
+    as GPU buffers, Arcan touch and key events as `MotionEvent` and
+    `KeyEvent`, Arcan's text input, clipboard and notifications, and
+    Arcan's suspend and resume as the activity's pause and resume. The
+    stock GTK4 build is kept only as a QEMU test reference.
 
 ## Xiaomi Mi 5
 
