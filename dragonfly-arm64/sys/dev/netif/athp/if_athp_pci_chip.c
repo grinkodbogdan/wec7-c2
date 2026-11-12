@@ -948,7 +948,12 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot waiting target to initialise\n");
 
 	//for (i = 0; i < ATH10K_PCI_TARGET_WAIT / 10; i++) {
+#ifdef ATHP_DFLY
+	/* Linux waits 3 s (ATH10K_PCI_TARGET_WAIT); 0.3 s is too short here */
+	for (i = 0; i < 3000; i++) {
+#else
 	for (i = 0; i < 300; i++) {
+#endif
 		val = athp_pci_read32(ar, FW_INDICATOR_ADDRESS(ar->sc_regofs));
 
 		ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot target indicator %x\n",
@@ -982,6 +987,9 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 	ath10k_pci_disable_and_clear_legacy_irq(ar_pci);
 	ath10k_pci_irq_msi_fw_mask(ar_pci);
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("target indicator 0x%08x after %d ms", val, i);
+#endif
 	if (val == 0xffffffff) {
 		ath10k_err(ar, "failed to read device register, device is gone\n");
 		return -EIO;

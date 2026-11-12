@@ -916,6 +916,9 @@ athp_pci_attach(device_t dev)
 	ar_pci->sc_deviceid = pci_get_device(dev);
 	if (athp_pci_hw_lookup(ar_pci) != 0) {
 		device_printf(dev, "%s: hw lookup failed\n", __func__);
+#ifdef ATHP_DFLY
+		athp_dfly_status("unknown device id %04x", ar_pci->sc_deviceid);
+#endif
 		err = ENXIO;
 		goto bad;
 	}
@@ -1087,6 +1090,9 @@ athp_pci_attach(device_t dev)
 	/* pci_chip_reset */
 	ret = ath10k_pci_chip_reset(ar_pci);
 	if (ret) {
+#ifdef ATHP_DFLY
+		athp_dfly_status("chip reset failed (%d)", ret);
+#endif
 		device_printf(ar->sc_dev, "%s: chip_reset failed: %d\n",
 		    __func__,
 		    ret);
@@ -1109,6 +1115,10 @@ athp_pci_attach(device_t dev)
 		device_printf(ar->sc_dev,
 		    "%s: unsupported chip; chipid: 0x%08x\n", __func__,
 		    ar->sc_chipid);
+#ifdef ATHP_DFLY
+		athp_dfly_status("unsupported chip 0x%08x (device %04x)",
+		    ar->sc_chipid, ar_pci->sc_deviceid);
+#endif
 		err = ENXIO;
 		goto bad4;
 	}

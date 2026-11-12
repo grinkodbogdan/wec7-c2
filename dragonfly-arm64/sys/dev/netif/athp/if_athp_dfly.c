@@ -179,8 +179,12 @@ athp_dfly_attach(void)
 		return (ENXIO);
 	error = device_probe_and_attach(dev);
 	if (error != 0) {
+		char last[sizeof(wlan_status)];
+
+		/* keep the step it failed at */
+		strlcpy(last, wlan_status, sizeof(last));
 		ksnprintf(wlan_status, sizeof(wlan_status),
-		    "attach failed (%d)", error);
+		    "failed (%d): %s", error, last);
 		device_delete_child(root_bus, dev);
 		return (error);
 	}
