@@ -96,6 +96,7 @@
 #define	REG_A5XX_RBBM_INT_0_MASK		0x0038
 #define	REG_A5XX_CP_PFP_ME_CNTL			0x0832
 #define	REG_A5XX_RBBM_STATUS			0x04f5
+#define	REG_A5XX_RBBM_SW_RESET_CMD		0x0037
 #define	REG_A5XX_RBBM_INT_0_STATUS		0x04e1
 #define	REG_A5XX_CP_HW_FAULT			0x0b1a
 #define	REG_A5XX_CP_INTERRUPT_STATUS		0x0b18
@@ -242,11 +243,11 @@ a5xx_flush(void)
 #define	A5XX_RBBM_STATUS_BLOCKS	0x3ffffefe
 
 static int
-a5xx_idle(const char *what)
+a5xx_idle_n(const char *what, int n)
 {
 	int i;
 
-	for (i = 0; i < 100000; ++i) {
+	for (i = 0; i < n; ++i) {
 		if (gpu_read(REG_A5XX_CP_RB_RPTR) == a5.wptr &&
 		    (gpu_read(REG_A5XX_RBBM_STATUS) &
 		    A5XX_RBBM_STATUS_BLOCKS) == 0)
@@ -262,6 +263,12 @@ a5xx_idle(const char *what)
 	    gpu_read(REG_A5XX_CP_PROTECT_STATUS));
 	smmu_faults();
 	return (ETIMEDOUT);
+}
+
+static int
+a5xx_idle(const char *what)
+{
+	return (a5xx_idle_n(what, 100000));		/* 1 s */
 }
 
 static int
@@ -298,6 +305,15 @@ smmu_cb_base(int n)
 	return (SMMU_BASE + (vm_paddr_t)(smmu_numpage + n) * smmu_pgsize);
 }
 
+/* The stream id bits this SMMU implements (IDR0.NUMSIDB), as an SMR mask. */
+static uint32_t
+smmu_sidmask(void)
+{
+	uint32_t numsidb = (smmu_read(0x20) >> 9) & 0xf;
+
+	return (numsidb == 0 || numsidb > 15 ? 0x7fff : (1U << numsidb) - 1);
+}
+
 static int
 smmu_bypass(void)
 {
@@ -325,7 +341,13 @@ smmu_bypass(void)
 		return (ENXIO);
 	}
 	smmu_write(0xc00 + 4 * use, 1U << 16);		/* bypass */
-	smmu_write(0x800 + 4 * use, (1U << 31) | 0);	/* valid, id 0 */
+	/*
+	 * Valid, id 0, and every stream id masked in (SMR bits 30:16): the
+	 * Adreno SMMU serves only the GPU, and its secure-mode accesses
+	 * (the zap shader's CP_SET_SECURE_MODE hung with the ME busy and no
+	 * fault recorded) may come with another stream id than 0.
+	 */
+	smmu_write(0x800 + 4 * use, (1U << 31) | (smmu_sidmask() << 16));
 	__asm __volatile("dsb sy" : : : "memory");
 	s2cr = smmu_read(0xc00 + 4 * use);
 	if (((s2cr >> 16) & 3) != 1) {
@@ -465,35 +487,18 @@ a5xx_regs(void)
 	gpu_write(REG_A5XX_RBBM_SECVID_TSB_ADDR_MODE_CNTL, 0x1);
 }
 
-int
-a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
-    const uint8_t *pfp, size_t pfp_len)
+/*
+ * Registers, microcode, ring and CP_ME_INIT: the part of a5xx_hw_init
+ * that is run again after a soft reset.
+ */
+static int
+a5xx_cp_init(a5xx_status_fn status)
 {
 	int error;
 
-	a5.status = status;
-	if (pm4_len < 8 || pfp_len < 8)
-		return (EINVAL);
-	if ((error = smmu_bypass()) != 0)
-		return (error);
-
-	a5.pm4 = fw_buffer(pm4, pm4_len, &a5.pm4_pa);
-	a5.pfp = fw_buffer(pfp, pfp_len, &a5.pfp_pa);
-	a5.pm4_len = pm4_len;
-	a5.pfp_len = pfp_len;
-	a5.rb = contigmalloc(RB_SIZE, M_A5XX, M_WAITOK | M_ZERO, 0,
-	    0xffffffffUL, PAGE_SIZE, 0);
-	a5.rb_pa = vtophys(a5.rb);
-	a5.scratch = contigmalloc(PAGE_SIZE, M_A5XX, M_WAITOK | M_ZERO, 0,
-	    0xffffffffUL, PAGE_SIZE, 0);
-	a5.scratch_pa = vtophys(a5.scratch);
+	memset(a5.rb, 0, RB_SIZE);
 	dcache_wbinv(a5.rb, RB_SIZE);
-	dcache_wbinv(a5.scratch, PAGE_SIZE);
 	a5.wptr = 0;
-	status("a5xx: pm4 %zu bytes at 0x%jx, pfp %zu at 0x%jx, ring at "
-	    "0x%jx", pm4_len, (uintmax_t)a5.pm4_pa, pfp_len,
-	    (uintmax_t)a5.pfp_pa, (uintmax_t)a5.rb_pa);
-
 	a5xx_regs();
 	status("a5xx: registers set, status 0x%08x",
 	    gpu_read(REG_A5XX_RBBM_STATUS));
@@ -525,15 +530,77 @@ a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
 	status("a5xx: CP_ME_INIT done: rptr %u, status 0x%08x",
 	    gpu_read(REG_A5XX_CP_RB_RPTR), gpu_read(REG_A5XX_RBBM_STATUS));
 
+	return (0);
+}
+
+/* a5xx_recover's soft reset of the whole GPU */
+static void
+a5xx_soft_reset(void)
+{
+	gpu_write(REG_A5XX_RBBM_SW_RESET_CMD, 1);
+	(void)gpu_read(REG_A5XX_RBBM_SW_RESET_CMD);
+	DELAY(100);
+	gpu_write(REG_A5XX_RBBM_SW_RESET_CMD, 0);
+	DELAY(100);
+}
+
+int
+a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
+    const uint8_t *pfp, size_t pfp_len)
+{
+	int error;
+
+	a5.status = status;
+	if (pm4_len < 8 || pfp_len < 8)
+		return (EINVAL);
+	if ((error = smmu_bypass()) != 0)
+		return (error);
+
+	a5.pm4 = fw_buffer(pm4, pm4_len, &a5.pm4_pa);
+	a5.pfp = fw_buffer(pfp, pfp_len, &a5.pfp_pa);
+	a5.pm4_len = pm4_len;
+	a5.pfp_len = pfp_len;
+	a5.rb = contigmalloc(RB_SIZE, M_A5XX, M_WAITOK | M_ZERO, 0,
+	    0xffffffffUL, PAGE_SIZE, 0);
+	a5.rb_pa = vtophys(a5.rb);
+	a5.scratch = contigmalloc(PAGE_SIZE, M_A5XX, M_WAITOK | M_ZERO, 0,
+	    0xffffffffUL, PAGE_SIZE, 0);
+	a5.scratch_pa = vtophys(a5.scratch);
+	dcache_wbinv(a5.rb, RB_SIZE);
+	dcache_wbinv(a5.scratch, PAGE_SIZE);
+	a5.wptr = 0;
+	status("a5xx: pm4 %zu bytes at 0x%jx, pfp %zu at 0x%jx, ring at "
+	    "0x%jx", pm4_len, (uintmax_t)a5.pm4_pa, pfp_len,
+	    (uintmax_t)a5.pfp_pa, (uintmax_t)a5.rb_pa);
+
+	if ((error = a5xx_cp_init(status)) != 0)
+		return (error);
+
 	/* (a5xx_power_init: the GPMU, left out for now) */
 
 	/* out of secure mode through the zap shader */
 	OUT_PKT7(CP_SET_SECURE_MODE, 1);
 	OUT_RING(0x00000000);
 	a5xx_flush();
-	if ((error = a5xx_idle("CP_SET_SECURE_MODE")) != 0)
-		return (error);
-	status("a5xx: out of secure mode");
+	if ((error = a5xx_idle_n("CP_SET_SECURE_MODE", 500000)) == 0) {
+		status("a5xx: out of secure mode");
+	} else {
+		/*
+		 * Linux's other path, for when no zap shader could be
+		 * loaded: reset, start again and leave secure mode by
+		 * writing RBBM_SECVID_TRUST_CNTL directly.  If the secure
+		 * world owns that register the write is dropped, and the
+		 * CP_MEM_WRITE below tells.
+		 */
+		status("a5xx: secure-mode exit hung; soft reset, and "
+		    "RBBM_SECVID_TRUST_CNTL written directly");
+		a5xx_soft_reset();
+		if ((error = a5xx_cp_init(status)) != 0)
+			return (error);
+		gpu_write(REG_A5XX_RBBM_SECVID_TRUST_CNTL, 0);
+		status("a5xx: RBBM_SECVID_TRUST_CNTL reads 0x%08x",
+		    gpu_read(REG_A5XX_RBBM_SECVID_TRUST_CNTL));
+	}
 
 	/* the GPU writes a word to memory: commands run */
 	a5.scratch[0] = 0;
