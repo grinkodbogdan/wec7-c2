@@ -1,0 +1,41 @@
+diff --git a/sys/sys/in_cksum.h b/sys/sys/in_cksum.h
+index 8b35c4fc4b..9b67655c1d 100644
+--- a/sys/sys/in_cksum.h
++++ b/sys/sys/in_cksum.h
+@@ -81,6 +81,29 @@ in_cksum_hdr(const struct ip *ip)
+ 
+ #endif
+ 
++#if defined(__aarch64__)
++/* the same sums in C: no carry flag to borrow */
++static __inline u_short
++in_addword(u_short sum, u_short b)
++{
++    __uint32_t s = (__uint32_t)sum + b;
++
++    return ((u_short)((s & 0xffff) + (s >> 16)));
++}
++
++static __inline u_short
++in_pseudo(u_int sum, u_int b, u_int c)
++{
++    __uint64_t s = (__uint64_t)sum + b + c;
++
++    s = (s & 0xffffffff) + (s >> 32);
++    s = (s & 0xffff) + (s >> 16);
++    s = (s & 0xffff) + (s >> 16);
++    if (s > 0xffff)
++	s -= 0xffff;
++    return ((u_short)s);
++}
++#else
+ static __inline u_short
+ in_addword(u_short sum, u_short b)
+ {
+@@ -102,5 +125,6 @@ in_pseudo(u_int sum, u_int b, u_int c)
+ 	sum -= 0xffff;
+     return (sum);
+ }
++#endif
+ 
+ #endif /* _MACHINE_IN_CKSUM_H_ */

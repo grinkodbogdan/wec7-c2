@@ -38,7 +38,7 @@ S=$DFLY_SRC/sys
 P=$S/platform/arm64
 
 # Platform sources, in link order (locore must come first).
-MD_SRCS="locore.S exception.S swtch.S support.S
+MD_SRCS="in_cksum_md.c locore.S exception.S swtch.S support.S
 	machdep.c mp_machdep.c pmap.c trap.c sig_machdep.c vm_machdep.c elf_machdep.c
 	intr_machdep.c
 	gic.c clock.c
@@ -49,9 +49,15 @@ MD_SRCS="locore.S exception.S swtch.S support.S
 # the kernel configuration proper: a memory disk and the ISO 9660
 # filesystem, so there is something to mount as root, and tmpfs for
 # somewhere to write.
+# Kernel options beyond "standard": IPv4 and IPv6, Ethernet framing, 802.11 and
+# its WPA ciphers and rate control, bpf, the loopback interface.
+KERNEL_OPTIONS=${KERNEL_OPTIONS-"inet inet6 ether wlan wlan_ccmp wlan_tkip wlan_amrr bpf loop"}
+
 MI_EXTRA_SRCS="kern/subr_diskmbr.c kern/subr_diskgpt.c
 	dev/drm/msm/adreno_a5xx_dfly.c dev/drm/msm/msm_dfly.c
 	dev/qcom/pcie_msm8996.c
+	crypto/rijndael/rijndael-alg-fst.c crypto/rijndael/rijndael-api-fst.c
+	crypto/rijndael/rijndael-api.c
 	dev/disk/md/md.c dev/disk/vn/vn.c kern/tty_pty.c
 	dev/misc/evdev/cdev.c dev/misc/evdev/evdev.c dev/misc/evdev/evdev_mt.c dev/misc/evdev/evdev_utils.c
 	vfs/isofs/cd9660/cd9660_bmap.c vfs/isofs/cd9660/cd9660_lookup.c
@@ -110,9 +116,15 @@ configure() {
 		n=$(echo "${h#use_}" | sed 's/\.h$//' | tr a-z A-Z)
 		echo "#define N$n 0" > "$OBJ/opt/$h"
 	done
-	# The kernel configuration.  Kept minimal until there is a
-	# userland to exercise more: no networking protocols, no
-	# filesystems beyond what "standard" brings in.
+	# The kernel configuration: what "standard" brings in, plus the
+	# options in KERNEL_OPTIONS (networking for Wi-Fi).  Each option
+	# turns on its "optional" files in conf/files, its device count in
+	# use_<option>.h and, for the protocols, its opt_<option>.h.
+	for o in $KERNEL_OPTIONS; do
+		O=$(echo "$o" | tr a-z A-Z)
+		echo "#define N$O 1" > "$OBJ/opt/use_$o.h"
+		[ -f "$OBJ/opt/opt_$o.h" ] && echo "#define $O 1" > "$OBJ/opt/opt_$o.h"
+	done
 	cat > "$OBJ/opt/opt_global.h" <<-EOG
 	#define INVARIANTS 1
 	EOG
@@ -221,6 +233,17 @@ build() {
 
 	awk '$2 == "standard" && $1 ~ /^[a-z].*\.c$/ { print $1 }' \
 	    "$S/conf/files" > "$OBJ/mi.files"
+	# optional files whose options are all configured (as config(8))
+	awk -v opts=" $KERNEL_OPTIONS " '
+	    $2 == "optional" && $1 ~ /^[a-z].*\.c$/ {
+		ok = 1; n = 0
+		for (i = 3; i <= NF; i++) {
+			if ($i !~ /^[a-z0-9_]+$/) break
+			n++
+			if (index(opts, " " $i " ") == 0) { ok = 0; break }
+		}
+		if (ok && n > 0) print $1
+	    }' "$S/conf/files" | sort -u >> "$OBJ/mi.files"
 	for f in $MI_EXTRA_SRCS; do
 		echo "$f"
 	done >> "$OBJ/mi.files"

@@ -61,13 +61,18 @@ ENTRY(pagezero)
 	ret
 END(pagezero)
 
-/* void bcopy(const void *src, void *dst, size_t len) -- may overlap */
+/*
+ * void bcopy(const void *src, void *dst, size_t len) -- may overlap;
+ * _bcopy is the same, for callers that pass it around (bpf)
+ */
+ENTRY(_bcopy)
 ENTRY(bcopy)
 	mov	x3, x0
 	mov	x0, x1
 	mov	x1, x3
 	b	memmove
 END(bcopy)
+END(_bcopy)
 
 /* void *memmove(void *dst, const void *src, size_t len) */
 ENTRY(memmove)
