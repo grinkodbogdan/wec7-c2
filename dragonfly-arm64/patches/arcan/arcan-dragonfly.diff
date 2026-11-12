@@ -11,6 +11,38 @@ index 440de3d..1a32a6e 100644
  target_compile_definitions(arcan_a12 PRIVATE ${DEFS})
  
  set_target_properties(arcan_a12 PROPERTIES
+diff --git a/src/engine/arcan_lua.c b/src/engine/arcan_lua.c
+index f1ac60f..f85115e 100644
+--- a/src/engine/arcan_lua.c
++++ b/src/engine/arcan_lua.c
+@@ -7458,6 +7458,27 @@ void arcan_lua_mapfunctions(lua_State* ctx, int debuglevel)
+ 	arcan_lua_pushglobalconsts(ctx);
+ 	alt_nbio_register(ctx, add_source, del_source, error_nbio);
+ 
++/*
++ * DragonFly/arm64: ARCAN_SYSTEM_IO=1 gives the appl io.open, io.popen and
++ * io.lines from the real io library, for a trusted system shell (the
++ * phone appl drives sysctl, ls and ps).  Unset, the whitelist stands.
++ */
++	const char* sysio = getenv("ARCAN_SYSTEM_IO");
++	if (sysio && strcmp(sysio, "1") == 0){
++		lua_getfield(ctx, LUA_REGISTRYINDEX, "_LOADED");
++		lua_getfield(ctx, -1, "io");
++		if (lua_istable(ctx, -1)){
++			lua_newtable(ctx);
++			const char* fns[] = {"open", "popen", "lines"};
++			for (size_t i = 0; i < sizeof(fns) / sizeof(fns[0]); i++){
++				lua_getfield(ctx, -2, fns[i]);
++				lua_setfield(ctx, -2, fns[i]);
++			}
++			lua_setglobal(ctx, "io");
++		}
++		lua_pop(ctx, 2);
++	}
++
+ /* only allow eval() style operation in explicit debug modes */
+ 	if (lua_debug_level){
+ 		lua_pushliteral(ctx, "loadstring");
 diff --git a/src/platform/agp/glshared.c b/src/platform/agp/glshared.c
 index 0641b59..4ba9c21 100644
 --- a/src/platform/agp/glshared.c

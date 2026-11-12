@@ -779,6 +779,33 @@ Linux's drm/msm Adreno driver (GPL, in its own directory), load the
 microcode and the zap shader (from the phone's firmware partition, via
 the secure monitor), then build Mesa's freedreno for Arcan.
 
+### Phone shell
+
+`arcan/appl/phone` is the user interface Arcan starts at boot (the
+terminal appl stays as its fallback). It follows the N9's swipe model
+with an Android-style home screen:
+
+- Three home views side by side, panned with a horizontal swipe: Events
+  (notifications), Home (clock, app grid, dock; the app drawer under a
+  swipe up) and Open apps (live thumbnails; tap to switch, × to close).
+- In an app, a swipe in from the left or right edge leaves it running; a
+  swipe down from the top edge closes it.
+- A tap on the status bar, or a pull down from it at home, opens quick
+  settings: brightness, notification light, torch, vibration, lock,
+  restart and power off.
+- The power button locks and blanks the screen; a swipe up unlocks. Home
+  goes home; the volume buttons step the brightness.
+- Apps: Terminal (with an on-screen keyboard), Files, System (uptime,
+  memory, processes), Settings (brightness, light colour, vibration,
+  about), Calculator and Clock (stopwatch).
+
+Arcan normally keeps appls away from files and processes. With
+`ARCAN_SYSTEM_IO=1`, which only `user/arcan.sh` sets, our Arcan patch
+gives the appl `io.open` and `io.popen`, so the shell can read and set
+sysctls and list files. The shell uses the DejaVu fonts, which
+`build.sh` downloads. `phone.args=test=VIEW` on the kernel command line
+opens a view at start, for `tools/qemu-shot.py`.
+
 ### What is untested or missing
 
 - **The second cluster's cores on the phone.** The seventh test image comes

@@ -35,4 +35,15 @@ if [ "${ARCAN_GPU:-1}" = 1 ] && sysctl -n hw.mi5.gpu_ready >/dev/null 2>&1; then
 		echo "arcan: GPU not ready, software rendering" > /tmp/arcan/renderer
 	fi
 fi
-exec arcan -d /tmp/arcan/arcan.sqlite "${@:-term}"
+# The phone shell (arcan/appl/phone) reads sysctl, ls and ps itself.
+export ARCAN_SYSTEM_IO=1
+# No arguments: the phone shell, with anything from /etc/arcan.autorun
+# (a command for its terminal) or the phone.args boot variable.
+if [ $# -eq 0 ]; then
+	set -- phone
+	[ -r /etc/arcan.autorun ] && set -- "$@" "autorun=$(cat /etc/arcan.autorun)"
+	pa=$(kenv -q phone.args 2>/dev/null)
+	[ -n "$pa" ] && set -- "$@" $pa
+fi
+# Should the appl fail, Arcan falls back to the terminal appl.
+exec arcan -b term -d /tmp/arcan/arcan.sqlite "$@"

@@ -23,6 +23,7 @@ set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 DFLY_REPO=${DFLY_REPO:-https://github.com/DragonFlyBSD/DragonFlyBSD.git}
 DFLY_COMMIT=${DFLY_COMMIT:-94448f622a06cde90ba42d688e9cab2448ad9ab3}
+DEJAVU_VERSION=${DEJAVU_VERSION:-2.37}
 DFLY_SRC=${DFLY_SRC:-$HERE/work/dragonfly}
 OBJ=${OBJ:-$HERE/work/obj}
 CC=${CC:-clang}
@@ -292,11 +293,22 @@ ramdisk() {
 			mkdir -p "$root/usr/share/arcan/appl" \
 			    "$root/usr/share/arcan/resources/fonts"
 			cp -r "$asrc/data/appl/console" "$HERE/arcan/appl/hello" \
-			    "$HERE/arcan/appl/term" \
+			    "$HERE/arcan/appl/term" "$HERE/arcan/appl/phone" \
 			    "$root/usr/share/arcan/appl/"
 			cp -r "$asrc/data/scripts" "$root/usr/share/arcan/scripts"
 			cp "$asrc/data/resources/fonts/default.ttf" \
 			    "$root/usr/share/arcan/resources/fonts/"
+			# DejaVu for the phone shell (Sans, Bold, ExtraLight, Mono)
+			fd=$HERE/work/fonts/dejavu-fonts-ttf-$DEJAVU_VERSION/ttf
+			if [ ! -d "$fd" ]; then
+				mkdir -p "$HERE/work/fonts"
+				curl -sSfL "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_$(echo $DEJAVU_VERSION | tr . _)/dejavu-fonts-ttf-$DEJAVU_VERSION.tar.bz2" |
+				    tar xjf - -C "$HERE/work/fonts"
+			fi
+			for f in DejaVuSans DejaVuSans-Bold DejaVuSans-ExtraLight \
+			    DejaVuSansMono; do
+				cp "$fd/$f.ttf" "$root/usr/share/arcan/resources/fonts/"
+			done
 			cp "$HERE/user/arcan.sh" "$root/etc/arcan.sh"
 		fi
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
