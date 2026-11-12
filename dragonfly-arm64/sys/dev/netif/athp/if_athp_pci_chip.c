@@ -794,8 +794,8 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 				ret);
 #ifdef ATHP_DFLY
 		/* the warm reset waits for the target again: let it try */
-		athp_dfly_status("cold: target not up (%d, ind %08x); warm anyway",
-		    ret, athp_dfly_last_ind);
+		athp_dfly_status("cold: no target (ind %08x), warm",
+		    athp_dfly_last_ind);
 		if (ret != -ETIMEDOUT)
 			return ret;
 #else
@@ -1003,8 +1003,8 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 
 #ifdef ATHP_DFLY
 	athp_dfly_last_ind = val;
-	athp_dfly_status("target indicator 0x%08x after %d reads, %d ms", val,
-	    i, (ticks - t0) * 1000 / hz);
+	athp_dfly_status("ind %08x, %d reads in %d ms", val, i,
+	    (ticks - t0) * 1000 / hz);
 #endif
 	if (val == 0xffffffff) {
 		ath10k_err(ar, "failed to read device register, device is gone\n");

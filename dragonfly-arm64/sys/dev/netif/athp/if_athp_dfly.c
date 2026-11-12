@@ -185,7 +185,7 @@ athp_dfly_attach(void)
 		/* keep the step it failed at */
 		strlcpy(last, wlan_status, sizeof(last));
 		ksnprintf(wlan_status, sizeof(wlan_status),
-		    "failed (%d): %s", error, last);
+		    "fail %d: %s", error, last);
 		device_delete_child(root_bus, dev);
 		return (error);
 	}

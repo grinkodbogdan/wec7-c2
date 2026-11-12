@@ -2167,6 +2167,25 @@ local function settings_draw(inst)
 					settings_draw(inst)
 				end})
 		end}})
+	-- the driver's kernel messages, while bringing Wi-Fi up
+	local log = {}
+	if not string.find(wifi_driver_state(), "Not started", 1, true) then
+		for l in string.gmatch(run("dmesg | grep -E 'athp|pcie' | tail -10"),
+			"[^\n]+") do
+			if #l > 58 then
+				l = string.sub(l, 1, 57) .. "…"
+			end
+			table.insert(log, l)
+		end
+	end
+	if #log > 0 then
+		y = y + 8
+		inset(inst.a, 16, y, W - 32, 16 + 15 * #log, 2, "rrect", 0.42)
+		for i, l in ipairs(log) do
+			text(inst.a, 28, y + 8 + (i - 1) * 15, l, 9, C.text3, F_MONO)
+		end
+		y = y + 16 + 15 * #log
+	end
 	y = y + 12
 
 	y = section(inst.a, y, "Vibration")
