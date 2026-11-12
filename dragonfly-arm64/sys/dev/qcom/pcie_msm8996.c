@@ -559,6 +559,34 @@ pcie0_up(void)
 	return (0);
 }
 
+/*
+ * One line on the Wi-Fi chip's supplies, straight from the PMIC: L30
+ * (the crystal's 1.8 V; PM8994 regulators sit on SID 1, LDO n at
+ * 0x4000 + (n - 1) * 0x100) and GPIOs 8 (WLAN_EN), 9 (3.3 V), 18 (sleep
+ * clock): their status and mode registers.
+ */
+void
+msm8996_wlan_power_diag(char *buf, size_t len)
+{
+	uint8_t l30s = 0, l30v = 0, l30e = 0, g[3][2];
+	static const int gpios[3] = { 8, 9, 18 };
+	int i;
+
+	msm8996_spmi_read(1, 0x5d00 + 0x08, &l30s);
+	msm8996_spmi_read(1, 0x5d00 + 0x41, &l30v);
+	msm8996_spmi_read(1, 0x5d00 + 0x46, &l30e);
+	for (i = 0; i < 3; ++i) {
+		g[i][0] = g[i][1] = 0;
+		msm8996_spmi_read(PM8994_SID, PM8994_GPIO(gpios[i]) + 0x08,
+		    &g[i][0]);
+		msm8996_spmi_read(PM8994_SID, PM8994_GPIO(gpios[i]) + 0x40,
+		    &g[i][1]);
+	}
+	ksnprintf(buf, len, "L30 st %02x v %02x en %02x; g8 %02x/%02x "
+	    "g9 %02x/%02x g18 %02x/%02x", l30s, l30v, l30e, g[0][0], g[0][1],
+	    g[1][0], g[1][1], g[2][0], g[2][1]);
+}
+
 /* Is the link trained?  Reads only root-complex registers: always safe. */
 int
 msm8996_pcie_link_ok(void)

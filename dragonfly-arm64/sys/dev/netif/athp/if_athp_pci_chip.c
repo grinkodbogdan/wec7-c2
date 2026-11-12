@@ -777,6 +777,41 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 	/* FIXME: QCA6174 requires cold + warm reset to work. */
 
 #ifdef ATHP_DFLY
+	{
+		/*
+		 * Bring-up diagnostics, no wake handshake involved: the
+		 * supplies, then the chip's own view before and after
+		 * asking it to wake (RTC_STATE should go to 3).
+		 */
+		char pw[96];
+		uint32_t lb = PCIE_LOCAL_BASE_ADDRESS(ar->sc_regofs);
+		uint32_t rs = RTC_SOC_BASE_ADDRESS(ar->sc_regofs);
+		uint32_t fw = FW_INDICATOR_ADDRESS(ar->sc_regofs);
+		int k;
+
+		msm8996_wlan_power_diag(pw, sizeof(pw));
+		kprintf("athp diag: %s\n", pw);
+		kprintf("athp diag: rtc %08x wake %08x rst %08x chip %08x "
+		    "fw %08x\n",
+		    athp_reg_read32(ar, lb + RTC_STATE_ADDRESS),
+		    athp_reg_read32(ar, lb + PCIE_SOC_WAKE_ADDRESS),
+		    athp_reg_read32(ar, lb + SOC_GLOBAL_RESET_ADDRESS),
+		    athp_reg_read32(ar, rs + SOC_CHIP_ID_ADDRESS(ar->sc_regofs)),
+		    athp_reg_read32(ar, fw));
+		athp_reg_write32(ar, lb + PCIE_SOC_WAKE_ADDRESS,
+		    PCIE_SOC_WAKE_V_MASK);
+		for (k = 0; k < 100; k++) {
+			if (RTC_STATE_V_GET(athp_reg_read32(ar,
+			    lb + RTC_STATE_ADDRESS)) == 3)
+				break;
+			DELAY(1000);
+		}
+		kprintf("athp diag: after wake %d ms: rtc %08x wake %08x "
+		    "fw %08x\n", k,
+		    athp_reg_read32(ar, lb + RTC_STATE_ADDRESS),
+		    athp_reg_read32(ar, lb + PCIE_SOC_WAKE_ADDRESS),
+		    athp_reg_read32(ar, fw));
+	}
 	athp_dfly_status("chip reset: cold");
 #endif
 	ret = ath10k_pci_cold_reset(ar_pci);
