@@ -784,28 +784,41 @@ the secure monitor), then build Mesa's freedreno for Arcan.
 ![The shell in QEMU](docs/phone-shell-qemu.png)
 
 `arcan/appl/phone` is the user interface Arcan starts at boot (the
-terminal appl stays as its fallback). It follows the N9's swipe model
-with an Android-style home screen:
+terminal appl stays as its fallback). It follows ValOS's look, in black:
+glossy black frosted glass over a night winter city, widget cards on the
+home screen, a dock of round glass buttons with thin line icons, and a
+quick-settings sheet with tabs.
 
-- Three home views side by side, panned with a horizontal swipe: Events
-  (notifications), Home (clock, app grid, dock; the app drawer under a
-  swipe up) and Open apps (live thumbnails; tap to switch, × to close).
-- In an app, a swipe in from the left or right edge leaves it running; a
-  swipe down from the top edge closes it.
-- A tap on the status bar, or a pull down from it at home, opens quick
-  settings: brightness, notification light, torch, vibration, lock,
-  restart and power off.
-- The power button locks and blanks the screen; a swipe up unlocks. Home
-  goes home; the volume buttons step the brightness.
-- Apps: Terminal (with an on-screen keyboard), Files, System (uptime,
-  memory, processes), Settings (brightness, light colour, vibration,
-  about), Calculator and Clock (stopwatch).
+- **Wallpapers ("ambiences")**: original night winter-city scenes drawn
+  by a shader (skyline in three layers, lit windows, snow on the roofs,
+  a glowing street, falling snow): Snowfall, Harbour, Neon, Aurora and
+  Midnight. Chosen in quick settings or Settings.
+- **Glass** is real frosting: each glass surface samples a small, blurred
+  copy of the wallpaper at its own screen position, under a black tint
+  with a gloss and a bright rim.
+- **Home**: "At a glance" (greeting, time, battery), a Files card (search
+  row, folder chips, storage, the root), the most recent app (or the
+  terminal), a search pill and the avatar, and the dock (Terminal, Files,
+  Calculator, Settings, all apps, open apps).
+- **Views**: Events, Home and Open apps side by side, swiped
+  horizontally; swipe up for all apps.
+- **In an app**: swipe in from the left or right edge to leave it
+  running, down from the top edge to close it; or the header's minimise
+  and close buttons. Apps zoom out of their icons.
+- **Quick settings** (tap the status bar or the avatar, or pull down):
+  Overview, Notifications and Controls tabs; torch, light, vibration and
+  lock tiles; brightness; lock, settings, restart and power off; the
+  ambience.
+- **Buttons**: power locks and blanks the screen, home goes home, volume
+  sets the brightness.
+- **Apps**: Terminal (with an on-screen keyboard), Files, System,
+  Settings, Calculator and Clock.
 
 Arcan normally keeps appls away from files and processes. With
 `ARCAN_SYSTEM_IO=1`, which only `user/arcan.sh` sets, our Arcan patch
 gives the appl `io.open` and `io.popen`, so the shell can read and set
-sysctls and list files. The shell uses the DejaVu fonts, which
-`build.sh` downloads. `phone.args=test=VIEW` on the kernel command line
+sysctls and list files. The shell uses the Inter and DejaVu fonts,
+which `build.sh` downloads. `phone.args=test=VIEW` on the kernel command line
 opens a view at start, for `tools/qemu-shot.py`.
 
 ### What is untested or missing
