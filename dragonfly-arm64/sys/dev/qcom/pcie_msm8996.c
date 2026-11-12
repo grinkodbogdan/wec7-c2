@@ -371,6 +371,7 @@ msm8996_pcie_cfg_write(int off, uint32_t v)
 }
 
 static vm_paddr_t wlan_bar;
+static uint32_t wlan_bar_mask;
 
 vm_paddr_t
 msm8996_pcie_bar0(void)
@@ -550,6 +551,7 @@ pcie0_up(void)
 	msm8996_pcie_cfg_write(0x10, 0xffffffffU);
 	v = msm8996_pcie_cfg_read(0x10);
 	st("BAR0 size mask 0x%08x", v);
+	wlan_bar_mask = v;
 	msm8996_pcie_cfg_write(0x10, (uint32_t)BARS);
 	if ((v & 0x6) == 0x4)
 		msm8996_pcie_cfg_write(0x14, 0);
@@ -585,9 +587,11 @@ msm8996_wlan_power_diag(char *buf, size_t len)
 		msm8996_spmi_read(PM8994_SID, PM8994_GPIO(gpios[i]) + 0x40,
 		    &g[i][1]);
 	}
-	ksnprintf(buf, len, "L30 st %02x v %02x en %02x; g8 %02x/%02x "
-	    "g9 %02x/%02x g18 %02x/%02x", l30s, l30v, l30e, g[0][0], g[0][1],
-	    g[1][0], g[1][1], g[2][0], g[2][1]);
+	ksnprintf(buf, len, "L30 %02x/%02x/%02x g8 %02x/%02x g9 %02x/%02x "
+	    "g18 %02x/%02x bar %08x/%08x cmd %04x", l30s, l30v, l30e,
+	    g[0][0], g[0][1], g[1][0], g[1][1], g[2][0], g[2][1],
+	    wlan_bar_mask, msm8996_pcie_cfg_read(0x10),
+	    msm8996_pcie_cfg_read(0x04) & 0xffff);
 }
 
 /* Is the link trained?  Reads only root-complex registers: always safe. */

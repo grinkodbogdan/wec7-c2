@@ -798,6 +798,24 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 		    athp_reg_read32(ar, lb + SOC_GLOBAL_RESET_ADDRESS),
 		    athp_reg_read32(ar, rs + SOC_CHIP_ID_ADDRESS(ar->sc_regofs)),
 		    athp_reg_read32(ar, fw));
+		/* which parts of the 2 MB window answer? */
+		{
+			static const uint32_t offs[] = { 0x0, 0x800, 0x8f0,
+			    0x3a000, 0x40000, 0x7fffc, 0x80000, 0x80008,
+			    0x100000, 0x1ffffc };
+			char line[200];
+			int n = 0, j;
+
+			for (j = 0; j < (int)nitems(offs); j++) {
+				n += ksnprintf(line + n, sizeof(line) - n,
+				    "%x:%x ", offs[j],
+				    athp_reg_read32(ar, offs[j]));
+				if (j == 4 || j == (int)nitems(offs) - 1) {
+					kprintf("athp diag: %s\n", line);
+					n = 0;
+				}
+			}
+		}
 		/* do writes reach the chip at all?  FW_INDICATOR is RW */
 		{
 			uint32_t o = athp_reg_read32(ar, fw);
