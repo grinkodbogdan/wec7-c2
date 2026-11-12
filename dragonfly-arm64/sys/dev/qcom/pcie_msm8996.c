@@ -547,20 +547,36 @@ pcie0_up(void)
 	if (v == 0xffffffffU || v == 0)
 		return (ENXIO);
 
-	/* BAR0 at the start of the BAR window, through iATU region 1 */
+	/*
+	 * BAR0 inside the BAR window, through iATU region 1.  A BAR must be
+	 * aligned to its size: QCA6174's is 2 MB, and at 0x0c300000 the chip
+	 * quietly rounded it down to 0x0c200000, so every access landed
+	 * 1 MB off (its always-on registers looked dead).
+	 */
 	msm8996_pcie_cfg_write(0x10, 0xffffffffU);
 	v = msm8996_pcie_cfg_read(0x10);
 	st("BAR0 size mask 0x%08x", v);
 	wlan_bar_mask = v;
-	msm8996_pcie_cfg_write(0x10, (uint32_t)BARS);
+	{
+		vm_paddr_t size = (vm_paddr_t)(~(v & ~0xfU)) + 1;
+		vm_paddr_t bar = roundup2(BARS, size);
+
+		if (size == 0 || bar + size > BARS + BARS_SIZE) {
+			st("BAR0 of %lu bytes does not fit the window",
+			    (unsigned long)size);
+			return (ENXIO);
+		}
+		wlan_bar = bar;
+	}
+	msm8996_pcie_cfg_write(0x10, (uint32_t)wlan_bar);
 	if ((v & 0x6) == 0x4)
 		msm8996_pcie_cfg_write(0x14, 0);
 	iatu(1, IATU_TYPE_MEM, BARS, (uint32_t)(BARS + BARS_SIZE - 1), BARS);
 	msm8996_pcie_cfg_write(0x04, msm8996_pcie_cfg_read(0x04) | 0x6);
-	wlan_bar = BARS;
 	/* QCA6174: SOC_CHIP_ID at RTC_SOC_BASE 0x800 + 0xf0 */
-	st("chip id 0x%08x (BAR0 at 0x%08lx)", rd(BARS + 0x8f0),
-	    (unsigned long)BARS);
+	st("chip id 0x%08x (BAR0 at 0x%08lx, reads back 0x%08x)",
+	    rd(wlan_bar + 0x8f0), (unsigned long)wlan_bar,
+	    msm8996_pcie_cfg_read(0x10));
 	return (0);
 }
 
@@ -628,8 +644,8 @@ msm8996_pcie_relink(int ms)
 		DELAY(1000);
 		v = msm8996_pcie_cfg_read(0);
 	}
-	if ((msm8996_pcie_cfg_read(0x10) & ~0xfU) != (uint32_t)BARS) {
-		msm8996_pcie_cfg_write(0x10, (uint32_t)BARS);
+	if ((msm8996_pcie_cfg_read(0x10) & ~0xfU) != (uint32_t)wlan_bar) {
+		msm8996_pcie_cfg_write(0x10, (uint32_t)wlan_bar);
 		st("relink: BAR0 restored");
 	}
 	if ((msm8996_pcie_cfg_read(0x04) & 0x6) != 0x6)
