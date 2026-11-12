@@ -800,6 +800,9 @@ athp_pci_attach(device_t dev)
 	/* Attach the log to gather information early if tunable is set. */
 	ath10k_fwlog_register(ar);
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: sysctl tree");
+#endif
 	/* Load-time tunable/sysctl tree */
 	athp_attach_sysctl(ar);
 
@@ -808,6 +811,9 @@ athp_pci_attach(device_t dev)
 	ar->sc_rx_htt = 1;
 
 	/* Fetch pcie capability offset */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: PCIe capability");
+#endif
 	ret = pci_find_cap(dev, PCIY_EXPRESS, &ar_pci->sc_cap_off);
 	if (ret != 0) {
 		device_printf(dev,
@@ -819,6 +825,9 @@ athp_pci_attach(device_t dev)
 	/*
 	 * Initialise ath10k core bits.
 	 */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: core init");
+#endif
 	if (ath10k_core_init(ar) < 0)
 		goto bad0;
 
@@ -856,6 +865,9 @@ athp_pci_attach(device_t dev)
 	/*
 	 * Initialise ath10k BMI/PCIDIAG bits.
 	 */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: BMI buffers (DMA)");
+#endif
 	ret = athp_descdma_alloc(ar, &ar_pci->sc_bmi_txbuf, "bmi_msg_req",
 	    4, 1024);
 	ret |= athp_descdma_alloc(ar, &ar_pci->sc_bmi_rxbuf, "bmi_msg_resp",
@@ -869,6 +881,9 @@ athp_pci_attach(device_t dev)
 	/*
 	 * Initialise HTT descriptors/memory.
 	 */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: HTT descriptors");
+#endif
 	ret = ath10k_htt_rx_alloc_desc(ar, &ar->htt);
 	if (ret != 0) {
 		device_printf(dev, "%s: failed to alloc HTT RX descriptors\n",
@@ -906,6 +921,9 @@ athp_pci_attach(device_t dev)
 	/*
 	 * Enable bus mastering.
 	 */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: bus master on");
+#endif
 	pci_enable_busmaster(dev);
 
 	/*
@@ -973,6 +991,9 @@ athp_pci_attach(device_t dev)
 			ar_pci->num_msi_intrs = 0;
 		}
 	}
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: interrupt poller");
+#endif
 	err = ath10k_pci_request_irq(ar_pci);
 	if (err != 0)
 		goto bad1;
@@ -997,6 +1018,9 @@ athp_pci_attach(device_t dev)
 	 * USB endpoints.
 	 */
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: buffer rings");
+#endif
 	if (athp_pci_setup_bufs(ar_pci) != 0) {
 		err = ENXIO;
 		goto bad4;
@@ -1007,6 +1031,9 @@ athp_pci_attach(device_t dev)
 	ar->hif.bus = ATH10K_BUS_PCI;
 
 	/* Alloc pipes */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: copy-engine pipes");
+#endif
 	ret = ath10k_pci_alloc_pipes(ar);
 	if (ret) {
 		device_printf(ar->sc_dev, "%s: pci_alloc_pipes failed: %d\n",
@@ -1017,10 +1044,16 @@ athp_pci_attach(device_t dev)
 		goto bad4;
 	}
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: CE deinit (first BAR access)");
+#endif
 	/* deinit ce */
 	ath10k_pci_ce_deinit(ar);
 
 	/* disable irq */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: irq disable");
+#endif
 	ret = ath10k_pci_irq_disable(ar_pci);
 	if (ret) {
 		device_printf(ar->sc_dev, "%s: irq_disable failed: %d\n",
@@ -1031,6 +1064,9 @@ athp_pci_attach(device_t dev)
 	}
 
 	/* init IRQ */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: irq init");
+#endif
 	ret = ath10k_pci_init_irq(ar_pci);
 	if (ret) {
 		device_printf(ar->sc_dev, "%s: init_irq failed: %d\n",
@@ -1043,6 +1079,9 @@ athp_pci_attach(device_t dev)
 	/* Ok, gate open the interrupt handler */
 	ar->sc_invalid = 0;
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: chip reset");
+#endif
 	/* pci_chip_reset */
 	ret = ath10k_pci_chip_reset(ar_pci);
 	if (ret) {
@@ -1054,10 +1093,16 @@ athp_pci_attach(device_t dev)
 	}
 
 	/* read SoC/chip version */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: chip id");
+#endif
 	ar->sc_chipid = athp_pci_soc_read32(ar, SOC_CHIP_ID_ADDRESS(ar->sc_regofs));
 
 	/* Verify chip version is something we can use */
 	device_printf(ar->sc_dev, "%s: chipid: 0x%08x\n", __func__, ar->sc_chipid);
+#ifdef ATHP_DFLY
+	athp_dfly_status("chip id 0x%08x", ar->sc_chipid);
+#endif
 	if (! ath10k_pci_chip_is_supported(ar_pci->sc_deviceid, ar->sc_chipid)) {
 		device_printf(ar->sc_dev,
 		    "%s: unsupported chip; chipid: 0x%08x\n", __func__,
@@ -1067,6 +1112,9 @@ athp_pci_attach(device_t dev)
 	}
 
 	/* Call main attach method with given info */
+#ifdef ATHP_DFLY
+	athp_dfly_status("attach: firmware load queued");
+#endif
 	ar->sc_preinit_hook.ich_func = athp_attach_preinit;
 	ar->sc_preinit_hook.ich_arg = ar;
 	if (config_intrhook_establish(&ar->sc_preinit_hook) != 0) {

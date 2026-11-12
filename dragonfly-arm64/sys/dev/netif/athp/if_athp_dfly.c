@@ -17,6 +17,7 @@
 #include <sys/firmware.h>
 #include <sys/sysctl.h>
 #include <machine/stdarg.h>
+#include <sys/kthread.h>
 
 #include <dev/pci/pcivar.h>
 #include <dev/qcom/pcie_msm8996.h>
@@ -145,6 +146,7 @@ athp_dfly_fw_register(void)
 /* ---- attach on demand ---- */
 static char wlan_status[96] = "Not started";
 static device_t athp_dev;
+static thread_t athp_attach_td;	/* paces its steps for the UI */
 
 SYSCTL_DECL(_hw_mi5);
 SYSCTL_STRING(_hw_mi5, OID_AUTO, wlan, CTLFLAG_RD, wlan_status, 0,
@@ -182,8 +184,6 @@ athp_dfly_attach(void)
 		return (error);
 	}
 	athp_dev = dev;
-	ksnprintf(wlan_status, sizeof(wlan_status),
-	    "attached; loading firmware");
 	return (0);
 }
 
@@ -197,6 +197,29 @@ athp_dfly_status(const char *fmt, ...)
 	kvsnprintf(wlan_status, sizeof(wlan_status), fmt, ap);
 	__va_end(ap);
 	kprintf("athp: %s\n", wlan_status);
+	/*
+	 * While attaching, hold each step on screen for longer than the
+	 * shell's one-second refresh, so a hang shows where it happened.
+	 */
+	if (curthread == athp_attach_td)
+		tsleep(&athp_attach_td, 0, "athpstep", hz * 3 / 2);
+}
+
+/*
+ * Attaching adds sysctl nodes, which needs the sysctl lock exclusively;
+ * a sysctl handler already holds it shared.  So the handler only starts
+ * a thread, and the attach runs there.
+ */
+static volatile int athp_attaching;
+
+static void
+athp_dfly_attach_thread(void *arg)
+{
+	athp_attach_td = curthread;
+	athp_dfly_attach();
+	athp_attach_td = NULL;
+	athp_attaching = 0;
+	kthread_exit();
 }
 
 static int
@@ -208,8 +231,15 @@ sysctl_wlan_attach(SYSCTL_HANDLER_ARGS)
 	error = sysctl_handle_int(oidp, &v, 0, req);
 	if (error != 0 || req->newptr == NULL)
 		return (error);
-	if (v)
-		return (athp_dfly_attach());
+	if (v == 0 || athp_dev != NULL || athp_attaching)
+		return (0);
+	athp_attaching = 1;
+	ksnprintf(wlan_status, sizeof(wlan_status), "starting");
+	if (kthread_create(athp_dfly_attach_thread, NULL, NULL,
+	    "athp attach") != 0) {
+		athp_attaching = 0;
+		return (ENOMEM);
+	}
 	return (0);
 }
 SYSCTL_PROC(_hw_mi5, OID_AUTO, wlan_attach, CTLTYPE_INT | CTLFLAG_RW, 0, 0,
