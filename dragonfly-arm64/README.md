@@ -781,6 +781,8 @@ the secure monitor), then build Mesa's freedreno for Arcan.
 
 ### Phone shell
 
+![The shell in QEMU](docs/phone-shell-qemu.png)
+
 `arcan/appl/phone` is the user interface Arcan starts at boot (the
 terminal appl stays as its fallback). It follows the N9's swipe model
 with an Android-style home screen:
