@@ -305,15 +305,6 @@ smmu_cb_base(int n)
 	return (SMMU_BASE + (vm_paddr_t)(smmu_numpage + n) * smmu_pgsize);
 }
 
-/* The stream id bits this SMMU implements (IDR0.NUMSIDB), as an SMR mask. */
-static uint32_t
-smmu_sidmask(void)
-{
-	uint32_t numsidb = (smmu_read(0x20) >> 9) & 0xf;
-
-	return (numsidb == 0 || numsidb > 15 ? 0x7fff : (1U << numsidb) - 1);
-}
-
 static int
 smmu_bypass(void)
 {
@@ -342,12 +333,11 @@ smmu_bypass(void)
 	}
 	smmu_write(0xc00 + 4 * use, 1U << 16);		/* bypass */
 	/*
-	 * Valid, id 0, and every stream id masked in (SMR bits 30:16): the
-	 * Adreno SMMU serves only the GPU, and its secure-mode accesses
-	 * (the zap shader's CP_SET_SECURE_MODE hung with the ME busy and no
-	 * fault recorded) may come with another stream id than 0.
+	 * Valid, id 0, mask 0.  v45 tried masking in every stream id: the
+	 * write was dropped (SMR0 read back 0, not valid), the GPU's first
+	 * accesses then matched nothing and the phone reset.
 	 */
-	smmu_write(0x800 + 4 * use, (1U << 31) | (smmu_sidmask() << 16));
+	smmu_write(0x800 + 4 * use, (1U << 31) | 0);
 	__asm __volatile("dsb sy" : : : "memory");
 	s2cr = smmu_read(0xc00 + 4 * use);
 	if (((s2cr >> 16) & 3) != 1) {
