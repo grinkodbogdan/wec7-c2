@@ -63,3 +63,19 @@
  
  struct fd_acc_sample_provider {
     unsigned query_type;
+--- a/src/freedreno/ir3/ir3_disk_cache.c
++++ b/src/freedreno/ir3/ir3_disk_cache.c
+@@ -54,6 +54,13 @@
+    const char *renderer = fd_dev_name(compiler->dev_id);
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(ir3_disk_cache_init);
++   /*
++    * DragonFly/arm64: a static program has no dl_iterate_phdr()-visible
++    * build id, so no note; run without the shader disk cache instead of
++    * hashing build_id_data(NULL).
++    */
++   if (note == NULL)
++      return;
+    assert(note && build_id_length(note) == 20); /* sha1 */
+ 
+    const uint8_t *id_sha1 = build_id_data(note);
