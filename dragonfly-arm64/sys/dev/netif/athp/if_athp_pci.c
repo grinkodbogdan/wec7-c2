@@ -1091,7 +1091,8 @@ athp_pci_attach(device_t dev)
 	ret = ath10k_pci_chip_reset(ar_pci);
 	if (ret) {
 #ifdef ATHP_DFLY
-		athp_dfly_status("chip reset failed (%d)", ret);
+		athp_dfly_status("chip reset failed (%d), indicator %08x", ret,
+		    athp_dfly_last_ind);
 #endif
 		device_printf(ar->sc_dev, "%s: chip_reset failed: %d\n",
 		    __func__,

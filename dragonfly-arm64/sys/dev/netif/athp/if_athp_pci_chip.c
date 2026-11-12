@@ -793,9 +793,14 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 		ath10k_warn(ar, "failed to wait for target after cold reset: %d\n",
 				ret);
 #ifdef ATHP_DFLY
-		athp_dfly_status("chip reset: target not up (%d)", ret);
-#endif
+		/* the warm reset waits for the target again: let it try */
+		athp_dfly_status("cold: target not up (%d, ind %08x); warm anyway",
+		    ret, athp_dfly_last_ind);
+		if (ret != -ETIMEDOUT)
+			return ret;
+#else
 		return ret;
+#endif
 	}
 
 #ifdef ATHP_DFLY
@@ -997,6 +1002,7 @@ ath10k_pci_wait_for_target_init(struct ath10k_pci *ar_pci)
 	ath10k_pci_irq_msi_fw_mask(ar_pci);
 
 #ifdef ATHP_DFLY
+	athp_dfly_last_ind = val;
 	athp_dfly_status("target indicator 0x%08x after %d reads, %d ms", val,
 	    i, (ticks - t0) * 1000 / hz);
 #endif
@@ -1063,6 +1069,18 @@ ath10k_pci_cold_reset(struct ath10k_pci *ar_pci)
 		return (-EIO);
 	}
 	athp_dfly_in_reset = 0;
+	/*
+	 * The reset cleared PCIE_SOC_WAKE and put the SoC to sleep, but
+	 * the wake cache still says awake, so nothing would wake it again:
+	 * every read would see a sleeping chip.  Forget it and wake now.
+	 */
+	ATHP_PCI_PS_LOCK(ar_pci);
+	ar_pci->ps_awake = false;
+	ATHP_PCI_PS_UNLOCK(ar_pci);
+	if (ath10k_pci_wake(ar_pci) == 0)
+		ath10k_pci_sleep(ar_pci);
+	else
+		athp_dfly_status("cold reset: chip did not wake");
 #endif
 
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot cold reset complete\n");
