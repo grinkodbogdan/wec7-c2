@@ -392,22 +392,8 @@ wlan_power(void)
 	 * board), then GPIO 8, WLAN_EN: digital output, VIN2, driven high
 	 * (MODE_CTL: mode 1 in bits 6:4, source 0, invert 1)
 	 */
-	/*
-	 * Power-cycle the chip first: the bootloader may have left WLAN_EN
-	 * and the 3.3 V switch on, and a QCA6174 powered up without its
-	 * sleep clock keeps its always-on domain dead (RTC_STATE 0) until
-	 * it is switched off.  PERST# low, WLAN_EN low, 3.3 V off, 200 ms.
-	 * MODE_CTL 0x10 is digital output, constant, not inverted: low.
-	 */
-	tlmm_out(PERST_GPIO, 0, 0);
 	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(8) + 0x40, &v);
-	st("pm8994 gpio8 (WLAN_EN) was 0x%02x; power-cycling", v);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x40, 0x10);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x46, 0x80);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x40, 0x10);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x46, 0x80);
-	tlmm_out(BOOTSTRAP_GPIO, 0, 0);
-	DELAY(200000);
+	st("pm8994 gpio8 (WLAN_EN) was 0x%02x", v);
 
 	/*
 	 * PM8994 GPIO 18, "Rome Sleep Clock" in Xiaomi's board file: the
@@ -523,7 +509,7 @@ pcie0_up(void)
 	DELAY(1000);
 	rmw(DBI + DBI_DEVICE_CONTROL_STATUS, 0x7000, 5U << 12);	/* TLP rd 4K */
 	rmw(PARF + PARF_LTSSM, 0, 1U << 8);
-	for (i = 0; i < 40; ++i) {
+	for (i = 0; i < 200; ++i) {		/* up to 1 s */
 		DELAY(5000);
 		v = rd(ELBI + ELBI_SYS_STTS);
 		if ((v & XMLH_LINK_UP) && (rd(DBI + DBI_LINK_STATUS) & (1U << 29)))
@@ -658,7 +644,7 @@ msm8996_pcie_up(void)
 		return (wlan_bar ? 0 : EIO);
 	}
 	error = pcie0_up();
-	pcie_done = 1;
+	pcie_done = (error == 0);	/* a failed bring-up may be retried */
 	lockmgr(&pcie_lock, LK_RELEASE);
 	return (error);
 }

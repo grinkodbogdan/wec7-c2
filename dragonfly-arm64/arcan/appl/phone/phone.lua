@@ -2171,9 +2171,9 @@ local function settings_draw(inst)
 	local log = {}
 	if not string.find(wifi_driver_state(), "Not started", 1, true) then
 		-- the bring-up diagnostics first, then the latest messages
-		local cmd = "dmesg | grep -E 'athp diag|pcie0: (pm8994|link|chip)' | " ..
-			"tail -6; dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | " ..
-			"grep -v 'athp diag' | tail -8"
+		local cmd = "dmesg | grep 'athp diag' | tail -5; " ..
+			"dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | " ..
+			"grep -v 'athp diag' | tail -9"
 		for l in string.gmatch(run(cmd), "[^\n]+") do
 			l = string.gsub(l, "^athp diag: ", "")
 			if #l > 84 then
