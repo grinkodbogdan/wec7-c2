@@ -375,6 +375,36 @@ cxx() {
 meson_cross() {
 	sed "s|@SYSROOT@|$SYSROOT|g" "$HERE/tools/aarch64-dragonfly.meson.in" \
 	    > "$WOBJ/aarch64-dragonfly.meson"
+	# The same, with pkg-config looking only in the sysroot (for libdrm).
+	sed -e "s|^pkg-config = 'false'|pkg-config = 'pkg-config'|" \
+	    "$WOBJ/aarch64-dragonfly.meson" > "$WOBJ/aarch64-dragonfly-pc.meson"
+	printf "\n[properties]\npkg_config_libdir = ['%s']\n" \
+	    "$SYSROOT/usr/lib/pkgconfig" >> "$WOBJ/aarch64-dragonfly-pc.meson"
+}
+
+#
+# libdrm, the core library only (freedreno brings its own DRM layer in
+# Mesa), static: what Mesa's DRM drivers need to talk to /dev/dri.
+#
+LIBDRM_VERSION=${LIBDRM_VERSION:-2.4.120}
+libdrm() {
+	src=$HERE/work/libdrm-$LIBDRM_VERSION
+	[ -d "$src" ] || curl -sSfL \
+	    "https://dri.freedesktop.org/libdrm/libdrm-$LIBDRM_VERSION.tar.xz" |
+	    tar xJf - -C "$HERE/work"
+	meson_cross
+	b=$WOBJ/libdrm
+	[ -f "$b/build.ninja" ] || meson setup "$b" "$src" \
+	    --cross-file "$WOBJ/aarch64-dragonfly.meson" --prefix="$SYSROOT/usr" \
+	    -Dbuildtype=release -Ddefault_library=static -Dintel=disabled \
+	    -Dradeon=disabled -Damdgpu=disabled -Dnouveau=disabled \
+	    -Dvmwgfx=disabled -Domap=disabled -Dexynos=disabled \
+	    -Dfreedreno=disabled -Dtegra=disabled -Dvc4=disabled \
+	    -Detnaviv=disabled -Dcairo-tests=disabled -Dman-pages=disabled \
+	    -Dvalgrind=disabled -Dtests=false -Dinstall-test-programs=false \
+	    >/dev/null
+	ninja -C "$b" install >/dev/null
+	echo "installed libdrm in $SYSROOT/usr"
 }
 
 #
@@ -391,12 +421,21 @@ mesa() {
 		curl -sSfL "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz" |
 		    tar xJf - -C "$HERE/work"
 	fi
+	# OSMesa on the Adreno: patches/mesa/osmesa-drm.diff (freedreno
+	# when OSMESA_DRM_DEVICE names /dev/dri/card0, softpipe otherwise).
+	grep -q OSMESA_DRM_DEVICE "$src/src/gallium/targets/osmesa/target.c" ||
+	    (cd "$src" && patch -p1 < "$HERE/patches/mesa/osmesa-drm.diff")
+	# freedreno on DragonFly: lwp_gettid, no sysinfo(), builtin offsetof
+	grep -q fd_gettid "$src/src/gallium/drivers/freedreno/freedreno_util.h" ||
+	    (cd "$src" && patch -p1 < "$HERE/patches/mesa/freedreno-dragonfly.diff")
+	# Mesa's driver configuration code includes <regex.h> (DragonFly's TRE)
+	cp "$DFLY_SRC/lib/libc/tre-regex/regex.h" "$INC/"
 	meson_cross
-	b=$WOBJ/mesa
+	b=$WOBJ/mesa-fd
 	[ -f "$b/build.ninja" ] || meson setup "$b" "$src" \
-	    --cross-file "$WOBJ/aarch64-dragonfly.meson" --prefix="$SYSROOT/usr" \
+	    --cross-file "$WOBJ/aarch64-dragonfly-pc.meson" --prefix="$SYSROOT/usr" \
 	    -Dbuildtype=release -Ddefault_library=static -Dplatforms= \
-	    -Dgallium-drivers=swrast -Dvulkan-drivers= -Dosmesa=true \
+	    -Dgallium-drivers=swrast,freedreno -Dvulkan-drivers= -Dosmesa=true \
 	    -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dgles1=disabled \
 	    -Dgles2=disabled -Dllvm=disabled -Dshader-cache=disabled \
 	    -Dzlib=disabled -Dexpat=disabled -Dxmlconfig=disabled \
@@ -474,7 +513,7 @@ arcan() {
 	    -DOPENGL_gl_LIBRARY="$SYSROOT/usr/lib/libOSMesa.a" \
 	    -DOPENGL_opengl_LIBRARY="$SYSROOT/usr/lib/libOSMesa.a" \
 	    -DOPENGL_INCLUDE_DIR="$INC" -DOPENGL_GLX_INCLUDE_DIR="$INC" \
-	    -DDFLY_EXTRA_LIBS="-lOSMesa -lc++ -lc++abi -lunwind -lm" >/dev/null
+	    -DDFLY_EXTRA_LIBS="-lOSMesa -ldrm -lc++ -lc++abi -lunwind -lm" >/dev/null
 	ninja -C "$b" arcan arcan_frameserver afsrv_terminal >/dev/null
 	echo "built arcan, arcan_frameserver, afsrv_terminal in $b"
 }
@@ -487,6 +526,11 @@ hello() {
 		ldstatic "$o/$p" "$o/$p.o"
 		echo "built $o/$p"
 	done
+	# OpenGL test: OSMesa, on the GPU when OSMESA_DRM_DEVICE is set
+	cc -O2 -Wall -c "$HERE/user/gltest.c" -o "$o/gltest.o"
+	ldstatic "$o/gltest" "$o/gltest.o" -lOSMesa -ldrm -lc++ -lc++abi \
+	    -lunwind -lm
+	echo "built $o/gltest"
 }
 
 # The libraries and programs the ramdisk carries.  ls is built without
@@ -512,6 +556,7 @@ csu)		csu ;;
 cxx)		cxx ;;
 mesa)		mesa ;;
 freetype)	freetype ;;
+libdrm)		libdrm ;;
 arcan)		arcan ;;
 lib)		shift; lib "$@" ;;
 prog)		shift; prog "$@" ;;

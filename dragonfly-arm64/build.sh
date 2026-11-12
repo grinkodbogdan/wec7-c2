@@ -263,7 +263,7 @@ ramdisk() {
 	# Programs built against the real C library by world.sh, if any.
 	# DragonFly's sh then becomes /bin/sh and the test shell /bin/tsh;
 	# the test init stays /sbin/init (the real one needs /etc/rc).
-	for f in "$HERE"/work/wobj/hello/hello "$HERE"/work/wobj/hello/keymenu "$HERE"/work/wobj/hello/cxxtest; do
+	for f in "$HERE"/work/wobj/hello/hello "$HERE"/work/wobj/hello/keymenu "$HERE"/work/wobj/hello/cxxtest "$HERE"/work/wobj/hello/gltest; do
 		[ -x "$f" ] && cp "$f" "$root/bin/"
 	done
 	sr=$HERE/work/sysroot
@@ -302,6 +302,7 @@ ramdisk() {
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
 		cp "$HERE/user/touchtest.sh" "$root/etc/touchtest.sh"
 		cp "$HERE/user/gpufw.sh" "$root/etc/gpufw.sh"
+		cp "$HERE/user/gputest.sh" "$root/etc/gputest.sh"
 		[ -n "${ARCAN_AUTORUN:-}" ] &&
 		    echo "$ARCAN_AUTORUN" > "$root/etc/arcan.autorun"
 		llvm-strip "$root"/bin/* "$root"/sbin/* "$root"/usr/bin/* \

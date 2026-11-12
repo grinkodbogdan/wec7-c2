@@ -119,12 +119,21 @@ def build(args):
 				sys.exit("kernel needs %d bytes from 0x%x but the %s "
 					 "is loaded at 0x%x" % (need, args.load_addr,
 								 what, addr))
-	# The ramdisk must also end before the device tree.
-	rd_end = geometry["ramdisk_addr"] + len(ramdisk)
-	if geometry["ramdisk_addr"] < args.dtb_addr < rd_end:
+	# The ramdisk must not run into the device tree.  MSM8996 LK puts
+	# it at 0x82a00000 whatever the header says (README, twelfth boot),
+	# above the device tree; the kernel then moves the splash
+	# framebuffer to just after it, which must still fit inside LK's
+	# cont_splash_mem reservation (it ends at 0x85800000).
+	rd_addr = args.ramdisk_load_addr or geometry["ramdisk_addr"]
+	rd_end = rd_addr + len(ramdisk)
+	if rd_addr < args.dtb_addr < rd_end:
 		sys.exit("ramdisk (%d bytes at 0x%x) runs into the device tree "
-			 "at 0x%x" % (len(ramdisk), geometry["ramdisk_addr"],
-				      args.dtb_addr))
+			 "at 0x%x" % (len(ramdisk), rd_addr, args.dtb_addr))
+	if args.splash_end and \
+	    rd_end + args.fb_size + (1 << 20) > args.splash_end:
+		sys.exit("ramdisk (%d bytes at 0x%x) leaves no room for the "
+			 "framebuffer before 0x%x" % (len(ramdisk), rd_addr,
+						    args.splash_end))
 	cmdline = args.cmdline.encode("ascii")
 	if len(cmdline) >= 512 + 1024:
 		sys.exit("command line too long")
@@ -187,6 +196,19 @@ def main():
 			default=0x82000000,
 			help="where the bootloader puts the device tree "
 			     "(MSM8996 LK: 0x82000000)")
+	ap.add_argument("--ramdisk-load-addr", type=lambda v: int(v, 0),
+			default=0x82a00000,
+			help="where the bootloader really puts the ramdisk "
+			     "(MSM8996 LK: 0x82a00000 whatever the header says; "
+			     "0 to trust the header)")
+	ap.add_argument("--splash-end", type=lambda v: int(v, 0),
+			default=0x85800000,
+			help="end of LK's splash reservation, inside which the "
+			     "kernel moves the framebuffer past the ramdisk "
+			     "(0: no such limit)")
+	ap.add_argument("--fb-size", type=lambda v: int(v, 0),
+			default=1080 * 1920 * 3,
+			help="the framebuffer's size, for that check")
 	ap.add_argument("-o", "--output")
 	args = ap.parse_args()
 	if args.info:

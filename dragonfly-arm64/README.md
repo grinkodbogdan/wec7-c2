@@ -713,6 +713,40 @@ shader's job), and one `CP_MEM_WRITE` read back from memory to show the
 GPU runs commands. Clock gating, the GPMU, preemption, interrupts and the
 GPU's own page tables come later.
 
+**The GPU stack, all at once (forty-third image).** On request, the rest
+of the way in one image, untested on the phone between steps:
+
+- *Kernel:* `sys/dev/drm/msm/msm_dfly.c` (GPL) is `/dev/dri/card0` and
+  `/dev/dri/renderD128`: the part of the DRM and drm/msm interface that
+  Mesa's freedreno uses, at msm version 1.5 (VERSION, GEM_CLOSE,
+  GET_PARAM, GEM_NEW/INFO/CPU_PREP/CPU_FINI/MADVISE, GEM_SUBMIT,
+  WAIT_FENCE, SUBMITQUEUE_*). Buffers come from a 256MB contiguous pool
+  reserved at boot; the GPU sees physical addresses (its SMMU stream is
+  bypassed through a context bank, as Linux's Qualcomm quirk does); user
+  mappings are cached, so the kernel cleans and invalidates a
+  submission's buffers before the GPU runs them and a buffer in
+  CPU_PREP. Submissions go through `CP_INDIRECT_BUFFER_PFE`, with
+  `CACHE_FLUSH_TS` fences that are polled. The device appears once the
+  bring-up's `CP_MEM_WRITE` comes back.
+- *Userland:* libdrm 2.4.120 (core, static; `world.sh libdrm`), and Mesa
+  24.0.9 with freedreno beside softpipe (`patches/mesa/`: freedreno on
+  DragonFly, and OSMesa on a DRM device when `OSMESA_DRM_DEVICE` names
+  one). The rest of OSMesa is unchanged: the frontend reads frames back
+  into the caller's buffer, which is what Arcan's `fbmem` platform
+  already copies to the panel.
+- *Arcan:* `/etc/arcan.sh` copies the GPU firmware off the phone's
+  partitions, starts the zap shader and the GPU, waits for
+  `hw.mi5.gpu_ready`, and then renders on the GPU
+  (`OSMESA_DRM_DEVICE=/dev/dri/card0`); otherwise, and with boot
+  argument `msm8996.gpu=0`, in software as before. `/etc/gputest.sh`
+  (run at start) shows which, the bring-up's steps, and `gltest` on the
+  GPU.
+
+The ramdisk is now 19MB compressed. LK loads it at 0x82a00000 whatever
+the boot image header says, and the kernel moves the framebuffer past
+it within LK's splash reservation; `tools/mkbootimg.py` now checks those
+real addresses rather than the header's.
+
 ### GPU
 
 `qcom_gpu.c` is the first step toward the Adreno 530: it reports the

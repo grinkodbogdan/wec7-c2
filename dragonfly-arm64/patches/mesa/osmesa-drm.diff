@@ -1,0 +1,54 @@
+--- a/src/gallium/targets/osmesa/target.c
++++ b/src/gallium/targets/osmesa/target.c
+@@ -26,6 +26,13 @@
+ 
+ #include "sw/null/null_sw_winsys.h"
+ 
++#ifdef GALLIUM_FREEDRENO
++#include <fcntl.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include "freedreno/drm/freedreno_drm_public.h"
++#endif
++
+ 
+ struct pipe_screen *
+ osmesa_create_screen(void);
+@@ -37,6 +44,25 @@
+    struct sw_winsys *winsys;
+    struct pipe_screen *screen;
+ 
++#ifdef GALLIUM_FREEDRENO
++   /*
++    * DragonFly/arm64: OSMesa on a GPU.  With OSMESA_DRM_DEVICE naming a
++    * DRM device (the Adreno's /dev/dri/card0), render with freedreno;
++    * the frontend reads the result back into the caller's buffer as it
++    * does for softpipe.  Without it, or if that fails, the software path.
++    */
++   const char *drm = getenv("OSMESA_DRM_DEVICE");
++   if (drm && *drm) {
++      int fd = open(drm, O_RDWR | O_CLOEXEC);
++      if (fd >= 0) {
++         screen = fd_drm_screen_create_renderonly(fd, NULL, NULL);
++         if (screen)
++            return debug_screen_wrap(screen);
++         close(fd);
++      }
++   }
++#endif
++
+    /* We use a null software winsys since we always just render to ordinary
+     * driver resources.
+     */
+--- a/src/gallium/targets/osmesa/meson.build
++++ b/src/gallium/targets/osmesa/meson.build
+@@ -55,7 +55,8 @@
+     libmesa, libgallium, libws_null, osmesa_link_with,
+   ],
+   dependencies : [
+-    dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind, driver_swrast
++    dep_ws2_32, dep_selinux, dep_thread, dep_clock, dep_unwind, driver_swrast,
++    driver_freedreno,
+   ],
+   name_prefix : host_machine.system() == 'windows' ? '' : [],  # otherwise mingw will create libosmesa.dll
+   soversion : host_machine.system() == 'windows' ? '' : '8',
