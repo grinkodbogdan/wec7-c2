@@ -2170,7 +2170,7 @@ local function settings_draw(inst)
 	-- the driver's kernel messages, while bringing Wi-Fi up
 	local log = {}
 	if not string.find(wifi_driver_state(), "Not started", 1, true) then
-		for l in string.gmatch(run("dmesg | grep -E 'athp|pcie' | tail -10"),
+		for l in string.gmatch(run("dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | tail -10"),
 			"[^\n]+") do
 			if #l > 58 then
 				l = string.sub(l, 1, 57) .. "…"

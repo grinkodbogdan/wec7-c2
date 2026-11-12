@@ -392,6 +392,21 @@ wlan_power(void)
 	 * board), then GPIO 8, WLAN_EN: digital output, VIN2, driven high
 	 * (MODE_CTL: mode 1 in bits 6:4, source 0, invert 1)
 	 */
+	/*
+	 * PM8994 GPIO 18, "Rome Sleep Clock" in Xiaomi's board file: the
+	 * PMIC's 32 kHz sleep clock out to the chip (digital output, VIN2,
+	 * source "function 2", medium drive).  Without it the QCA6174's
+	 * always-on domain never runs and the SoC cannot be woken.
+	 * MODE_CTL: mode 1 << 4 | source 3 << 1; DIG_OUT_CTL: CMOS, medium.
+	 */
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x41, 2);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x45, 0x02);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x40, 0x16);
+	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x46, 0x80);
+	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(18) + 0x40, &v);
+	st("pm8994 gpio18 (sleep clock) mode 0x%02x", v);
+	DELAY(1000);
+
 	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(9) + 0x40, &v);
 	st("pm8994 gpio9 (3.3 V) mode 0x%02x", v);
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x40, 0x11);
