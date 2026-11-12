@@ -785,14 +785,16 @@ the secure monitor), then build Mesa's freedreno for Arcan.
 
 `arcan/appl/phone` is the user interface Arcan starts at boot (the
 terminal appl stays as its fallback). It follows ValOS's look, in black:
-glossy black frosted glass over a night winter city, widget cards on the
+glossy black frosted glass over a photograph of a city at night, widget cards on the
 home screen, a dock of round glass buttons with thin line icons, and a
 quick-settings sheet with tabs.
 
-- **Wallpapers ("ambiences")**: original night winter-city scenes drawn
-  by a shader (skyline in three layers, lit windows, snow on the roofs,
-  a glowing street, falling snow): Snowfall, Harbour, Neon, Aurora and
-  Midnight. Chosen in quick settings or Settings.
+- **Wallpapers ("ambiences")**: photographs of cities at night - London,
+  New York, Warsaw, Sydney and a snowy Warsaw evening - freely licensed
+  from Wikimedia Commons, cropped to portrait and slightly darkened
+  (`arcan/appl/phone/wallpapers/CREDITS` names each photographer and
+  licence). Chosen in quick settings or Settings, which show them as
+  round thumbnails.
 - **Glass** is real frosting: each glass surface samples a small, blurred
   copy of the wallpaper at its own screen position, under a black tint
   with a gloss and a bright rim.

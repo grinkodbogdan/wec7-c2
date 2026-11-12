@@ -1,14 +1,15 @@
 -- phone: the shell for DragonFly BSD on the Xiaomi Mi 5.
 --
--- The look follows ValOS, in black: a night winter city under glossy
--- black glass; a home of widget cards (at a glance, files, the recent app), a
+-- The look follows ValOS, in black: a photograph of a city at night
+-- (London, New York, Warsaw, Sydney) under glossy black glass; a home of
+-- widget cards (at a glance, files, the recent app), a
 -- floating search pill and a dock of round glass buttons with thin line
 -- icons; a quick-settings sheet with tabs, tiles and sliders that light
 -- up white.  The glass is real: every glass surface shows a blurred copy
 -- of the wallpaper (a small render target, sampled at the surface's own
 -- screen position) under a black tint with a glossy sheen.  The
--- wallpapers are drawn by a shader: snowy cities at night, chosen as
--- the "ambience".
+-- wallpaper, the "ambience", is chosen in quick settings or Settings;
+-- the photographs and their credits are in wallpapers/.
 --
 -- Three views side by side, panned with a horizontal swipe, as on the N9
 -- and Sailfish:  Events | Home | Open apps.  In an app, swipe in from the
@@ -48,23 +49,13 @@ local C = {
 	tile = {0x26, 0x2a, 0x31},
 	gloss = {0x0b, 0x0d, 0x11},
 }
--- the ambiences: night winter cities.  dot is the swatch's colour.
+-- the ambiences: cities at night (wallpapers/CREDITS)
 local SCENES = {
-	{"Snowfall", dot = {0x5a, 0x6e, 0x9e}, sky_top = {0.02, 0.035, 0.08},
-		sky_low = {0.10, 0.14, 0.24}, lights = {1.0, 0.82, 0.55},
-		glow = {0.35, 0.42, 0.62}, snow = 1.0},
-	{"Harbour", dot = {0xd0, 0x7a, 0x30}, sky_top = {0.03, 0.03, 0.04},
-		sky_low = {0.16, 0.11, 0.08}, lights = {1.0, 0.70, 0.35},
-		glow = {0.85, 0.45, 0.15}, snow = 0.6},
-	{"Neon", dot = {0xb0, 0x40, 0xa0}, sky_top = {0.02, 0.02, 0.06},
-		sky_low = {0.12, 0.06, 0.16}, lights = {0.55, 0.95, 1.0},
-		glow = {0.75, 0.20, 0.65}, snow = 0.8},
-	{"Aurora", dot = {0x30, 0xb0, 0x80}, sky_top = {0.01, 0.05, 0.06},
-		sky_low = {0.05, 0.20, 0.18}, lights = {1.0, 0.90, 0.70},
-		glow = {0.20, 0.75, 0.55}, snow = 0.7},
-	{"Midnight", dot = {0x40, 0x44, 0x4c}, sky_top = {0.0, 0.0, 0.01},
-		sky_low = {0.04, 0.05, 0.07}, lights = {0.95, 0.92, 0.85},
-		glow = {0.18, 0.20, 0.26}, snow = 0.5},
+	{"London", file = "london.jpg"},
+	{"New York", file = "newyork.jpg"},
+	{"Warsaw", file = "warsaw.jpg"},
+	{"Sydney", file = "sydney.jpg"},
+	{"Warsaw, snow", file = "warsaw-snow.jpg"},
 }
 local scene_i = 1
 local function accent()
@@ -270,109 +261,22 @@ void main()
 	mkg("glass_sheet", "0.74", "30.0")
 	mkg("glass_flat", "0.84", "0.0")
 
-	-- the wallpaper: an original night winter city - a skyline in three
-	-- layers of haze, lit windows, snow on the roofs, a glowing street,
-	-- falling snow.  The scene's colours are uniforms.
-	mk("wall", [[
-uniform vec3 sky_top;
-uniform vec3 sky_low;
-uniform vec3 lights;
-uniform vec3 glow;
-uniform float snow;
-float hash(float n)
-{
-	return fract(sin(n) * 43758.5453);
-}
-float hash2(vec2 p)
-{
-	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-float roofs(float x, float n, float seed, float base, float range)
-{
-	float col = floor(x * n);
-	float h = hash(col * 1.7 + seed);
-	float tower = step(0.84, hash(col * 3.1 + seed + 5.0));
-	return base - range * (0.30 + 0.70 * h) - tower * range * 0.85;
-}
-float windows(vec2 uv, vec2 grid, float seed, float density)
-{
-	vec2 g = uv * grid;
-	vec2 c = floor(g);
-	vec2 f = fract(g);
-	float lit = step(1.0 - density, hash2(c + seed));
-	float w = step(0.28, f.x) * step(f.x, 0.72) * step(0.30, f.y) *
-		step(f.y, 0.78);
-	return lit * w * (0.55 + 0.45 * hash2(c + seed + 3.0));
-}
+	-- a scene's photograph in a circle: the swatches.  The texture
+	-- coordinates take a square from the middle of the portrait picture
+	-- (0.22 to 0.78 of its height), which the mask undoes
+	shaders.swatch = build_shader(nil, [[
+uniform sampler2D map_tu0;
+uniform float obj_opacity;
+uniform vec2 obj_output_sz;
+varying vec2 texco;
 void main()
 {
-	vec2 uv = texco;
-	float y = uv.y;
-	float x = uv.x;
-	vec3 c = mix(sky_top, sky_low, smoothstep(0.0, 0.62, y));
-	c += glow * 0.50 * smoothstep(0.28, 0.66, y) *
-		(1.0 - smoothstep(0.66, 0.82, y));
-	c += vec3(0.55, 0.60, 0.72) * 0.10 *
-		exp(-10.0 * length((uv - vec2(0.24, 0.13)) * vec2(1.0, 1.8)));
-
-	// far: towers in the haze
-	float hf = roofs(x, 30.0, 1.0, 0.60, 0.18);
-	float mf = smoothstep(hf - 0.002, hf + 0.002, y);
-	vec3 far = mix(sky_low, glow, 0.30) * 0.60 +
-		lights * 0.35 * windows(uv, vec2(240.0, 260.0), 2.0, 0.22);
-	c = mix(c, far, mf * 0.85);
-
-	// middle: blocks with lit windows and snow on the roofs
-	float hm = roofs(x, 16.0, 7.0, 0.70, 0.22);
-	float mm = smoothstep(hm - 0.002, hm + 0.002, y);
-	vec3 mid = vec3(0.030, 0.035, 0.050) + glow * 0.05;
-	mid += lights * 0.85 * windows(uv, vec2(110.0, 120.0), 9.0, 0.30) *
-		step(hm + 0.012, y);
-	mid += vec3(0.78, 0.82, 0.92) * 0.75 *
-		(1.0 - smoothstep(0.0, 0.006, y - hm));
-	c = mix(c, mid, mm);
-
-	// near: dark fronts, fewer and brighter windows
-	float hn = roofs(x, 8.0, 13.0, 0.85, 0.30);
-	float mn = smoothstep(hn - 0.002, hn + 0.002, y);
-	vec3 near = vec3(0.012, 0.014, 0.020);
-	near += lights * 1.1 * windows(uv, vec2(48.0, 62.0), 21.0, 0.26) *
-		step(hn + 0.02, y);
-	near += vec3(0.80, 0.84, 0.94) * 0.85 *
-		(1.0 - smoothstep(0.0, 0.007, y - hn));
-	c = mix(c, near, mn);
-
-	// mist between the layers, the street's glow, snow on the ground
-	c = mix(c, glow * 0.55 + sky_low * 0.45,
-		0.16 * smoothstep(0.55, 0.74, y) * (1.0 - smoothstep(0.80, 0.93, y)));
-	float street = smoothstep(0.90, 0.99, y);
-	c = mix(c, glow * 0.55 + vec3(0.20, 0.22, 0.26), street * 0.75);
-	c += vec3(0.70, 0.74, 0.84) * 0.22 * smoothstep(0.95, 1.0, y);
-
-	// falling snow: a near and a far layer of flakes
-	for (int i = 0; i < 2; i++) {
-		float sc = 22.0 + float(i) * 20.0;
-		vec2 p = uv * vec2(sc, sc * 1.78);
-		vec2 cell = floor(p);
-		vec2 f = fract(p);
-		float h = hash2(cell + float(i) * 17.0);
-		vec2 ctr = vec2(hash2(cell + 1.3), hash2(cell + 2.7)) * 0.8 + 0.1;
-		float r = (0.05 + 0.10 * h) * (i == 0 ? 1.0 : 0.6);
-		float flake = (1.0 - smoothstep(r * 0.35, r, length(f - ctr))) *
-			step(1.0 - snow * 0.55, h);
-		c += vec3(0.86, 0.90, 1.0) * flake * (i == 0 ? 0.70 : 0.40);
-	}
-	c *= 1.0 - 0.40 * length(uv - vec2(0.5, 0.42));
-	gl_FragColor = vec4(c, obj_opacity);
-}]])
-end
-
-local function set_scene_uniforms()
-	local sc = SCENES[scene_i]
-	for _, k in ipairs({"sky_top", "sky_low", "lights", "glow"}) do
-		shader_uniform(shaders.wall, k, "fff", sc[k][1], sc[k][2], sc[k][3])
-	end
-	shader_uniform(shaders.wall, "snow", "f", sc.snow)
+	vec2 sz = obj_output_sz;
+	vec2 tc = vec2(texco.x, (texco.y - 0.22) / 0.5625);
+	float d = length(tc * sz - 0.5 * sz) - 0.5 * min(sz.x, sz.y);
+	vec4 t = texture2D(map_tu0, texco);
+	gl_FragColor = vec4(t.rgb, obj_opacity * clamp(0.5 - d, 0.0, 1.0));
+}]], "phone_swatch")
 end
 
 ------------------------------------------------------------------------
@@ -494,6 +398,23 @@ local function wallpaper(parent, order)
 	image_sharestorage(wall_big, v)
 	place(v, parent, 0, 0, order)
 	show_image(v)
+	return v
+end
+
+-- the photographs, loaded once (see build_wallpaper)
+local scene_img = {}
+
+-- a round thumbnail of scene i
+local function swatch(parent, x, y, d, i, order)
+	local v = null_surface(d, d)
+	if valid_vid(scene_img[i]) then
+		image_sharestorage(scene_img[i], v)
+		image_set_txcos(v, {0, 0.22, 1, 0.22, 1, 0.7825, 0, 0.7825})
+		image_shader(v, shaders.swatch)
+	end
+	place(v, parent, x, y, order)
+	blend_image(v, 0.996)
+	force_image_blend(v, BLEND_NORMAL)
 	return v
 end
 
@@ -1292,7 +1213,6 @@ local function apply_scene(i)
 	if store_key then
 		pcall(store_key, "phone_scene", tostring(i))
 	end
-	set_scene_uniforms()
 	rebuild_wallpaper()
 	redraw_all()
 end
@@ -1428,7 +1348,7 @@ draw_qs = function()
 			if i == scene_i then
 				box(qs.a, ax - 5, y - 5, 50, 50, WHITE, "lring", 1.0, 3)
 			end
-			box(qs.a, ax, y, 40, 40, a.dot, "gloss", 1.0, 4)
+			swatch(qs.a, ax, y, 40, i, 4)
 			table.insert(qs.hits, {x = ax - 8, y = y - 8, w = 56, h = 56,
 				fn = function()
 					apply_scene(i)
@@ -2104,7 +2024,7 @@ local function settings_draw(inst)
 			if i == scene_i then
 				box(p, x - 5, ry + rh / 2 - 18, 36, 36, WHITE, "lring", 1.0, 3)
 			end
-			box(p, x, ry + rh / 2 - 13, 26, 26, SCENES[i].dot, "gloss", 1.0, 4)
+			swatch(p, x, ry + rh / 2 - 13, 26, i, 4)
 			table.insert(inst.hits, {x = x - 6, y = ry, w = 38, h = rh,
 				fn = function()
 					apply_scene(i)
@@ -2937,45 +2857,46 @@ end
 
 local autorun, autorun_at, test_view, test_steps
 
--- the landscape is drawn once into a texture, not every frame; the
--- glass's source is the same picture at an eighth of the size, which
--- the texture filtering and the glass shader's taps blur
-local function painted(w, h)
-	local rt = alloc_surface(w, h)
-	local src = color_surface(w, h, 0, 0, 0)
-	image_shader(src, shaders.wall)
-	show_image(src)
-	define_rendertarget(rt, {src}, RENDERTARGET_DETACH, RENDERTARGET_NOSCALE,
-		0)
-	rendertarget_forceupdate(rt)
-	return rt
-end
+-- the wallpaper shows scene_i's photograph; the glass's source is the
+-- same picture at an eighth of the size, which the texture filtering and
+-- the glass shader's taps blur
+local wall_src
 
 rebuild_wallpaper = function()
-	if valid_vid(wall_big) then
-		rendertarget_forceupdate(wall_big)
-		rendertarget_forceupdate(wall_small)
+	local img = scene_img[scene_i]
+	if not valid_vid(img) then
+		return
 	end
+	wall_big = img
+	image_sharestorage(img, wall)
+	image_sharestorage(img, wall_src)
+	rendertarget_forceupdate(wall_small)
 end
 
 local function build_wallpaper()
-	for _, v in ipairs({wall, wall_big, wall_small}) do
+	for i, sc in ipairs(SCENES) do
+		local v = load_image("wallpapers/" .. sc.file)
 		if valid_vid(v) then
-			delete_image(v)
+			hide_image(v)
+			image_mask_set(v, MASK_UNPICKABLE)
+			scene_img[i] = v
 		end
 	end
-	-- half the canvas each way: soft enough, and a quarter of the work
-	wall_big = painted(math.floor(W / 2), math.floor(H / 2))
+	if not valid_vid(scene_img[scene_i]) then
+		scene_i = 1
+	end
 	wall = null_surface(W, H)
-	image_sharestorage(wall_big, wall)
-	resize_image(wall, W, H)
 	order_image(wall, O_WALL)
 	show_image(wall)
 	image_mask_set(wall, MASK_UNPICKABLE)
-	wall_small = painted(math.floor(W / 8), math.floor(H / 8))
+	local sw, shh = math.floor(W / 8), math.floor(H / 8)
+	wall_small = alloc_surface(sw, shh)
+	wall_src = null_surface(sw, shh)
+	show_image(wall_src)
+	define_rendertarget(wall_small, {wall_src}, RENDERTARGET_DETACH,
+		RENDERTARGET_NOSCALE, 0)
+	rebuild_wallpaper()
 end
-
-
 
 function phone(args)
 	W, H = VRESW, VRESH
@@ -3003,7 +2924,6 @@ function phone(args)
 			scene_i = tonumber(v)
 		end
 	end
-	set_scene_uniforms()
 	build_wallpaper()
 
 	strip = anchor(nil, 0, 0, W * 3, H, O_HOME)
