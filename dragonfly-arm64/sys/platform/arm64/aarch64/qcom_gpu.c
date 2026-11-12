@@ -688,27 +688,34 @@ out:
 	return (error);
 }
 
+static int
+zap_load_status(void)
+{
+	int error = zap_load();
+
+	status("zap: finished, error %d", error);
+	return (error);
+}
+
 static void
 zap_thread(void *arg __unused)
 {
 	uint8_t *pm4 = NULL, *pfp = NULL;
 	size_t pm4_len, pfp_len;
-	int error = zap_load();
-
-	status("zap: finished, error %d", error);
-	if (error)
-		goto out;
+	int error;
 
 	/*
 	 * Start the GPU: Linux's a5xx_hw_init, cut down (the GPL part in
-	 * sys/dev/drm/msm), with the microcode the phone carries.
+	 * sys/dev/drm/msm), with the microcode the phone carries.  The zap
+	 * shader is loaded from inside, once the CP runs, as Linux does.
 	 */
 	if ((error = fw_read("/tmp/fw/a530_pm4.fw", &pm4, &pm4_len)) != 0 ||
 	    (error = fw_read("/tmp/fw/a530_pfp.fw", &pfp, &pfp_len)) != 0) {
 		status("a5xx: microcode: error %d", error);
 		goto out;
 	}
-	error = a5xx_dfly_start(status, pm4, pm4_len, pfp, pfp_len);
+	error = a5xx_dfly_start(status, zap_load_status, pm4, pm4_len, pfp,
+	    pfp_len);
 	status("a5xx: start finished, error %d", error);
 	if (error == 0)
 		msm_dfly_attach();

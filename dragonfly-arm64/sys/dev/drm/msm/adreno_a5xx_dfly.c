@@ -523,20 +523,9 @@ a5xx_cp_init(a5xx_status_fn status)
 	return (0);
 }
 
-/* a5xx_recover's soft reset of the whole GPU */
-static void
-a5xx_soft_reset(void)
-{
-	gpu_write(REG_A5XX_RBBM_SW_RESET_CMD, 1);
-	(void)gpu_read(REG_A5XX_RBBM_SW_RESET_CMD);
-	DELAY(100);
-	gpu_write(REG_A5XX_RBBM_SW_RESET_CMD, 0);
-	DELAY(100);
-}
-
 int
-a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
-    const uint8_t *pfp, size_t pfp_len)
+a5xx_dfly_start(a5xx_status_fn status, int (*zap)(void), const uint8_t *pm4,
+    size_t pm4_len, const uint8_t *pfp, size_t pfp_len)
 {
 	int error;
 
@@ -568,25 +557,23 @@ a5xx_dfly_start(a5xx_status_fn status, const uint8_t *pm4, size_t pm4_len,
 
 	/* (a5xx_power_init: the GPMU, left out for now) */
 
-	/* out of secure mode through the zap shader */
-	OUT_PKT7(CP_SET_SECURE_MODE, 1);
-	OUT_RING(0x00000000);
-	a5xx_flush();
-	if ((error = a5xx_idle_n("CP_SET_SECURE_MODE", 500000)) == 0) {
+	/*
+	 * Out of secure mode, a5xx_hw_init's way: the zap shader is loaded
+	 * only now, with the CP running (v44-v46 loaded it before the GPU
+	 * was set up, and CP_SET_SECURE_MODE then hung with the ME busy),
+	 * and CP_SET_SECURE_MODE has it switch the CP over.  With no zap
+	 * shader, RBBM_SECVID_TRUST_CNTL is written directly.
+	 */
+	if ((error = zap()) == 0) {
+		OUT_PKT7(CP_SET_SECURE_MODE, 1);
+		OUT_RING(0x00000000);
+		a5xx_flush();
+		if ((error = a5xx_idle_n("CP_SET_SECURE_MODE", 500000)) != 0)
+			return (error);
 		status("a5xx: out of secure mode");
 	} else {
-		/*
-		 * Linux's other path, for when no zap shader could be
-		 * loaded: reset, start again and leave secure mode by
-		 * writing RBBM_SECVID_TRUST_CNTL directly.  If the secure
-		 * world owns that register the write is dropped, and the
-		 * CP_MEM_WRITE below tells.
-		 */
-		status("a5xx: secure-mode exit hung; soft reset, and "
-		    "RBBM_SECVID_TRUST_CNTL written directly");
-		a5xx_soft_reset();
-		if ((error = a5xx_cp_init(status)) != 0)
-			return (error);
+		status("a5xx: no zap shader (error %d); writing "
+		    "RBBM_SECVID_TRUST_CNTL directly", error);
 		gpu_write(REG_A5XX_RBBM_SECVID_TRUST_CNTL, 0);
 		status("a5xx: RBBM_SECVID_TRUST_CNTL reads 0x%08x",
 		    gpu_read(REG_A5XX_RBBM_SECVID_TRUST_CNTL));
