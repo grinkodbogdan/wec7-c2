@@ -834,24 +834,32 @@ opens a view at start, for `tools/qemu-shot.py`.
 
 ### Wi-Fi
 
-The Mi 5's Wi-Fi is a QCA6174 ("Rome") on PCIe root complex 0. Making
-it work is four layers:
+The Mi 5's Wi-Fi is a QCA6174 ("Rome") on PCIe root complex 0. On the
+phone the driver attaches and the firmware runs
+(`WLAN.RM.2.0-00180-QCARMSWPZ-1`); joining a network is next.
 
-1. **PCIe link** (`sys/dev/qcom/pcie_msm8996.c`, GPL): the chip's power
-   (PM8994 GPIO 8 = WLAN_EN, GPIO 9 = its 3.3 V switch, L30 for the
-   crystal, the bootstrap pin), the controller's supplies and the RPM's
-   `ln_bb_clk`, the PCIe GDSC and clocks, the 14 nm QMP PHY (the phone
-   kernel's v3 tables), PERST#, link training, then the endpoint's
-   configuration space and BAR0 through the iATU. `sysctl
-   hw.mi5.pcie_up=1` runs it, `hw.mi5.pcie` reports each step and
-   `hw.mi5.wlan_id` the endpoint (0x168c003e for the QCA6174); Settings
-   has a Probe button. Untested on the phone yet.
-2. **ath10k**: Linux's driver is ISC-licensed; it is to be ported onto
-   this link (BAR0 access, copy engines, MSI or legacy interrupts,
-   firmware download over BMI).
-3. **802.11**: DragonFly's net80211, with firmware from the phone's own
-   partitions (bdwlan30.bin for the board data) or linux-firmware.
-4. **wpa_supplicant**, DHCP and a Wi-Fi panel in the shell.
+1. **PCIe link** (`sys/dev/qcom/pcie_msm8996.c`, GPL): follows mainline
+   Linux's `qcom_pcie_host_init` for the msm8996 controller step by
+   step -- PERST#, L28 and WLAN_EN (PM8994 GPIO 8, 70 ms startup, as
+   `msm8996-xiaomi-common.dtsi`), the aggre0 and pcie0 power domains
+   (no hardware control), the aggre0 clocks gcc-msm8996 keeps critical,
+   the pcie clocks, the 14 nm QMP PHY, `post_init_2_3_2`, PERST#
+   released, `dw_pcie_setup_rc`, link training. BAR0 is placed at its
+   size alignment (2 MB: 0x0c400000). `sysctl hw.mi5.pcie_up=1` (Probe
+   in Settings) runs it in a thread; `hw.mi5.pcie` reports each step.
+2. **athp** (`sys/dev/netif/athp`, ISC): Adrian Chadd's FreeBSD port of
+   Linux's ath10k, with a shim header for DragonFly. No PCI bus: the
+   device sits on the root bus, created by `sysctl hw.mi5.wlan_attach=1`
+   (Start in Settings); a kernel thread polls the interrupt cause
+   register until INTx is wired up. Firmware `firmware-4.bin` and
+   `board.bin` (linux-firmware, QCA6174 hw3.0) are linked into the
+   kernel. Progress is in `hw.mi5.wlan`. Bitmaps are Linux-style
+   unsigned long arrays: DragonFly's byte-based bitstring macros under
+   athp's `unsigned long *` callers overwrote the WMI ops pointer.
+3. **802.11**: DragonFly's net80211, patched for firmware-offloaded
+   crypto (`patches/net80211-offload.diff`); no VHT.
+4. **To do**: `ifconfig wlan create`, a scan, wpa_supplicant and
+   dhclient in the ramdisk, and a network list in Settings.
 
 ### What is untested or missing
 
