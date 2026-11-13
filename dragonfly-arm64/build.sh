@@ -390,6 +390,12 @@ ramdisk() {
 			unzip -p "$iz" LICENSE.txt \
 			    > "$root/usr/share/arcan/resources/fonts/Inter-LICENSE.txt"
 			cp "$HERE/user/arcan.sh" "$root/etc/arcan.sh"
+			# Wi-Fi: the shell's helper, dhclient's script, and a
+			# resolv.conf that lives on tmpfs
+			cp "$HERE/user/wifi.sh" "$root/etc/wifi.sh"
+			cp "$HERE/user/dhclient-script" "$root/sbin/dhclient-script"
+			chmod 755 "$root/sbin/dhclient-script"
+			ln -sf /tmp/var/resolv.conf "$root/etc/resolv.conf"
 		fi
 		cp "$HERE/user/h2test.sh" "$root/etc/h2test.sh"
 		cp "$HERE/user/touchtest.sh" "$root/etc/touchtest.sh"

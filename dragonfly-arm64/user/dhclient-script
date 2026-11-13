@@ -1,0 +1,45 @@
+#!/bin/sh
+# dhclient-script for the phone's ramdisk: address, default route and
+# resolv.conf (/etc/resolv.conf links to /tmp/var/resolv.conf), with only
+# sh, ifconfig, route and mv -- no arp, no resolvconf.
+
+delete_old() {
+	if [ -n "$old_ip_address" ]; then
+		ifconfig "$interface" inet "$old_ip_address" delete 2>/dev/null
+		route -q delete default >/dev/null 2>&1
+	fi
+}
+
+case "$reason" in
+MEDIUM|PREINIT)
+	ifconfig "$interface" up
+	;;
+BOUND|RENEW|REBIND|REBOOT|TIMEOUT)
+	if [ -n "$old_ip_address" ] &&
+	    [ "$old_ip_address" != "$new_ip_address" ]; then
+		delete_old
+	fi
+	if [ -n "$new_broadcast_address" ]; then
+		ifconfig "$interface" inet "$new_ip_address" \
+		    netmask "$new_subnet_mask" broadcast "$new_broadcast_address"
+	else
+		ifconfig "$interface" inet "$new_ip_address" \
+		    netmask "$new_subnet_mask"
+	fi
+	route -q delete default >/dev/null 2>&1
+	for r in $new_routers; do
+		route -q add default "$r" >/dev/null 2>&1 && break
+	done
+	r=/tmp/var/resolv.conf
+	: > "$r.new"
+	[ -n "$new_domain_name" ] && echo "search $new_domain_name" >> "$r.new"
+	for ns in $new_domain_name_servers; do
+		echo "nameserver $ns" >> "$r.new"
+	done
+	mv "$r.new" "$r"
+	;;
+EXPIRE|FAIL|RELEASE|STOP)
+	delete_old
+	;;
+esac
+exit 0

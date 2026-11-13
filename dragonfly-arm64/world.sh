@@ -340,6 +340,85 @@ prog() {
 }
 
 #
+# Networking for Wi-Fi: ifconfig (with 802.11), route, dhclient, and
+# what they need generated first -- route's keywords.h and expat's
+# headers renamed to bsdxml.h for ifconfig's regulatory domains.
+#
+netprogs() {
+	sync
+	g=$WOBJ/gen
+	mkdir -p "$g/route"
+	LC_ALL=C awk '!/^#|^$/ {
+		printf "#define\tK_%s\t%d\n\t{\"%s\", K_%s},\n",
+		    toupper($1), ++L, $1, toupper($1);
+	}' < "$DFLY_SRC/sbin/route/keywords" > "$g/route/keywords.h"
+	e=$DFLY_SRC/contrib/expat/lib
+	sed -e 's/XmlParse_INCLUDED/_BSD_XML_H_/' \
+	    -e 's/expat_external/bsdxml_external/' "$e/expat.h" > "$INC/bsdxml.h"
+	cp "$e/expat_external.h" "$INC/bsdxml_external.h"
+	lib lib/libexpat
+	lib lib/libsbuf
+	prog sbin/ifconfig
+	prog sbin/route -I"$g/route"
+	prog sbin/dhclient
+}
+
+#
+# wpa_supplicant 2.9 for WPA/WPA2-Personal (and open/WEP), with its own
+# internal crypto and a BPF link layer (contrib/.../l2_packet_bpf.c in
+# this tree) instead of OpenSSL and libpcap.  No EAP, WPS, P2P or HS2.0.
+#
+WPA_DEFS="-DCONFIG_DRIVER_BSD -DCONFIG_CTRL_IFACE -DCONFIG_CTRL_IFACE_UNIX
+	-DCONFIG_BACKEND_FILE -DCONFIG_SHA256 -DCONFIG_IEEE80211W
+	-DCONFIG_CRYPTO_INTERNAL -DCONFIG_NO_RADIUS -DCONFIG_NO_VLAN
+	-DCONFIG_NO_ACCOUNTING -DCONFIG_NO_CONFIG_BLOBS -DCONFIG_NO_RANDOM_POOL
+	-DCONFIG_DEBUG_FILE"
+WPA_SRCS="wpa_supplicant/main.c wpa_supplicant/wpa_supplicant.c
+	wpa_supplicant/events.c wpa_supplicant/scan.c wpa_supplicant/bss.c
+	wpa_supplicant/blacklist.c wpa_supplicant/wpas_glue.c
+	wpa_supplicant/config.c wpa_supplicant/config_file.c
+	wpa_supplicant/notify.c wpa_supplicant/ctrl_iface.c
+	wpa_supplicant/ctrl_iface_unix.c wpa_supplicant/op_classes.c
+	wpa_supplicant/rrm.c wpa_supplicant/wmm_ac.c
+	src/drivers/driver_bsd.c src/drivers/driver_common.c src/drivers/drivers.c
+	src/l2_packet/l2_packet_bpf.c
+	src/rsn_supp/wpa.c src/rsn_supp/preauth.c src/rsn_supp/pmksa_cache.c
+	src/rsn_supp/wpa_ie.c
+	src/common/wpa_common.c src/common/ieee802_11_common.c
+	src/common/hw_features_common.c src/common/ctrl_iface_common.c
+	src/utils/common.c src/utils/wpa_debug.c src/utils/wpabuf.c
+	src/utils/os_unix.c src/utils/eloop.c src/utils/bitfield.c
+	src/crypto/sha1.c src/crypto/sha1-internal.c src/crypto/sha1-pbkdf2.c
+	src/crypto/sha1-prf.c src/crypto/md5.c src/crypto/md5-internal.c
+	src/crypto/sha256.c src/crypto/sha256-internal.c src/crypto/sha256-prf.c
+	src/crypto/aes-internal.c src/crypto/aes-internal-enc.c
+	src/crypto/aes-internal-dec.c src/crypto/aes-unwrap.c
+	src/crypto/aes-wrap.c src/crypto/aes-omac1.c src/crypto/rc4.c
+	src/crypto/crypto_internal.c src/crypto/tls_none.c
+	wpa_supplicant/eap_register.c"
+
+wpa() {
+	sync
+	w=$DFLY_SRC/contrib/wpa_supplicant
+	o=$WOBJ/wpa_supplicant
+	rm -rf "$o"; mkdir -p "$o"
+	inc="-I$w/src -I$w/src/utils -I$w/src/common -I$w/src/crypto
+	    -I$w/src/l2_packet -I$w/src/drivers -I$w/src/rsn_supp
+	    -I$w/wpa_supplicant"
+	fail=0
+	for f in $WPA_SRCS; do
+		n=$(echo "$f" | tr / _)
+		cc -O2 -w $WPA_DEFS $inc -c "$w/$f" -o "$o/${n%.c}.o" \
+		    2> "$o/${n%.c}.log" || { echo "failed: $f"; fail=1; }
+	done
+	[ $fail = 0 ] || return 1
+	ldstatic "$o/wpa_supplicant" "$o"/*.o
+	mkdir -p "$SYSROOT/usr/sbin"
+	cp "$o/wpa_supplicant" "$SYSROOT/usr/sbin/"
+	echo "built wpa_supplicant"
+}
+
+#
 # The C++ runtime: LLVM's libunwind, libc++abi and libc++, static, with
 # patches/llvm/libcxx-dragonfly.diff (DragonFly takes FreeBSD's paths in
 # libc++'s locale and threading code).
@@ -552,6 +631,8 @@ progs() {
 
 case "${1:-all}" in
 progs)		progs ;;
+netprogs)	netprogs ;;
+wpa)		wpa ;;
 csu)		csu ;;
 cxx)		cxx ;;
 mesa)		mesa ;;

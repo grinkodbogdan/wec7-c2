@@ -695,6 +695,14 @@ function icons.play(p, cx, cy, s, o)
 		F_SYM, o)
 end
 
+function icons.wifi(p, cx, cy, s, o)
+	-- signal bars, rising left to right
+	for k = 1, 3 do
+		local h = s * (0.22 + 0.22 * k)
+		bar(p, cx + (k - 2) * s * 0.30, cy + s * 0.40 - h / 2, h, L, 0, IC, o)
+	end
+end
+
 function icons.charge(p, cx, cy, s, o)
 	text_c(p, cx, cy - s * 0.42, "⚡", math.floor(s * 0.55), C.text, F_SYM, o)
 end
@@ -1824,7 +1832,11 @@ local function kbd_press(inst, k)
 		if kbd.ctrl and #v == 1 and string.match(v, "%a") then
 			v = string.char(string.byte(string.lower(v)) - 96)
 		end
-		term_type(inst, v)
+		if inst.app.kbd_type then	-- a text field (Wi-Fi password)
+			inst.app.kbd_type(inst, v)
+		else
+			term_type(inst, v)
+		end
 		local rebuild = kbd.ctrl or kbd.layer == "upper"
 		kbd.ctrl = false
 		if kbd.layer == "upper" then
@@ -2145,7 +2157,14 @@ local function settings_draw(inst)
 	if #state > 44 then
 		state = string.sub(state, 1, 43) .. "…"
 	end
-	y = group(inst.a, y, {{label = "Wi-Fi chip", sub = state,
+	y = group(inst.a, y, {{label = "Networks",
+		sub = "Scan, connect, password",
+		right = function(p, ry, rh)
+			text_r(p, W - 36, ry + rh / 2 - 10, "›", 18, C.text3, F_REG, 4)
+			table.insert(inst.hits, {x = 16, y = ry, w = W - 32, h = rh,
+				fn = function() open_app("wifi") end})
+		end},
+		{label = "Wi-Fi chip", sub = state,
 		right = function(p, ry, rh)
 			box(p, W - 122, ry + rh / 2 - 18, 86, 36, accent(), "pill", 1.0, 4)
 			text_c(p, W - 79, ry + rh / 2 - 9, "Probe", 12, INK, F_SB, 5)
@@ -2251,6 +2270,340 @@ function settings_app.slide(inst, x, final)
 	if final or not inst.last_set or CLOCK - inst.last_set > 3 then
 		sysctl_set("hw.mi5.backlight", sys.backlight)
 		inst.last_set = CLOCK
+	end
+end
+
+-- Wi-Fi: scan, pick a network, type its password, connect.  The work
+-- is /etc/wifi.sh (ifconfig, wpa_supplicant, dhclient) run in the
+-- background; tick() picks up what it wrote.  Everything is on this one
+-- table: the file is near Lua's limit of 200 locals.
+local wifi_app = {id = "wifi", name = "Wi-Fi", glyph = "wifi", direct = true,
+	nets = {}, state = "", conf = "/tmp/var/wifi.conf"}
+
+-- run a wifi.sh command in the background; its output lands in OUT
+function wifi_app.bg(cmd, out)
+	run("mkdir -p /tmp/var; rm -f " .. out .. "; (sh /etc/wifi.sh " .. cmd ..
+		" > " .. out .. ".tmp 2>&1; echo \"rc=$?\" >> " .. out .. ".tmp; mv " ..
+		out .. ".tmp " .. out .. ") >/dev/null 2>&1 &")
+end
+
+function wifi_app.slurp(path)
+	local f = io and io.open(path, "r")
+	if not f then
+		return nil
+	end
+	local d = f:read("*a")
+	f:close()
+	return d
+end
+
+-- ifconfig -v wlan0 list scan: SSID (padded), BSSID, CHAN, RATE, S:N,
+-- INT, CAPS, then the information elements (RSN<...>, WPA<...>, ...)
+function wifi_app.parse(out)
+	local best = {}
+	for line in string.gmatch(out or "", "[^\n]+") do
+		local a, b = string.find(line,
+			"%x%x:%x%x:%x%x:%x%x:%x%x:%x%x")
+		if a and a > 1 then
+			local ssid = string.gsub(string.sub(line, 1, a - 1), "%s+$", "")
+			local rest = string.sub(line, b + 1)
+			local sig = tonumber(string.match(rest, "(%-?%d+):%-?%d+")) or -99
+			local sec = "open"
+			if string.find(rest, "RSN") or string.find(rest, "WPA") then
+				sec = "wpa"
+			else
+				local caps = string.match(rest,
+					"^%s*%d+%s+%S+%s+%-?%d+:%-?%d+%s+%d+%s+(%S*)")
+				if caps and string.find(caps, "P") then
+					sec = "wep"
+				end
+			end
+			if ssid ~= "" and (not best[ssid] or best[ssid].sig < sig) then
+				best[ssid] = {ssid = ssid, sig = sig, sec = sec,
+					wpa3 = string.find(rest, "SAE") ~= nil}
+			end
+		end
+	end
+	local nets = {}
+	for _, n in pairs(best) do
+		table.insert(nets, n)
+	end
+	table.sort(nets, function(x, y) return x.sig > y.sig end)
+	return nets
+end
+
+-- ifconfig wlan0: status, ssid, address
+function wifi_app.status()
+	local out = run("ifconfig wlan0")
+	local w = wifi_app
+	w.assoc = string.find(out, "status: associated") ~= nil
+	w.cur = string.match(out, "ssid \"([^\"]*)\"") or
+		string.match(out, "ssid (%S+)")
+	w.ip = string.match(out, "inet (%d+%.%d+%.%d+%.%d+)")
+end
+
+function wifi_app.hex(str)
+	return (string.gsub(str, ".", function(c)
+		return string.format("%02x", string.byte(c))
+	end))
+end
+
+-- wpa_supplicant.conf for one network
+function wifi_app.write_conf(n, pass)
+	local lines = {"network={", "\tssid=" .. wifi_app.hex(n.ssid),
+		"\tscan_ssid=1"}
+	if n.sec == "wpa" then
+		table.insert(lines, "\tkey_mgmt=WPA-PSK WPA-PSK-SHA256")
+		table.insert(lines, "\tproto=RSN WPA")
+		table.insert(lines, "\tieee80211w=1")
+		if #pass == 64 and not string.find(pass, "%X") then
+			table.insert(lines, "\tpsk=" .. pass)
+		else
+			table.insert(lines, "\tpsk=\"" .. pass .. "\"")
+		end
+	elseif n.sec == "wep" then
+		table.insert(lines, "\tkey_mgmt=NONE")
+		if (#pass == 10 or #pass == 26) and not string.find(pass, "%X") then
+			table.insert(lines, "\twep_key0=" .. pass)
+		else
+			table.insert(lines, "\twep_key0=\"" .. pass .. "\"")
+		end
+		table.insert(lines, "\twep_tx_keyidx=0")
+	else
+		table.insert(lines, "\tkey_mgmt=NONE")
+	end
+	table.insert(lines, "}")
+	run("mkdir -p /tmp/var")
+	local f = io and io.open(wifi_app.conf, "w")
+	if not f then
+		return false
+	end
+	f:write(table.concat(lines, "\n") .. "\n")
+	f:close()
+	return true
+end
+
+function wifi_app.connect(inst, n, pass)
+	local w = wifi_app
+	if not w.write_conf(n, pass or "") then
+		w.state = "Cannot write the network's settings"
+	else
+		w.state = "Connecting to " .. n.ssid .. "…"
+		w.busy = "conn"
+		w.bg("connect " .. w.conf, "/tmp/var/wifi.conn")
+	end
+	inst.mode = "list"
+	w.draw(inst)
+end
+
+function wifi_app.scan(inst)
+	local w = wifi_app
+	w.busy = "scan"
+	w.state = w.ready and "Scanning…" or
+		"Starting Wi-Fi (about half a minute the first time)…"
+	w.bg("scan", "/tmp/var/wifi.scan")
+end
+
+function wifi_app.draw(inst)
+	local w = wifi_app
+	clear_children(inst.a)
+	inst.view = nil
+	inst.hits = {}
+	app_bg(inst)
+	if inst.mode == "pw" then
+		return w.draw_pw(inst)
+	end
+	header(inst, "Settings", "Wi-Fi", false)
+	-- the state card
+	local y = HB + 4
+	inset(inst.a, 16, y, W - 32, 92, 2, "rrect", 0.5)
+	icons.wifi(inst.a, 50, y + 46, 26, 4)
+	local title = w.assoc and (w.cur or "Connected") or
+		(w.busy and "Working" or "Not connected")
+	text(inst.a, 82, y + 18, title, 15, C.text, F_SB, 4)
+	local sub = w.state ~= "" and w.state or
+		(w.assoc and (w.ip and ("Connected · " .. w.ip) or
+		"Associated, waiting for an address") or "Tap Scan to look for networks")
+	if #sub > 46 then
+		sub = string.sub(sub, 1, 45) .. "…"
+	end
+	text(inst.a, 82, y + 46, sub, 10, C.text2, F_REG, 4)
+	-- buttons
+	y = y + 104
+	local bw = math.floor((W - 44) / 2)
+	local btns = {{"Scan", function() w.scan(inst); w.draw(inst) end},
+		{w.assoc and "Disconnect" or "Turn off", function()
+			run("sh /etc/wifi.sh down")
+			w.state = ""
+			w.status()
+			w.draw(inst)
+		end}}
+	for i, b in ipairs(btns) do
+		local x = 16 + (i - 1) * (bw + 12)
+		box(inst.a, x, y, bw, 46, i == 1 and accent() or C.disc, "pill", 1.0, 4)
+		text_c(inst.a, x + bw / 2, y + 13, b[1], 13, i == 1 and INK or C.text,
+			F_SB, 5)
+		table.insert(inst.hits, {x = x, y = y, w = bw, h = 46, fn = b[2]})
+	end
+	y = y + 60
+	eyebrow(inst.a, 24, y, #w.nets > 0 and "Networks nearby" or
+		(w.busy == "scan" and "Looking…" or "No scan yet"))
+	y = y + 22
+	local rows = {}
+	for _, n in ipairs(w.nets) do
+		local pct = math.max(0, math.min(100, (n.sig + 100) * 2))
+		local sec = n.sec == "wpa" and (n.wpa3 and "WPA2/3" or "WPA2") or
+			(n.sec == "wep" and "WEP" or "Open")
+		table.insert(rows, {text = n.ssid, net = n,
+			right = sec .. " · " .. pct .. "%",
+			col = (w.assoc and w.cur == n.ssid) and hex(accent()) or nil})
+	end
+	list_view(inst, y, rows, 56, function(r)
+		local n = r.net
+		if n.sec == "open" then
+			w.connect(inst, n, "")
+		else
+			inst.mode = "pw"
+			inst.net = n
+			inst.pw = ""
+			inst.show = false
+			w.draw(inst)
+		end
+	end)
+end
+
+-- the password page, with the keyboard
+function wifi_app.draw_pw(inst)
+	local w = wifi_app
+	local n = inst.net
+	header(inst, "Wi-Fi", n.ssid, true)
+	kbd.h = kbd.key_h * 5 + 14
+	local y = HB + 8
+	eyebrow(inst.a, 24, y, n.sec == "wep" and "WEP key" or "Password")
+	y = y + 22
+	inset(inst.a, 16, y, W - 32, 56, 2, "rrect", 0.55)
+	local shown = inst.show and inst.pw or string.rep("•", #inst.pw)
+	if #shown > 34 then
+		shown = "…" .. string.sub(shown, -33)
+	end
+	text(inst.a, 32, y + 17, shown .. "|", 15, C.text, F_MED, 4)
+	y = y + 70
+	local bw = math.floor((W - 44) / 2)
+	local btns = {{inst.show and "Hide" or "Show", function()
+			inst.show = not inst.show
+			w.draw(inst)
+		end},
+		{"Connect", function()
+			if n.sec == "wpa" and (#inst.pw < 8 or #inst.pw > 64) then
+				w.state = "A WPA password has 8 to 63 characters"
+				inst.mode = "list"
+				w.draw(inst)
+				return
+			end
+			w.connect(inst, n, inst.pw)
+		end}}
+	for i, b in ipairs(btns) do
+		local x = 16 + (i - 1) * (bw + 12)
+		box(inst.a, x, y, bw, 46, i == 2 and accent() or C.disc, "pill", 1.0, 4)
+		text_c(inst.a, x + bw / 2, y + 13, b[1], 13, i == 2 and INK or C.text,
+			F_SB, 5)
+		table.insert(inst.hits, {x = x, y = y, w = bw, h = 46, fn = b[2]})
+	end
+	kbd_build(inst.a, inst.ah - kbd.h)
+end
+
+function wifi_app.kbd_type(inst, v)
+	if v == BKSP then
+		inst.pw = string.sub(inst.pw, 1, -2)
+	elseif v == ENTER then
+		inst.hits[#inst.hits].fn()	-- Connect
+		return
+	elseif v == TAB or v == ESC then
+		return
+	else
+		inst.pw = inst.pw .. v
+	end
+	wifi_app.draw(inst)
+end
+
+function wifi_app.create(inst)
+	inst.mode = "list"
+	wifi_app.ready = string.find(run("sysctl -n hw.mi5.wlan"), "^ready") ~= nil
+	wifi_app.status()
+	if wifi_app.busy == "test" then
+		wifi_app.busy = nil
+	elseif not wifi_app.busy and #wifi_app.nets == 0 then
+		wifi_app.scan(inst)
+	end
+	wifi_app.draw(inst)
+end
+
+function wifi_app.down(inst, x, y)
+	if inst.mode == "pw" then
+		return term_app.down(inst, x, y)
+	end
+	return false
+end
+
+function wifi_app.tap(inst, x, y)
+	if y < HB and x < 70 and inst.back then
+		inst.mode = "list"
+		wifi_app.draw(inst)
+		return
+	end
+	for _, r in ipairs(inst.hits or {}) do
+		if hit(r, x, y) then
+			r.fn()
+			return
+		end
+	end
+	if inst.mode == "list" then
+		list_tap(inst, x, y)
+	end
+end
+
+function wifi_app.drag(inst, dy, final)
+	if inst.mode == "list" then
+		list_drag(inst, dy, final)
+	end
+end
+
+-- background results, and the connection's state every two seconds
+function wifi_app.tick(inst)
+	local w = wifi_app
+	if w.busy == "scan" then
+		local out = w.slurp("/tmp/var/wifi.scan")
+		if out then
+			w.busy = nil
+			w.ready = true
+			w.nets = w.parse(out)
+			w.state = #w.nets == 0 and ("No networks found" ..
+				(string.find(out, "rc=0") and "" or (": " ..
+				(string.match(out, "([^\n]+)\n?rc=") or "error")))) or ""
+			if inst.mode == "list" then
+				w.draw(inst)
+			end
+		end
+	elseif w.busy == "conn" then
+		local out = w.slurp("/tmp/var/wifi.conn")
+		if out then
+			w.busy = nil
+			w.state = string.find(out, "rc=0") and "" or
+				(string.match(out, "([^\n]+)\n?rc=") or "Could not connect")
+			w.status()
+			if inst.mode == "list" then
+				w.draw(inst)
+			end
+		end
+	end
+	if CLOCK >= (w.next_status or 0) and not w.busy then
+		w.next_status = CLOCK + 50
+		local was = tostring(w.assoc) .. tostring(w.ip) .. tostring(w.cur)
+		w.status()
+		if was ~= tostring(w.assoc) .. tostring(w.ip) .. tostring(w.cur) and
+			inst.mode == "list" then
+			w.draw(inst)
+		end
 	end
 end
 
@@ -2511,7 +2864,8 @@ function clock_app.tick(inst)
 	end
 end
 
-apps = {term_app, files_app, calc_app, clock_app, system_app, settings_app}
+apps = {term_app, files_app, calc_app, clock_app, system_app, settings_app,
+	wifi_app}
 for _, a in ipairs(apps) do
 	app_by_id[a.id] = a
 end
@@ -3111,6 +3465,24 @@ function phone(args)
 					set_page(test_view == "recent" and 2 or 3, 0)
 				end},
 			}
+		elseif test_view == "wifilist" or test_view == "wifipw" then
+			-- a canned scan through the real parser
+			wifi_app.busy = "test"
+			wifi_app.nets = wifi_app.parse(table.concat({
+				"SSID/MESH ID    BSSID              CHAN RATE    S:N     INT CAPS",
+				"Home Network 5G 11:22:33:44:55:66   36   54M -48:-95   100 EP   RSN<v1>",
+				"Cafe Free       aa:bb:cc:dd:ee:ff    6   54M -71:-95   100 E    WME",
+				"Office          12:34:56:78:9a:bc   11   54M -63:-95   100 EP   WPA<v1> RSN<v1>",
+				"Old router      de:ad:be:ef:00:01    1   11M -84:-95   100 EP   ",
+			}, "\n"))
+			open_app("wifi")
+			if test_view == "wifipw" then
+				local inst = running.wifi
+				inst.mode = "pw"
+				inst.net = wifi_app.nets[1]
+				inst.pw = "hunter2x"
+				in_app(inst, wifi_app.draw)
+			end
 		elseif app_by_id[test_view] then
 			open_app(test_view)
 		end
