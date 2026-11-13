@@ -193,7 +193,10 @@ trap_fatal(struct trapframe *frame, int from_el1)
 	dump_frame(frame);
 	if (!from_el1)
 		panic("exception from user mode: not supported yet");
-	panic("%s", esr_class_name(ec));
+	/* the essentials in the panic line itself: it is what stays on screen */
+	panic("%s: pc %#jx lr %#jx far %#jx (%s)", esr_class_name(ec),
+	    (uintmax_t)frame->tf_elr, (uintmax_t)frame->tf_lr,
+	    (uintmax_t)frame->tf_far, curthread->td_comm);
 }
 
 /*

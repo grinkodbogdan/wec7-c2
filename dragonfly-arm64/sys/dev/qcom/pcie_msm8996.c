@@ -609,6 +609,102 @@ smmu_bypass(void)
 	st("smmu: bypass, scr0 now 0x%08x", rd(ANOC0_SMMU + SMMU_SCR0));
 }
 
+/*
+ * The secure side keeps sCR0 (no global bypass, unmatched streams
+ * fault), so the chip's stream is caught by a stream-match entry set up
+ * by the boot firmware, pointing at a context bank with nothing mapped.
+ * After a stalled transfer: find the context bank that faulted, read
+ * the faulting stream id (CBFRSYNRA), and turn every matching SMR's
+ * S2CR to bypass.  An unidentified-stream fault (sGFSR.USF) instead
+ * gets a new bypass SMR for exactly its id.  Logs what it saw and did;
+ * returns the number of entries changed.
+ */
+#define	SMMU_SIDR1		0x024
+#define	SMMU_SMR(n)		(0x800 + 4 * (n))
+#define	SMMU_S2CR(n)		(0xc00 + 4 * (n))
+#define	SMMU_CB_FSR		0x058
+#define	SMMU_CB_FAR		0x060
+#define	S2CR_BYPASS		(1U << 16)
+
+int
+msm8996_pcie_smmu_fix(void)
+{
+	uint32_t idr0 = rd(ANOC0_SMMU + SMMU_SIDR0);
+	uint32_t idr1 = rd(ANOC0_SMMU + SMMU_SIDR1);
+	uint32_t pg = (idr1 & (1U << 31)) ? 0x10000 : 0x1000;
+	uint32_t npage = 1U << (((idr1 >> 28) & 7) + 1);
+	uint32_t nsmr = idr0 & 0xff, ncb = idr1 & 0xff, gfsr, sid, smr, s2cr;
+	vm_paddr_t cb0 = ANOC0_SMMU + (vm_paddr_t)npage * pg;
+	int n, i, changed = 0, shown = 0;
+	char line[160];
+	int len = 0;
+
+	/* the stream-match table as found */
+	for (i = 0; i < (int)nsmr && i < 128; ++i) {
+		smr = rd(ANOC0_SMMU + SMMU_SMR(i));
+		if (!(smr & (1U << 31)))
+			continue;
+		len += ksnprintf(line + len, sizeof(line) - len, "%d:%x/%x>%x ",
+		    i, smr & 0x7fff, (smr >> 16) & 0x7fff,
+		    rd(ANOC0_SMMU + SMMU_S2CR(i)));
+		if (len > 110) {
+			kprintf("smmu smr %s\n", line);
+			len = 0;
+			shown++;
+		}
+	}
+	if (len)
+		kprintf("smmu smr %s\n", line);
+	kprintf("smmu: %u smr, %u cb, cb0 at %#lx, gfsr %08x\n", nsmr, ncb,
+	    (unsigned long)cb0, rd(ANOC0_SMMU + SMMU_SGFSR));
+
+	/* context-bank faults: whose stream? */
+	for (n = 0; n < (int)ncb && n < 64; ++n) {
+		vm_paddr_t cb = cb0 + (vm_paddr_t)n * pg;
+		uint32_t fsr = rd(cb + SMMU_CB_FSR);
+
+		if (fsr == 0)
+			continue;
+		sid = rd(ANOC0_SMMU + pg + 0x400 + 4 * n) & 0xffff;
+		kprintf("smmu: cb%d fsr %08x far %08x%08x sid %#x\n", n, fsr,
+		    rd(cb + SMMU_CB_FAR + 4), rd(cb + SMMU_CB_FAR), sid);
+		for (i = 0; i < (int)nsmr && i < 128; ++i) {
+			smr = rd(ANOC0_SMMU + SMMU_SMR(i));
+			if (!(smr & (1U << 31)))
+				continue;
+			if (((smr ^ sid) & ~((smr >> 16) & 0x7fff) & 0x7fff) != 0)
+				continue;
+			s2cr = rd(ANOC0_SMMU + SMMU_S2CR(i));
+			if ((s2cr & (3U << 16)) == S2CR_BYPASS)
+				continue;
+			wr(ANOC0_SMMU + SMMU_S2CR(i), S2CR_BYPASS);
+			kprintf("smmu: smr %d (sid %#x) %08x -> bypass, now %08x\n",
+			    i, sid, s2cr, rd(ANOC0_SMMU + SMMU_S2CR(i)));
+			changed++;
+		}
+		wr(cb + SMMU_CB_FSR, fsr);	/* clear */
+	}
+
+	/* an unidentified stream: give it its own bypass entry */
+	gfsr = rd(ANOC0_SMMU + SMMU_SGFSR);
+	if (gfsr & 2) {
+		sid = rd(ANOC0_SMMU + SMMU_SGFSYNR1) & 0x7fff;
+		for (i = 0; i < (int)nsmr && i < 128; ++i)
+			if (!(rd(ANOC0_SMMU + SMMU_SMR(i)) & (1U << 31)))
+				break;
+		if (i < (int)nsmr) {
+			wr(ANOC0_SMMU + SMMU_S2CR(i), S2CR_BYPASS);
+			wr(ANOC0_SMMU + SMMU_SMR(i), (1U << 31) | sid);
+			kprintf("smmu: unmatched sid %#x -> new smr %d bypass "
+			    "(%08x)\n", sid, i, rd(ANOC0_SMMU + SMMU_SMR(i)));
+			changed++;
+		}
+		wr(ANOC0_SMMU + SMMU_SGFSR, gfsr);
+	}
+	(void)shown;
+	return (changed);
+}
+
 /* the SMMU's global fault state, for the driver's diagnostics */
 void
 msm8996_pcie_smmu_diag(char *buf, size_t len)

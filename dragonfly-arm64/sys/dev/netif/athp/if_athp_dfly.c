@@ -208,6 +208,8 @@ athp_dfly_dma_diag(struct ath10k *ar, const char *what)
 
 	msm8996_pcie_smmu_diag(sm, sizeof(sm));
 	kprintf("athp diag: %s: no DMA; %s\n", what, sm);
+	if (msm8996_pcie_smmu_fix() > 0)
+		athp_dfly_note("SMMU entry set to bypass; retrying");
 }
 
 /* the same without the pause or the console line: for progress in loops */
