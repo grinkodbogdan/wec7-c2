@@ -1736,6 +1736,11 @@ ath10k_core_register_work(void *arg, int npending)
 	status = attempt_ath10k_core_probe_fw(ar, 0);
 	if (status) {
 		ath10k_err(ar, "could not probe fw (%d)\n", status);
+#ifdef ATHP_DFLY
+		/* stop the interrupt poller touching torn-down CE state */
+		ar->sc_invalid = 1;
+		athp_dfly_status("firmware probe failed (%d)", status);
+#endif
 		goto err;
 	}
 	status = ath10k_mac_register(ar);

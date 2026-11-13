@@ -197,6 +197,19 @@ athp_dfly_attach(void)
 	return (0);
 }
 
+/*
+ * A copy-engine transfer never completed: the chip could not read its
+ * ring from RAM.  Say what the SMMU in front of PCIe saw.
+ */
+void
+athp_dfly_dma_diag(struct ath10k *ar, const char *what)
+{
+	char sm[96];
+
+	msm8996_pcie_smmu_diag(sm, sizeof(sm));
+	kprintf("athp diag: %s: no DMA; %s\n", what, sm);
+}
+
 /* the same without the pause or the console line: for progress in loops */
 void
 athp_dfly_note(const char *fmt, ...)

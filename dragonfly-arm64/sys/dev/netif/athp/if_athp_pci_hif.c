@@ -300,6 +300,9 @@ ath10k_pci_diag_read_mem(struct ath10k *ar, u32 address, void *data,
 			DELAY(1 * 1000);
 			if (i++ > DIAG_ACCESS_CE_TIMEOUT_MS) {
 				ret = -EBUSY;
+#ifdef ATHP_DFLY
+				athp_dfly_dma_diag(ar, "diag send");
+#endif
 				goto done;
 			}
 		}
