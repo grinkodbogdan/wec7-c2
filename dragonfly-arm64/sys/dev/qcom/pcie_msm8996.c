@@ -49,6 +49,9 @@
 #define	GCC_SMMU_AGGRE0_AXI_CBCR (GCC + 0x81014)
 #define	GCC_AGGRE0_NOC_GDSCR	(GCC + 0x81004)
 #define	GCC_SMMU_AGGRE0_AHB_CBCR (GCC + 0x81018)
+/* the aggre0 NoC's own clocks (Linux's bus driver turns them on for a vote) */
+#define	GCC_AGGRE0_SNOC_AXI_CBCR (GCC + 0x81008)
+#define	GCC_AGGRE0_CNOC_AHB_CBCR (GCC + 0x8100c)
 /* anoc0's SMMU (ARM SMMU v2), in front of the PCIe masters */
 #define	ANOC0_SMMU		0x01640000UL
 #define	SMMU_SCR0		0x000
@@ -487,6 +490,16 @@ pcie0_up(void)
 	rmw(GCC_PCIE_PHY_NOCSR_COM_PHY_BCR, 1U, 0);
 	rmw(GCC_PCIE_0_PHY_BCR, 1U, 0);
 	DELAY(10);
+	/*
+	 * The path from PCIe to RAM: a0noc -> snoc -> DDR.  a0noc's bus
+	 * clock is gcc_aggre0_snoc_axi_clk (msm8996-bus.dtsi, fab-a0noc),
+	 * which nothing turned on: the chip's DMA reads never completed.
+	 */
+	wr(GCC_AGGRE0_SNOC_AXI_CBCR, rd(GCC_AGGRE0_SNOC_AXI_CBCR) | 1U);
+	wr(GCC_AGGRE0_CNOC_AHB_CBCR, rd(GCC_AGGRE0_CNOC_AHB_CBCR) | 1U);
+	DELAY(100);
+	st("a0noc clocks: snoc_axi %08x cnoc_ahb %08x",
+	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
 	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
 	smmu_bypass();
 
@@ -607,6 +620,26 @@ smmu_bypass(void)
 	wr(ANOC0_SMMU + SMMU_SCR0, (v | 1U) & ~(1U << 10));
 	wr(ANOC0_SMMU + SMMU_SGFSR, rd(ANOC0_SMMU + SMMU_SGFSR));
 	st("smmu: bypass, scr0 now 0x%08x", rd(ANOC0_SMMU + SMMU_SCR0));
+	/*
+	 * The secure side keeps CLIENTPD clear, and with USFCFG set an
+	 * unmatched stream (ours: no SMR is in use) is faulted.  With the
+	 * table empty, one entry matching every stream id cannot clash with
+	 * anything: S2CR bypass, SMR valid with a full mask.
+	 */
+	{
+		uint32_t n = rd(ANOC0_SMMU + SMMU_SIDR0) & 0xff, i, used = 0;
+
+		for (i = 0; i < n; ++i)
+			if (rd(ANOC0_SMMU + 0x800 + 4 * i) & (1U << 31))
+				used++;
+		if (n > 0 && used == 0) {
+			wr(ANOC0_SMMU + 0xc00, 1U << 16);
+			wr(ANOC0_SMMU + 0x800, (1U << 31) | (0x7fffU << 16));
+			st("smmu: smr0 all streams -> bypass: smr %08x s2cr %08x",
+			    rd(ANOC0_SMMU + 0x800), rd(ANOC0_SMMU + 0xc00));
+		} else
+			st("smmu: %u of %u smr in use; left alone", used, n);
+	}
 }
 
 /*
