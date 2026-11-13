@@ -262,6 +262,12 @@ branch_on(const char *name, vm_paddr_t cbcr)
 static int
 gdsc_on(const char *name, vm_paddr_t gdscr)
 {
+	/*
+	 * As Linux's gdsc driver does at probe: no hardware trigger, no
+	 * software override, so the domain cannot collapse on its own
+	 * while idle (aggre0 did: the SMMU's registers then hung a read).
+	 */
+	wr(gdscr, rd(gdscr) & ~((1U << 1) | (1U << 2)));
 	if (rd(gdscr) & (1U << 31))
 		return (0);
 	wr(gdscr, rd(gdscr) & ~1U);
@@ -481,6 +487,8 @@ pcie0_up(void)
 	if (gdsc_on("aggre0_noc", GCC_AGGRE0_NOC_GDSCR) ||
 	    gdsc_on("pcie_0", GCC_PCIE_0_GDSCR))
 		return (EIO);
+	st("power domains: aggre0 %08x (status %08x) pcie_0 %08x",
+	    rd(GCC_AGGRE0_NOC_GDSCR), rd(GCC + 0x81028), rd(GCC_PCIE_0_GDSCR));
 	/* aux clock source: XO / 19 through M/N, 1.0105 MHz */
 	wr(GCC_PCIE_AUX_CMD_RCGR + 0x08, 1);			/* M */
 	wr(GCC_PCIE_AUX_CMD_RCGR + 0x0c, ~(19U - 1U) & 0xffff);	/* N */
@@ -642,27 +650,11 @@ smmu_bypass(void)
 	wr(ANOC0_SMMU + SMMU_SGFSR, rd(ANOC0_SMMU + SMMU_SGFSR));
 	st("smmu: bypass, scr0 now 0x%08x", rd(ANOC0_SMMU + SMMU_SCR0));
 	/*
-	 * The secure side keeps CLIENTPD clear, and with USFCFG set an
-	 * unmatched stream (ours: no SMR is in use) is faulted.  With the
-	 * table empty, one entry matching every stream id cannot clash with
-	 * anything: S2CR bypass, SMR valid with a full mask.
+	 * No catch-all entry here: an SMR with a full mask is dropped by
+	 * this SoC's SMMUs and the next access resets the phone (seen on
+	 * the GPU's).  msm8996_pcie_smmu_fix() adds an exact one for the
+	 * chip's stream once a stalled transfer names it.
 	 */
-	{
-		uint32_t n = rd(ANOC0_SMMU + SMMU_SIDR0) & 0xff, i, used = 0;
-
-		for (i = 0; i < n; ++i)
-			if (rd(ANOC0_SMMU + 0x800 + 4 * i) & (1U << 31))
-				used++;
-		if (n > 0 && used == 0) {
-			st("smmu: adding a catch-all bypass entry");
-			pace();
-			wr(ANOC0_SMMU + 0xc00, 1U << 16);
-			wr(ANOC0_SMMU + 0x800, (1U << 31) | (0x7fffU << 16));
-			st("smmu: smr0 all streams -> bypass: smr %08x s2cr %08x",
-			    rd(ANOC0_SMMU + 0x800), rd(ANOC0_SMMU + 0xc00));
-		} else
-			st("smmu: %u of %u smr in use; left alone", used, n);
-	}
 }
 
 /*
@@ -751,8 +743,30 @@ msm8996_pcie_smmu_fix(void)
 		if (i < (int)nsmr) {
 			wr(ANOC0_SMMU + SMMU_S2CR(i), S2CR_BYPASS);
 			wr(ANOC0_SMMU + SMMU_SMR(i), (1U << 31) | sid);
-			kprintf("smmu: unmatched sid %#x -> new smr %d bypass "
-			    "(%08x)\n", sid, i, rd(ANOC0_SMMU + SMMU_SMR(i)));
+			__asm __volatile("dsb sy" : : : "memory");
+			s2cr = rd(ANOC0_SMMU + SMMU_S2CR(i));
+			if ((s2cr & (3U << 16)) != S2CR_BYPASS && ncb > 0) {
+				/*
+				 * Bypass refused (reads back as fault), as on
+				 * the GPU's SMMU: route the stream through the
+				 * last context bank with translation off
+				 * (SCTLR 0; CBAR stage 1, stage 2 bypass), the
+				 * way Linux's qcom bypass quirk does.
+				 */
+				int cb = ncb - 1;
+
+				wr(cb0 + (vm_paddr_t)cb * pg, 0);	/* SCTLR */
+				wr(ANOC0_SMMU + pg + 4 * cb, 1U << 16);	/* CBAR */
+				wr(ANOC0_SMMU + SMMU_S2CR(i), (uint32_t)cb);
+				__asm __volatile("dsb sy" : : : "memory");
+				kprintf("smmu: bypass refused (%08x); sid %#x via "
+				    "cb%d, translation off: s2cr %08x cbar %08x\n",
+				    s2cr, sid, cb, rd(ANOC0_SMMU + SMMU_S2CR(i)),
+				    rd(ANOC0_SMMU + pg + 4 * cb));
+			}
+			kprintf("smmu: unmatched sid %#x -> smr %d (%08x) s2cr "
+			    "%08x\n", sid, i, rd(ANOC0_SMMU + SMMU_SMR(i)),
+			    rd(ANOC0_SMMU + SMMU_S2CR(i)));
 			changed++;
 		}
 		wr(ANOC0_SMMU + SMMU_SGFSR, gfsr);
