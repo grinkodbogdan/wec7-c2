@@ -146,11 +146,14 @@ athp_dfly_fw_register(void)
 /* ---- attach on demand ---- */
 volatile int athp_dfly_in_reset;
 uint32_t athp_dfly_last_ind;
+int athp_dfly_cold;
 static char wlan_status[96] = "Not started";
 static device_t athp_dev;
 static thread_t athp_attach_td;	/* paces its steps for the UI */
 
 SYSCTL_DECL(_hw_mi5);
+SYSCTL_INT(_hw_mi5, OID_AUTO, wlan_cold, CTLFLAG_RW, &athp_dfly_cold, 0,
+    "Wi-Fi: cold-reset the chip (SOC_GLOBAL_RESET) before the warm reset");
 SYSCTL_STRING(_hw_mi5, OID_AUTO, wlan, CTLFLAG_RD, wlan_status, 0,
     "Wi-Fi driver state");
 

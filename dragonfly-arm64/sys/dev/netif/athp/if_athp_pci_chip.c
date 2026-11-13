@@ -840,6 +840,17 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 		    athp_reg_read32(ar, lb + PCIE_SOC_WAKE_ADDRESS),
 		    athp_reg_read32(ar, fw));
 	}
+	/*
+	 * The cold reset takes the chip's PCIe core down too; with the
+	 * a0noc path to RAM clocked, the phone rebooted during it.  The
+	 * chip was just power-cycled by the bring-up, and the Android
+	 * driver never cold-resets it: warm reset only, unless
+	 * hw.mi5.wlan_cold=1.
+	 */
+	if (!athp_dfly_cold) {
+		athp_dfly_status("chip reset: warm only");
+		goto warm;
+	}
 	athp_dfly_status("chip reset: cold");
 #endif
 	ret = ath10k_pci_cold_reset(ar_pci);
@@ -868,6 +879,7 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 
 #ifdef ATHP_DFLY
 	athp_dfly_status("chip reset: warm");
+warm:
 #endif
 	ret = ath10k_pci_warm_reset(ar_pci);
 	if (ret) {
