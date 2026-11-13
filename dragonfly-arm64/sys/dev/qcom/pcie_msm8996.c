@@ -32,6 +32,8 @@
 
 #include "pcie_msm8996.h"
 
+void	athp_dfly_crumb(const char *);
+
 /* GCC */
 #define	GCC			0x00300000UL
 #define	GCC_PCIE_0_SLV_AXI_CBCR	(GCC + 0x6b008)
@@ -195,6 +197,7 @@ st(const char *fmt, ...)
 		strlcat(pcie_status, line, sizeof(pcie_status));
 		strlcat(pcie_status, "\n", sizeof(pcie_status));
 	}
+	athp_dfly_crumb(line);		/* survives a reset (if_athp_dfly.c) */
 }
 
 /*

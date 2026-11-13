@@ -18,6 +18,10 @@
 #include <sys/sysctl.h>
 #include <machine/stdarg.h>
 #include <sys/kthread.h>
+#include <vm/vm.h>
+#include <vm/pmap.h>
+#include <machine/vmparam.h>
+#include <machine/md_var.h>
 
 #include <dev/pci/pcivar.h>
 #include <dev/qcom/pcie_msm8996.h>
@@ -215,6 +219,70 @@ athp_dfly_dma_diag(struct ath10k *ar, const char *what)
 		athp_dfly_note("SMMU entry set to bypass; retrying");
 }
 
+/*
+ * A breadcrumb that survives a reset: 64 bytes of the on-chip IMEM
+ * (0x066bf000; Qualcomm's restart_reason lives there too, at 0x65c),
+ * at 0xc00, past the areas the board file names.  Each status line is
+ * copied there; the next boot prints where the last one stopped.
+ */
+#define	CRUMB_PA	(0x066bf000UL + 0xc00)
+#define	CRUMB_MAGIC	0x4e414c57U	/* "WLAN" */
+
+void
+athp_dfly_crumb(const char *s)
+{
+	volatile uint32_t *c = (volatile uint32_t *)PHYS_TO_DMAP(CRUMB_PA);
+	char buf[56];
+	int i;
+
+	if (!msm8996_is_present())
+		return;
+	memset(buf, 0, sizeof(buf));
+	strlcpy(buf, s, sizeof(buf));
+	for (i = 0; i < 14; i++)
+		c[2 + i] = ((uint32_t)(uint8_t)buf[4 * i]) |
+		    ((uint32_t)(uint8_t)buf[4 * i + 1] << 8) |
+		    ((uint32_t)(uint8_t)buf[4 * i + 2] << 16) |
+		    ((uint32_t)(uint8_t)buf[4 * i + 3] << 24);
+	c[1] = c[1] + 1;
+	c[0] = CRUMB_MAGIC;
+	/* the direct map may cache it: push the line out to IMEM */
+	for (i = 0; i < 64; i += 64)
+		__asm __volatile("dc civac, %0" : : "r" ((char *)c + i) : "memory");
+	__asm __volatile("dsb sy" : : : "memory");
+}
+
+static void
+crumb_boot(void *arg __unused)
+{
+	volatile uint32_t *c = (volatile uint32_t *)PHYS_TO_DMAP(CRUMB_PA);
+	char buf[57];
+	int i;
+
+	if (!msm8996_is_present())
+		return;
+	__asm __volatile("dc civac, %0" : : "r" (c) : "memory");
+	__asm __volatile("dsb sy" : : : "memory");
+	if (c[0] == CRUMB_MAGIC) {
+		for (i = 0; i < 14; i++) {
+			uint32_t w = c[2 + i];
+
+			buf[4 * i] = w & 0xff;
+			buf[4 * i + 1] = (w >> 8) & 0xff;
+			buf[4 * i + 2] = (w >> 16) & 0xff;
+			buf[4 * i + 3] = (w >> 24) & 0xff;
+		}
+		buf[56] = 0;
+		kprintf("athp: previous boot's last Wi-Fi step (#%u): %s\n",
+		    c[1], buf);
+	}
+	c[0] = 0;
+	c[1] = 0;
+	__asm __volatile("dc civac, %0" : : "r" (c) : "memory");
+	__asm __volatile("dsb sy" : : : "memory");
+}
+SYSINIT(athp_crumb, SI_SUB_CONFIGURE, SI_ORDER_ANY, crumb_boot, NULL);
+
 /* the same without the pause or the console line: for progress in loops */
 void
 athp_dfly_note(const char *fmt, ...)
@@ -236,6 +304,7 @@ athp_dfly_status(const char *fmt, ...)
 	kvsnprintf(wlan_status, sizeof(wlan_status), fmt, ap);
 	__va_end(ap);
 	kprintf("athp: %s\n", wlan_status);
+	athp_dfly_crumb(wlan_status);
 	/*
 	 * While attaching, hold each step on screen for longer than the
 	 * shell's one-second refresh, so a hang shows where it happened.

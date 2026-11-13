@@ -2175,7 +2175,7 @@ local function settings_draw(inst)
 	-- kernel's message buffer from the previous boot
 	if true then
 		-- the bring-up diagnostics first, then the latest messages
-		local cmd = "dmesg | grep -E 'athp diag|smmu|a0noc|power domains' | tail -8; " ..
+		local cmd = "dmesg | grep -E 'previous boot|athp diag|smmu|a0noc|power domains' | tail -8; " ..
 			"dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | " ..
 			"grep -v 'athp diag' | tail -6"
 		for l in string.gmatch(run(cmd), "[^\n]+") do
