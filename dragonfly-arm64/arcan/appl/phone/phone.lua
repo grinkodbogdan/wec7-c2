@@ -2458,7 +2458,22 @@ function wifi_app.draw(inst)
 			right = sec .. " · " .. pct .. "%",
 			col = (w.assoc and w.cur == n.ssid) and hex(accent()) or nil})
 	end
-	list_view(inst, y, rows, 56, function(r)
+	if #rows == 0 and not w.busy and w.ready then
+		-- nothing found: what the driver and net80211 said, to go on
+		local log = run("dmesg | grep -E '^(athp|wlan)' | " ..
+			"grep -v -E 'flush|regio_s_|warm:|ind 0' | tail -14")
+		for l in string.gmatch(log, "[^\n]+") do
+			if #l > 70 then
+				l = string.sub(l, 1, 69) .. "…"
+			end
+			table.insert(rows, {text = l, size = 9, font = F_MONO,
+				nosep = true, col = C.text3})
+		end
+	end
+	list_view(inst, y, rows, #w.nets > 0 and 56 or 20, function(r)
+		if not r.net then
+			return
+		end
 		local n = r.net
 		if n.sec == "open" then
 			w.connect(inst, n, "")

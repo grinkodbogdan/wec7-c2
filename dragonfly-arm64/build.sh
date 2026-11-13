@@ -125,6 +125,9 @@ configure() {
 		echo "#define N$O 1" > "$OBJ/opt/use_$o.h"
 		[ -f "$OBJ/opt/opt_$o.h" ] && echo "#define $O 1" > "$OBJ/opt/opt_$o.h"
 	done
+	# net80211's debug messages, switched on per interface with
+	# sysctl net.wlan.N.debug
+	echo "#define IEEE80211_DEBUG 1" >> "$OBJ/opt/opt_wlan.h"
 	cat > "$OBJ/opt/opt_global.h" <<-EOG
 	#define INVARIANTS 1
 	EOG
@@ -239,7 +242,7 @@ build() {
 	# the source file itself.
 	new=$( (cat "$HERE"/sys/cpu/aarch64/include/*.h \
 	    "$HERE"/sys/platform/arm64/include/*.h "$HERE"/patches/*.diff \
-	    "$OBJ/opt/opt_global.h"; echo "$CFLAGS") | cksum)
+	    "$OBJ"/opt/opt_*.h; echo "$CFLAGS") | cksum)
 	if [ "$new" != "$(cat "$OBJ/stamp" 2>/dev/null)" ]; then
 		echo "$new" > "$OBJ/stamp"
 	fi
