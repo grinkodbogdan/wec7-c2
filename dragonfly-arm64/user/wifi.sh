@@ -21,7 +21,14 @@ wait_for() {	# wait_for SECONDS COMMAND...
 
 linked() { [ "$(sysctl -n hw.mi5.pcie_up 2>/dev/null)" = 1 ]; }
 ready() { [ "$(sysctl -n hw.mi5.wlan_ready 2>/dev/null)" = 1 ]; }
-have_if() { ifconfig "$IF" >/dev/null 2>&1; }
+# by the interface list: a plain "ifconfig wlan0" can fail on an
+# 802.11 status query while wlan0 exists
+have_if() {
+	for i in $(ifconfig -l); do
+		[ "$i" = "$IF" ] && return 0
+	done
+	return 1
+}
 
 stop() {	# stop NAME...: by process name (dhclient forks itself away)
 	ps -axo pid,comm | while read -r p c; do
