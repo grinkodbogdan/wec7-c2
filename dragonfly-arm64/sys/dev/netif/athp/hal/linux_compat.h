@@ -45,20 +45,31 @@ is_power_of_2(unsigned long n)
 	return (n == roundup_pow_of_two(n));
 }
 
-/* bit string */
-#include <sys/bitstring.h>
-#define	test_bit(i, n)		bit_test(n, i)
+/*
+ * Bitmaps, Linux style: arrays of unsigned long, as every user here
+ * passes them (unsigned long *).  FreeBSD's bitstring.h is word based
+ * too, but DragonFly's is byte based: out[bit >> 3] on an unsigned long
+ * pointer then strides 8 bytes per step, and the service map scribbled
+ * over the WMI ops pointer that follows it.
+ */
+#define	ATHP_BPL		(8 * sizeof(unsigned long))
+#define	DECLARE_BITMAP(n, s)	unsigned long n[((s) + ATHP_BPL - 1) / ATHP_BPL]
+#define	test_bit(i, n)							\
+	((int)((((const volatile unsigned long *)(n))[(i) / ATHP_BPL] >>	\
+	    ((i) % ATHP_BPL)) & 1UL))
+#define	__set_bit(i, n)							\
+	(((volatile unsigned long *)(n))[(i) / ATHP_BPL] |=		\
+	    (1UL << ((i) % ATHP_BPL)))
 #define	set_bit(i, n)		__set_bit(i, n)
-#define	clear_bit(i, n)		bit_clear(n, i)
-#define	__set_bit(i, n)		bit_set(n, i)
+#define	clear_bit(i, n)							\
+	(((volatile unsigned long *)(n))[(i) / ATHP_BPL] &=		\
+	    ~(1UL << ((i) % ATHP_BPL)))
 #define	BIT(x)			(1 << (x))
-// This clashes with the linux/types.h declaration
-#define	DECLARE_BITMAP(n, s)	bitstr_t bit_decl(n, s)
-static inline int bitmap_empty(bitstr_t *bs, int size)
+static inline int bitmap_empty(const unsigned long *bs, int size)
 {
 	int i;
 	for (i = 0; i < size; i++) {
-		if (bit_test(bs, i))
+		if (test_bit(i, bs))
 			return 0;
 	}
 	return 1;
