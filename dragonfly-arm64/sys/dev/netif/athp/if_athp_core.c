@@ -1336,6 +1336,31 @@ ath10k_core_init_firmware_features(struct ath10k *ar)
 	return 0;
 }
 
+#ifdef ATHP_DFLY
+/*
+ * ar->wmi.ops turned up 11 bytes off its table during start (the
+ * firmware's TLV ops): note the first step after which it differs from
+ * what ath10k_wmi_attach set.  Silent while it is intact.
+ */
+static const void *athp_ops_good;
+static int athp_ops_reported;
+
+static void
+athp_ops_check(struct ath10k *ar, const char *step)
+{
+	if (athp_ops_good == NULL || athp_ops_reported)
+		return;
+	if ((const void *)ar->wmi.ops != athp_ops_good) {
+		athp_ops_reported = 1;
+		athp_dfly_status("wmi.ops %p (was %p) after %s",
+		    (const void *)ar->wmi.ops, athp_ops_good, step);
+	}
+}
+#define	OPS_CHECK(s)	athp_ops_check(ar, (s))
+#else
+#define	OPS_CHECK(s)	do { } while (0)
+#endif
+
 int
 ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode)
 {
@@ -1398,36 +1423,45 @@ ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode)
 		ath10k_err(ar, "WMI attach failed: %d\n", status);
 		goto err;
 	}
+#ifdef ATHP_DFLY
+	athp_ops_good = ar->wmi.ops;
+	athp_ops_reported = 0;
+#endif
 
 	status = ath10k_htt_init(ar);
 	if (status) {
 		ath10k_err(ar, "failed to init htt: %d\n", status);
 		goto err_wmi_detach;
 	}
+	OPS_CHECK("htt_init");
 
 	status = ath10k_htt_tx_alloc(&ar->htt);
 	if (status) {
 		ath10k_err(ar, "failed to alloc htt tx: %d\n", status);
 		goto err_wmi_detach;
 	}
+	OPS_CHECK("htt_tx_alloc");
 
 	status = ath10k_htt_rx_alloc(&ar->htt);
 	if (status) {
 		ath10k_err(ar, "failed to alloc htt rx: %d\n", status);
 		goto err_htt_tx_detach;
 	}
+	OPS_CHECK("htt_rx_alloc");
 
 	status = ath10k_hif_start(ar);
 	if (status) {
 		ath10k_err(ar, "could not start HIF: %d\n", status);
 		goto err_htt_rx_detach;
 	}
+	OPS_CHECK("hif_start");
 
 	status = ath10k_htc_wait_target(&ar->htc);
 	if (status) {
 		ath10k_err(ar, "failed to connect to HTC: %d\n", status);
 		goto err_hif_stop;
 	}
+	OPS_CHECK("htc_wait_target");
 
 	if (mode == ATH10K_FIRMWARE_MODE_NORMAL) {
 		status = ath10k_htt_connect(&ar->htt);
@@ -1442,15 +1476,18 @@ ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode)
 		ath10k_err(ar, "could not connect wmi: %d\n", status);
 		goto err_hif_stop;
 	}
+	OPS_CHECK("wmi_connect");
 
 	status = ath10k_htc_start(&ar->htc);
 	if (status) {
 		ath10k_err(ar, "failed to start htc: %d\n", status);
 		goto err_hif_stop;
 	}
+	OPS_CHECK("htc_start");
 
 	if (mode == ATH10K_FIRMWARE_MODE_NORMAL) {
 		status = ath10k_wmi_wait_for_service_ready(ar);
+	OPS_CHECK("service_ready");
 		if (status) {
 			ath10k_warn(ar, "wmi service ready event not received");
 			goto err_hif_stop;
@@ -1463,6 +1500,12 @@ ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode)
 	/* Program in the given EEPROM regdomain into the regulatory library */
 	ath10k_regd_set_eeprom(&ar->regd_info, ar->current_rd);
 
+	OPS_CHECK("before init cmd");
+#ifdef ATHP_DFLY
+	/* keep going while the cause is found: the table is constant */
+	if (athp_ops_good != NULL && (const void *)ar->wmi.ops != athp_ops_good)
+		ar->wmi.ops = athp_ops_good;
+#endif
 	status = ath10k_wmi_cmd_init(ar);
 	if (status) {
 		ath10k_err(ar, "could not send WMI init command (%d)\n",
