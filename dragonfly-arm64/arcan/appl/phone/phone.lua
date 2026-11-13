@@ -2141,7 +2141,7 @@ local function settings_draw(inst)
 	end
 	local state = wid == 0x168c003e and "QCA6174 found on PCIe" or
 		(wid ~= 0 and string.format("PCIe device %08x", wid) or
-		(probed and (last ~= "" and last or "not found") or "Not probed yet"))
+		(last ~= "" and last or (probed and "not found" or "Not probed yet")))
 	if #state > 44 then
 		state = string.sub(state, 1, 43) .. "…"
 	end
@@ -2151,7 +2151,9 @@ local function settings_draw(inst)
 			text_c(p, W - 79, ry + rh / 2 - 9, "Probe", 12, INK, F_SB, 5)
 			table.insert(inst.hits, {x = W - 132, y = ry, w = 110, h = rh,
 				fn = function()
+					-- the kernel brings the link up in its own thread
 					run("sysctl -q hw.mi5.pcie_up=1")
+					inst.wifi_until = CLOCK + 25 * 30
 					settings_draw(inst)
 				end})
 		end},
@@ -2169,7 +2171,7 @@ local function settings_draw(inst)
 		end}})
 	-- the driver's kernel messages, while bringing Wi-Fi up
 	local log = {}
-	if not string.find(wifi_driver_state(), "Not started", 1, true) then
+	if last ~= "" or not string.find(wifi_driver_state(), "Not started", 1, true) then
 		-- the bring-up diagnostics first, then the latest messages
 		local cmd = "dmesg | grep -E 'athp diag|smmu|a0noc' | tail -8; " ..
 			"dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | " ..

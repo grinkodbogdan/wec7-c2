@@ -22,6 +22,7 @@
 #include <sys/kernel.h>
 #include <sys/sysctl.h>
 #include <sys/lock.h>
+#include <sys/kthread.h>
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -194,6 +195,19 @@ st(const char *fmt, ...)
 		strlcat(pcie_status, line, sizeof(pcie_status));
 		strlcat(pcie_status, "\n", sizeof(pcie_status));
 	}
+}
+
+/*
+ * While Probe runs (its own thread), hold a risky step's status line on
+ * screen for a second, so a hang shows which step it was.
+ */
+static thread_t probe_td;
+
+static void
+pace(void)
+{
+	if (curthread == probe_td)
+		tsleep(&probe_td, 0, "pcipace", hz);
 }
 
 static inline uint32_t
@@ -495,11 +509,15 @@ pcie0_up(void)
 	 * clock is gcc_aggre0_snoc_axi_clk (msm8996-bus.dtsi, fab-a0noc),
 	 * which nothing turned on: the chip's DMA reads never completed.
 	 */
+	st("a0noc clocks: enabling snoc_axi (was %08x) cnoc_ahb (was %08x)",
+	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
+	pace();
 	wr(GCC_AGGRE0_SNOC_AXI_CBCR, rd(GCC_AGGRE0_SNOC_AXI_CBCR) | 1U);
 	wr(GCC_AGGRE0_CNOC_AHB_CBCR, rd(GCC_AGGRE0_CNOC_AHB_CBCR) | 1U);
 	DELAY(100);
-	st("a0noc clocks: snoc_axi %08x cnoc_ahb %08x",
+	st("a0noc clocks on: snoc_axi %08x cnoc_ahb %08x",
 	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
+	pace();
 	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
 	smmu_bypass();
 
@@ -613,8 +631,11 @@ pcie0_up(void)
 static void
 smmu_bypass(void)
 {
-	uint32_t v = rd(ANOC0_SMMU + SMMU_SCR0);
+	uint32_t v;
 
+	st("smmu: reading (scr0 at %#lx)", (unsigned long)ANOC0_SMMU);
+	pace();
+	v = rd(ANOC0_SMMU + SMMU_SCR0);
 	st("smmu: scr0 0x%08x idr0 0x%08x gfsr 0x%08x", v,
 	    rd(ANOC0_SMMU + SMMU_SIDR0), rd(ANOC0_SMMU + SMMU_SGFSR));
 	wr(ANOC0_SMMU + SMMU_SCR0, (v | 1U) & ~(1U << 10));
@@ -633,6 +654,8 @@ smmu_bypass(void)
 			if (rd(ANOC0_SMMU + 0x800 + 4 * i) & (1U << 31))
 				used++;
 		if (n > 0 && used == 0) {
+			st("smmu: adding a catch-all bypass entry");
+			pace();
 			wr(ANOC0_SMMU + 0xc00, 1U << 16);
 			wr(ANOC0_SMMU + 0x800, (1U << 31) | (0x7fffU << 16));
 			st("smmu: smr0 all streams -> bypass: smr %08x s2cr %08x",
@@ -836,6 +859,14 @@ msm8996_pcie_up(void)
 	return (error);
 }
 
+static void
+pcie_probe_thread(void *arg)
+{
+	(void)msm8996_pcie_up();
+	probe_td = NULL;
+	kthread_exit();
+}
+
 static int
 sysctl_pcie_up(SYSCTL_HANDLER_ARGS)
 {
@@ -844,8 +875,13 @@ sysctl_pcie_up(SYSCTL_HANDLER_ARGS)
 	error = sysctl_handle_int(oidp, &v, 0, req);
 	if (error || req->newptr == NULL)
 		return (error);
-	if (v)
-		(void)msm8996_pcie_up();
+	/*
+	 * Bring-up takes seconds and may stall the SoC: run it in its own
+	 * thread so the caller (the shell's Probe button) gets control back
+	 * and keeps showing hw.mi5.pcie as it fills in.
+	 */
+	if (v && probe_td == NULL && !pcie_done)
+		kthread_create(pcie_probe_thread, NULL, &probe_td, "pcie probe");
 	return (0);
 }
 
