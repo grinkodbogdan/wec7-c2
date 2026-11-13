@@ -156,6 +156,11 @@ static device_t athp_dev;
 static thread_t athp_attach_td;	/* paces its steps for the UI */
 
 SYSCTL_DECL(_hw_mi5);
+/* set once the driver has registered with net80211, and kept: later
+ * status lines (the firmware restarts when wlan0 goes up) do not clear it */
+static int wlan_ready;
+SYSCTL_INT(_hw_mi5, OID_AUTO, wlan_ready, CTLFLAG_RD, &wlan_ready, 0,
+    "Wi-Fi driver registered (athp0 can take a wlan interface)");
 SYSCTL_INT(_hw_mi5, OID_AUTO, wlan_cold, CTLFLAG_RW, &athp_dfly_cold, 0,
     "Wi-Fi: cold-reset the chip (SOC_GLOBAL_RESET) before the warm reset");
 SYSCTL_STRING(_hw_mi5, OID_AUTO, wlan, CTLFLAG_RD, wlan_status, 0,
@@ -240,6 +245,8 @@ athp_dfly_status(const char *fmt, ...)
 	kvsnprintf(wlan_status, sizeof(wlan_status), fmt, ap);
 	__va_end(ap);
 	kprintf("athp: %s\n", wlan_status);
+	if (strncmp(wlan_status, "ready", 5) == 0)
+		wlan_ready = 1;
 	/*
 	 * While attaching, hold each step on screen for longer than the
 	 * shell's one-second refresh, so a hang shows where it happened.

@@ -20,12 +20,7 @@ wait_for() {	# wait_for SECONDS COMMAND...
 }
 
 linked() { [ "$(sysctl -n hw.mi5.pcie_up 2>/dev/null)" = 1 ]; }
-ready() {
-	case "$(sysctl -n hw.mi5.wlan 2>/dev/null)" in
-	ready*) return 0 ;;
-	esac
-	return 1
-}
+ready() { [ "$(sysctl -n hw.mi5.wlan_ready 2>/dev/null)" = 1 ]; }
 have_if() { ifconfig "$IF" >/dev/null 2>&1; }
 
 stop() {	# stop NAME...: by process name (dhclient forks itself away)
@@ -57,8 +52,8 @@ up)
 	;;
 scan)
 	up || exit 1
-	ifconfig "$IF" scan >/dev/null 2>&1
-	ifconfig -v "$IF" list scan
+	# scans, waits for the result and lists it (with -v, the IEs)
+	ifconfig -v "$IF" scan 2>&1
 	;;
 connect)
 	[ -r "$2" ] || { echo "usage: wifi.sh connect CONF"; exit 1; }

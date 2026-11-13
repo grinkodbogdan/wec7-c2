@@ -2528,7 +2528,7 @@ end
 
 function wifi_app.create(inst)
 	inst.mode = "list"
-	wifi_app.ready = string.find(run("sysctl -n hw.mi5.wlan"), "^ready") ~= nil
+	wifi_app.ready = string.find(run("sysctl -n hw.mi5.wlan_ready"), "1") ~= nil
 	wifi_app.status()
 	if wifi_app.busy == "test" then
 		wifi_app.busy = nil
