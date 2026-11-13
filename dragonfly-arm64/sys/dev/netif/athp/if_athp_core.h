@@ -29,7 +29,11 @@
 #define ATH10K_FLUSH_TIMEOUT_HZ (5)
 #define ATH10K_CONNECTION_LOSS_HZ (3)
 #define ATH10K_NUM_CHANS 39
+#ifdef ATHP_DFLY
+#define ATH10K_FW_PROBE_RETRIES 1	/* each retry redoes the whole chip reset */
+#else
 #define ATH10K_FW_PROBE_RETRIES 6
+#endif
 
 /* Antenna noise floor */
 #define ATH10K_DEFAULT_NOISE_FLOOR -95

@@ -48,6 +48,15 @@
 #define	GCC_PCIE_PHY_COM_BCR	(GCC + 0x6f014)
 #define	GCC_SMMU_AGGRE0_AXI_CBCR (GCC + 0x81014)
 #define	GCC_AGGRE0_NOC_GDSCR	(GCC + 0x81004)
+#define	GCC_SMMU_AGGRE0_AHB_CBCR (GCC + 0x81018)
+/* anoc0's SMMU (ARM SMMU v2), in front of the PCIe masters */
+#define	ANOC0_SMMU		0x01640000UL
+#define	SMMU_SCR0		0x000
+#define	SMMU_SIDR0		0x020
+#define	SMMU_SGFSR		0x048
+#define	SMMU_SGFSYNR1		0x054
+
+static void	smmu_bypass(void);
 #define	GCC_PCIE_CLKREF_EN	(GCC + 0x88010)
 
 /* TLMM */
@@ -467,6 +476,7 @@ pcie0_up(void)
 	    branch_on("pcie_0_mstr_axi", GCC_PCIE_0_MSTR_AXI_CBCR) ||
 	    branch_on("pcie_0_slv_axi", GCC_PCIE_0_SLV_AXI_CBCR) ||
 	    branch_on("smmu_aggre0_axi", GCC_SMMU_AGGRE0_AXI_CBCR) ||
+	    branch_on("smmu_aggre0_ahb", GCC_SMMU_AGGRE0_AHB_CBCR) ||
 	    branch_on("pcie_phy_cfg_ahb", GCC_PCIE_PHY_CFG_AHB_CBCR) ||
 	    branch_on("pcie_phy_aux", GCC_PCIE_PHY_AUX_CBCR))
 		return (EIO);
@@ -478,6 +488,7 @@ pcie0_up(void)
 	rmw(GCC_PCIE_0_PHY_BCR, 1U, 0);
 	DELAY(10);
 	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
+	smmu_bypass();
 
 	/* the controller (msm_pcie_enable) */
 	rmw(PARF + PARF_PHY_CTRL, 1U, 0);
@@ -578,6 +589,33 @@ pcie0_up(void)
 	    rd(wlan_bar + 0x8f0), (unsigned long)wlan_bar,
 	    msm8996_pcie_cfg_read(0x10));
 	return (0);
+}
+
+/*
+ * The chip's DMA goes through anoc0's SMMU.  Nothing here uses IOMMU
+ * translation, so put it in bypass (sCR0.CLIENTPD) and stop unmatched
+ * streams faulting (USFCFG).  Linux sets up a translation context per
+ * device instead (qcom,smmu-exist).
+ */
+static void
+smmu_bypass(void)
+{
+	uint32_t v = rd(ANOC0_SMMU + SMMU_SCR0);
+
+	st("smmu: scr0 0x%08x idr0 0x%08x gfsr 0x%08x", v,
+	    rd(ANOC0_SMMU + SMMU_SIDR0), rd(ANOC0_SMMU + SMMU_SGFSR));
+	wr(ANOC0_SMMU + SMMU_SCR0, (v | 1U) & ~(1U << 10));
+	wr(ANOC0_SMMU + SMMU_SGFSR, rd(ANOC0_SMMU + SMMU_SGFSR));
+	st("smmu: bypass, scr0 now 0x%08x", rd(ANOC0_SMMU + SMMU_SCR0));
+}
+
+/* the SMMU's global fault state, for the driver's diagnostics */
+void
+msm8996_pcie_smmu_diag(char *buf, size_t len)
+{
+	ksnprintf(buf, len, "smmu scr0 %08x gfsr %08x gfsynr1 %08x",
+	    rd(ANOC0_SMMU + SMMU_SCR0), rd(ANOC0_SMMU + SMMU_SGFSR),
+	    rd(ANOC0_SMMU + SMMU_SGFSYNR1));
 }
 
 /*

@@ -182,6 +182,10 @@ athp_dfly_attach(void)
 	if (error != 0) {
 		char last[sizeof(wlan_status)];
 
+		char sm[80];
+
+		msm8996_pcie_smmu_diag(sm, sizeof(sm));
+		kprintf("athp diag: after failure: %s\n", sm);
 		/* keep the step it failed at */
 		strlcpy(last, wlan_status, sizeof(last));
 		ksnprintf(wlan_status, sizeof(wlan_status),
