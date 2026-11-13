@@ -593,6 +593,9 @@ pcie0_up(void)
 	wr(DBI + DBI_AUX_CLK_FREQ, 0x01);
 	wr(PARF + PARF_BDF_TRANSLATE_CFG, 0);
 	wr(PARF + PARF_SID_OFFSET, 0);
+	/* dw_pcie_setup_rc: the root port claims no inbound address range */
+	wr(DBI + 0x10, 0);	/* PCI_BASE_ADDRESS_0 */
+	wr(DBI + 0x14, 0);	/* PCI_BASE_ADDRESS_1 */
 	/* the root port: bus 0 -> 1, memory window over the BAR space */
 	wr(DBI + DBI_BUSNUMBERS, 0x00010100);
 	wr(DBI + DBI_MEMORY_BASE_LIMIT,

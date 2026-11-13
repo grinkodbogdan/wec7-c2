@@ -2171,7 +2171,9 @@ local function settings_draw(inst)
 		end}})
 	-- the driver's kernel messages, while bringing Wi-Fi up
 	local log = {}
-	if last ~= "" or not string.find(wifi_driver_state(), "Not started", 1, true) then
+	-- any driver lines at all, including ones a reset left in the
+	-- kernel's message buffer from the previous boot
+	if true then
 		-- the bring-up diagnostics first, then the latest messages
 		local cmd = "dmesg | grep -E 'athp diag|smmu|a0noc|power domains' | tail -8; " ..
 			"dmesg | grep -E 'athp|pcie' | grep -v regio_s_ | " ..
