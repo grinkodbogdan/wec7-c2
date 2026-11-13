@@ -32,7 +32,6 @@
 
 #include "pcie_msm8996.h"
 
-void	athp_dfly_crumb(const char *);
 
 /* GCC */
 #define	GCC			0x00300000UL
@@ -62,7 +61,6 @@ void	athp_dfly_crumb(const char *);
 #define	SMMU_SGFSR		0x048
 #define	SMMU_SGFSYNR1		0x054
 
-static void	smmu_bypass(void);
 #define	GCC_PCIE_CLKREF_EN	(GCC + 0x88010)
 
 /* TLMM */
@@ -197,7 +195,6 @@ st(const char *fmt, ...)
 		strlcat(pcie_status, line, sizeof(pcie_status));
 		strlcat(pcie_status, "\n", sizeof(pcie_status));
 	}
-	athp_dfly_crumb(line);		/* survives a reset (if_athp_dfly.c) */
 }
 
 /*
@@ -418,47 +415,25 @@ msm8996_pcie_bar0(void)
 static void
 wlan_power(void)
 {
-	uint8_t v = 0;
-
-	/* L30 1.8 V (the crystal), through the RPM */
+	/*
+	 * Mainline Linux, msm8996-xiaomi-common.dtsi: L30 (vddio-xtal), S3
+	 * (vdd-core) and S4 (vddio) are always on; vdd_3v3 is PM8994 GPIO 9,
+	 * always on; WLAN_EN is PM8994 GPIO 8, a fixed regulator with a
+	 * 70 ms startup delay (startup-delay-us = <70000>), enabled by
+	 * pcie-qcom as vddpe-3v3.  Nothing else is touched.
+	 */
 	msm8996_rpm_write(0, RPM_LDOA, 30, RPM_KEY_UV, 1800000);
 	msm8996_rpm_write(0, RPM_LDOA, 30, RPM_KEY_SWEN, 1);
-	/*
-	 * PM8994 GPIO 9 (the 3.3 V switch, set to constant high by the
-	 * board), then GPIO 8, WLAN_EN: digital output, VIN2, driven high
-	 * (MODE_CTL: mode 1 in bits 6:4, source 0, invert 1)
-	 */
-	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(8) + 0x40, &v);
-	st("pm8994 gpio8 (WLAN_EN) was 0x%02x", v);
-
-	/*
-	 * PM8994 GPIO 18, "Rome Sleep Clock" in Xiaomi's board file: the
-	 * PMIC's 32 kHz sleep clock out to the chip (digital output, VIN2,
-	 * source "function 2", medium drive).  Without it the QCA6174's
-	 * always-on domain never runs and the SoC cannot be woken.
-	 * MODE_CTL: mode 1 << 4 | source 3 << 1; DIG_OUT_CTL: CMOS, medium.
-	 */
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x41, 2);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x45, 0x02);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x40, 0x16);
-	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(18) + 0x46, 0x80);
-	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(18) + 0x40, &v);
-	st("pm8994 gpio18 (sleep clock) mode 0x%02x", v);
-	DELAY(1000);
-
-	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(9) + 0x40, &v);
-	st("pm8994 gpio9 (3.3 V) mode 0x%02x", v);
+	/* GPIO 9: digital output, high (MODE_CTL mode 1, source 0, invert 1) */
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x40, 0x11);
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(9) + 0x46, 0x80);
-	DELAY(4000);
+	DELAY(4000);			/* vdd_3v3 startup-delay-us = <4000> */
+	/* GPIO 8: power source S4 (VIN2), output high */
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x41, 2);
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x40, 0x11);
 	msm8996_spmi_write(PM8994_SID, PM8994_GPIO(8) + 0x46, 0x80);
-	msm8996_spmi_read(PM8994_SID, PM8994_GPIO(8) + 0x40, &v);
-	st("pm8994 gpio8 (WLAN_EN) mode 0x%02x", v);
-	/* the bootstrap pin, high, 16 mA */
-	tlmm_out(BOOTSTRAP_GPIO, 1, 1);
-	DELAY(100000);		/* crystal and always-on domain settle */
+	DELAY(70000);			/* wlan_en startup-delay-us = <70000> */
+	st("WLAN_EN on");
 }
 
 static int
@@ -473,26 +448,30 @@ pcie0_up(void)
 		return (EAGAIN);
 	}
 
-	/* hold the endpoint in reset (PERST# low) */
+	/*
+	 * The order of mainline Linux's qcom_pcie_host_init() for the
+	 * msm8996 controller (ops 2.3.2), with the QMP PHY driver's
+	 * power-on and dw_pcie_setup_rc() in their places.
+	 */
+
+	/* qcom_ep_reset_assert: PERST# low, 1 ms */
 	tlmm_out(PERST_GPIO, 0, 0);
 	DELAY(1000);
-	wlan_power();
 
-	/* the controller's supplies: L12 1.8 V, L28 0.925 V */
-	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_UV, 1800000);
-	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_SWEN, 1);
+	/* qcom_pcie_init_2_3_2: supplies (vdda = L28, vddpe-3v3 = WLAN_EN) */
 	msm8996_rpm_write(0, RPM_LDOA, 28, RPM_KEY_UV, 925000);
 	msm8996_rpm_write(0, RPM_LDOA, 28, RPM_KEY_SWEN, 1);
-	/* the PHY's reference clock: the RPM's ln_bb_clk */
-	msm8996_rpm_write(0, RPM_MISC_CLK, RPM_LN_BB_CLK, RPM_KEY_ENAB, 1);
-
-	/* power domains and clocks (msm_pcie_clk_init) */
+	wlan_power();
+	/* ... and the power domains: aggre0 (always on), pcie0 */
 	if (gdsc_on("aggre0_noc", GCC_AGGRE0_NOC_GDSCR) ||
 	    gdsc_on("pcie_0", GCC_PCIE_0_GDSCR))
 		return (EIO);
-	st("power domains: aggre0 %08x (status %08x) pcie_0 %08x",
-	    rd(GCC_AGGRE0_NOC_GDSCR), rd(GCC + 0x81028), rd(GCC_PCIE_0_GDSCR));
-	/* aux clock source: XO / 19 through M/N, 1.0105 MHz */
+	/* the aggre0 clocks gcc-msm8996 marks CLK_IS_CRITICAL */
+	wr(GCC_AGGRE0_SNOC_AXI_CBCR, rd(GCC_AGGRE0_SNOC_AXI_CBCR) | 1U);
+	wr(GCC_AGGRE0_CNOC_AHB_CBCR, rd(GCC_AGGRE0_CNOC_AHB_CBCR) | 1U);
+	wr(GCC_SMMU_AGGRE0_AXI_CBCR, rd(GCC_SMMU_AGGRE0_AXI_CBCR) | 1U);
+	wr(GCC_SMMU_AGGRE0_AHB_CBCR, rd(GCC_SMMU_AGGRE0_AHB_CBCR) | 1U);
+	/* ... and its clocks: aux (1.0105 MHz from XO), cfg, master, slave */
 	wr(GCC_PCIE_AUX_CMD_RCGR + 0x08, 1);			/* M */
 	wr(GCC_PCIE_AUX_CMD_RCGR + 0x0c, ~(19U - 1U) & 0xffff);	/* N */
 	wr(GCC_PCIE_AUX_CMD_RCGR + 0x10, ~19U & 0xffff);		/* D */
@@ -502,59 +481,25 @@ pcie0_up(void)
 	if (branch_on("pcie_0_aux", GCC_PCIE_0_AUX_CBCR) ||
 	    branch_on("pcie_0_cfg_ahb", GCC_PCIE_0_CFG_AHB_CBCR) ||
 	    branch_on("pcie_0_mstr_axi", GCC_PCIE_0_MSTR_AXI_CBCR) ||
-	    branch_on("pcie_0_slv_axi", GCC_PCIE_0_SLV_AXI_CBCR) ||
-	    branch_on("smmu_aggre0_axi", GCC_SMMU_AGGRE0_AXI_CBCR) ||
-	    branch_on("smmu_aggre0_ahb", GCC_SMMU_AGGRE0_AHB_CBCR) ||
-	    branch_on("pcie_phy_cfg_ahb", GCC_PCIE_PHY_CFG_AHB_CBCR) ||
+	    branch_on("pcie_0_slv_axi", GCC_PCIE_0_SLV_AXI_CBCR))
+		return (EIO);
+
+	/* phy_power_on (phy-qcom-qmp-pcie-msm8996): supplies, clocks, resets */
+	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_UV, 1800000);
+	msm8996_rpm_write(0, RPM_LDOA, 12, RPM_KEY_SWEN, 1);
+	msm8996_rpm_write(0, RPM_MISC_CLK, RPM_LN_BB_CLK, RPM_KEY_ENAB, 1);
+	if (branch_on("pcie_phy_cfg_ahb", GCC_PCIE_PHY_CFG_AHB_CBCR) ||
 	    branch_on("pcie_phy_aux", GCC_PCIE_PHY_AUX_CBCR))
 		return (EIO);
 	wr(GCC_PCIE_CLKREF_EN, rd(GCC_PCIE_CLKREF_EN) | 1U);
-	/* resets released */
 	rmw(GCC_PCIE_PHY_BCR, 1U, 0);
 	rmw(GCC_PCIE_PHY_COM_BCR, 1U, 0);
 	rmw(GCC_PCIE_PHY_NOCSR_COM_PHY_BCR, 1U, 0);
 	rmw(GCC_PCIE_0_PHY_BCR, 1U, 0);
 	DELAY(10);
-	/*
-	 * The path from PCIe to RAM: a0noc -> snoc -> DDR.  a0noc's bus
-	 * clock is gcc_aggre0_snoc_axi_clk (msm8996-bus.dtsi, fab-a0noc),
-	 * which nothing turned on: the chip's DMA reads never completed.
-	 */
-	st("a0noc clocks: enabling snoc_axi (was %08x) cnoc_ahb (was %08x)",
-	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
-	pace();
-	/*
-	 * Mainline Linux keeps every aggre0 clock on (CLK_IS_CRITICAL in
-	 * gcc-msm8996): the NoC's bus and config clocks, its MPU (access
-	 * control) config clock, the QoS generator's reference, and the
-	 * SMMU's.  Offsets from Xiaomi's msm-clocks-hwio-8996.h.
-	 */
-	wr(GCC_AGGRE0_SNOC_AXI_CBCR, rd(GCC_AGGRE0_SNOC_AXI_CBCR) | 1U);
-	wr(GCC_AGGRE0_CNOC_AHB_CBCR, rd(GCC_AGGRE0_CNOC_AHB_CBCR) | 1U);
-	wr(GCC + 0x85000, rd(GCC + 0x85000) | 1U);	/* aggre0_noc_mpu_cfg_ahb */
-	wr(GCC + 0x8101c, rd(GCC + 0x8101c) | 1U);	/* aggre0_noc_qosgen_extref */
-	DELAY(100);
-	st("a0noc clocks on: snoc_axi %08x cnoc_ahb %08x mpu_cfg %08x",
-	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR),
-	    rd(GCC + 0x85000));
-	pace();
-	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
-	smmu_bypass();
-
-	/* the controller (msm_pcie_enable) */
-	rmw(PARF + PARF_PHY_CTRL, 1U, 0);
-	wr(PARF + PARF_DBI_BASE_ADDR, 0);
-	wr(PARF + PARF_SYS_CTRL, 0x365e);
-	rmw(PARF + PARF_MHI_CLOCK_RESET_CTRL, 0, 1U << 4);
-	wr(PARF + PARF_SLV_ADDR_SPACE_SIZE, 0x01000000);	/* 16 MB */
-	/* mainline qcom_pcie_post_init_2_3_2: AXI master write-address halt */
-	rmw(PARF + 0x1a8, 0, 1U << 31);
-
-	/* the PHY, then its pipe clock */
 	phy_common_init();
 	DELAY(1000);
-	if (branch_on("pcie_0_pipe", GCC_PCIE_0_PIPE_CBCR))
-		st("(the pipe clock comes from the PHY; continuing)");
+	(void)branch_on("pcie_0_pipe", GCC_PCIE_0_PIPE_CBCR);
 	for (i = 0; i < 10; ++i) {
 		if (rd(PHY + PCIE_COM_PCS_READY_STATUS) & 1)
 			break;
@@ -565,20 +510,41 @@ pcie0_up(void)
 		    rd(PHY + PCIE_COM_PCS_READY_STATUS));
 		return (EIO);
 	}
-	st("PHY ready after %d ms", i);
 	phy_port_init();
-	DELAY(10000);			/* qcom,ep-latency = <10> */
 
-	/* release PERST#, then train the link */
-	tlmm_out(PERST_GPIO, 1, 0);
+	/* qcom_pcie_post_init_2_3_2 */
+	rmw(PARF + PARF_PHY_CTRL, 1U, 0);		/* PHY_TEST_PWR_DOWN */
+	wr(PARF + PARF_DBI_BASE_ADDR, 0);
+	rmw(PARF + PARF_SYS_CTRL, 1U << 29, 0);	/* MAC_PHY_POWERDOWN_IN_P2_D_MUX_EN */
+	rmw(PARF + PARF_MHI_CLOCK_RESET_CTRL, 0, 1U << 4);	/* BYPASS */
+	rmw(PARF + 0x1a8, 0, 1U << 31);	/* AXI_MSTR_WR_ADDR_HALT_V2: EN */
+
+	/* qcom_ep_reset_deassert: 1 ms, PERST# high */
 	DELAY(1000);
-	rmw(DBI + DBI_DEVICE_CONTROL_STATUS, 0x7000, 5U << 12);	/* TLP rd 4K */
+	tlmm_out(PERST_GPIO, 1, 0);
+
+	/* dw_pcie_setup_rc */
+	wr(DBI + 0x10, 0x00000004);			/* RC BARs */
+	wr(DBI + 0x14, 0x00000000);
+	wr(DBI + DBI_BUSNUMBERS, (rd(DBI + DBI_BUSNUMBERS) & 0xff000000U) |
+	    0x00ff0100);
+	wr(DBI + DBI_COMMAND_STATUS, (rd(DBI + DBI_COMMAND_STATUS) &
+	    0xffff0000U) | 0x0107);			/* IO, MEM, MASTER, SERR */
+	iatu(0, IATU_TYPE_CFG0, CONF, CONF + 0xfff, 0x01000000);
+	iatu(1, IATU_TYPE_MEM, BARS, (uint32_t)(BARS + BARS_SIZE - 1), BARS);
+	wr(DBI + DBI_MEMORY_BASE_LIMIT,
+	    ((uint32_t)(BARS + BARS_SIZE - 1) & 0xfff00000U) |
+	    ((uint32_t)BARS >> 16));
+	wr(DBI + 0x10, 0);
+
+	/* qcom_pcie_2_3_2_ltssm_enable, dw_pcie_wait_for_link (10 x 90 ms) */
 	rmw(PARF + PARF_LTSSM, 0, 1U << 8);
-	for (i = 0; i < 200; ++i) {		/* up to 1 s */
-		DELAY(5000);
+	for (i = 0; i < 10; ++i) {
 		v = rd(ELBI + ELBI_SYS_STTS);
-		if ((v & XMLH_LINK_UP) && (rd(DBI + DBI_LINK_STATUS) & (1U << 29)))
+		if ((v & XMLH_LINK_UP) &&
+		    (rd(DBI + DBI_LINK_STATUS) & (1U << 29)))
 			break;
+		DELAY(90000);
 	}
 	if (!(v & XMLH_LINK_UP)) {
 		st("no link: ltssm state 0x%x (elbi 0x%08x)", (v >> 12) & 0x3f,
@@ -586,25 +552,9 @@ pcie0_up(void)
 		tlmm_out(PERST_GPIO, 0, 0);
 		return (EIO);
 	}
-	st("link up after %d ms: gen %u x%u", (i + 1) * 5,
+	st("link up: gen %u x%u",
 	    (rd(DBI + DBI_LINK_STATUS) >> 16) & 0xf,
 	    (rd(DBI + DBI_LINK_STATUS) >> 20) & 0x3f);
-
-	/* msm_pcie_config_controller */
-	iatu(0, IATU_TYPE_CFG0, CONF, CONF + 0xfff, 0x01000000);
-	rmw(DBI + DBI_ACK_F_ASPM_CTRL, 0, 1U << 15);
-	wr(DBI + DBI_AUX_CLK_FREQ, 0x01);
-	wr(PARF + PARF_BDF_TRANSLATE_CFG, 0);
-	wr(PARF + PARF_SID_OFFSET, 0);
-	/* dw_pcie_setup_rc: the root port claims no inbound address range */
-	wr(DBI + 0x10, 0);	/* PCI_BASE_ADDRESS_0 */
-	wr(DBI + 0x14, 0);	/* PCI_BASE_ADDRESS_1 */
-	/* the root port: bus 0 -> 1, memory window over the BAR space */
-	wr(DBI + DBI_BUSNUMBERS, 0x00010100);
-	wr(DBI + DBI_MEMORY_BASE_LIMIT,
-	    ((uint32_t)(BARS + BARS_SIZE - 1) & 0xfff00000U) |
-	    ((uint32_t)BARS >> 16));
-	rmw(DBI + DBI_COMMAND_STATUS, 0, 0x6);	/* memory + bus master */
 
 	v = msm8996_pcie_cfg_read(0);
 	wlan_id = (int)((v & 0xffff) << 16 | v >> 16);
@@ -638,40 +588,12 @@ pcie0_up(void)
 	msm8996_pcie_cfg_write(0x10, (uint32_t)wlan_bar);
 	if ((v & 0x6) == 0x4)
 		msm8996_pcie_cfg_write(0x14, 0);
-	iatu(1, IATU_TYPE_MEM, BARS, (uint32_t)(BARS + BARS_SIZE - 1), BARS);
 	msm8996_pcie_cfg_write(0x04, msm8996_pcie_cfg_read(0x04) | 0x6);
 	/* QCA6174: SOC_CHIP_ID at RTC_SOC_BASE 0x800 + 0xf0 */
 	st("chip id 0x%08x (BAR0 at 0x%08lx, reads back 0x%08x)",
 	    rd(wlan_bar + 0x8f0), (unsigned long)wlan_bar,
 	    msm8996_pcie_cfg_read(0x10));
 	return (0);
-}
-
-/*
- * The chip's DMA goes through anoc0's SMMU.  Nothing here uses IOMMU
- * translation, so put it in bypass (sCR0.CLIENTPD) and stop unmatched
- * streams faulting (USFCFG).  Linux sets up a translation context per
- * device instead (qcom,smmu-exist).
- */
-static void
-smmu_bypass(void)
-{
-	uint32_t v;
-
-	st("smmu: reading (scr0 at %#lx)", (unsigned long)ANOC0_SMMU);
-	pace();
-	v = rd(ANOC0_SMMU + SMMU_SCR0);
-	st("smmu: scr0 0x%08x idr0 0x%08x gfsr 0x%08x", v,
-	    rd(ANOC0_SMMU + SMMU_SIDR0), rd(ANOC0_SMMU + SMMU_SGFSR));
-	wr(ANOC0_SMMU + SMMU_SCR0, (v | 1U) & ~(1U << 10));
-	wr(ANOC0_SMMU + SMMU_SGFSR, rd(ANOC0_SMMU + SMMU_SGFSR));
-	st("smmu: bypass, scr0 now 0x%08x", rd(ANOC0_SMMU + SMMU_SCR0));
-	/*
-	 * No catch-all entry here: an SMR with a full mask is dropped by
-	 * this SoC's SMMUs and the next access resets the phone (seen on
-	 * the GPU's).  msm8996_pcie_smmu_fix() adds an exact one for the
-	 * chip's stream once a stalled transfer names it.
-	 */
 }
 
 /*

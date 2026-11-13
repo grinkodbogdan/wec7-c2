@@ -801,75 +801,11 @@ ath10k_pci_qca6174_chip_reset(struct ath10k_pci *ar_pci)
 	/* FIXME: QCA6174 requires cold + warm reset to work. */
 
 #ifdef ATHP_DFLY
-	{
-		/*
-		 * Bring-up diagnostics, no wake handshake involved: the
-		 * supplies, then the chip's own view before and after
-		 * asking it to wake (RTC_STATE should go to 3).
-		 */
-		char pw[96];
-		uint32_t lb = PCIE_LOCAL_BASE_ADDRESS(ar->sc_regofs);
-		uint32_t rs = RTC_SOC_BASE_ADDRESS(ar->sc_regofs);
-		uint32_t fw = FW_INDICATOR_ADDRESS(ar->sc_regofs);
-		int k;
-
-		msm8996_wlan_power_diag(pw, sizeof(pw));
-		kprintf("athp diag: %s\n", pw);
-		kprintf("athp diag: rtc %08x wake %08x rst %08x chip %08x "
-		    "fw %08x\n",
-		    athp_reg_read32(ar, lb + RTC_STATE_ADDRESS),
-		    athp_reg_read32(ar, lb + PCIE_SOC_WAKE_ADDRESS),
-		    athp_reg_read32(ar, lb + SOC_GLOBAL_RESET_ADDRESS),
-		    athp_reg_read32(ar, rs + SOC_CHIP_ID_ADDRESS(ar->sc_regofs)),
-		    athp_reg_read32(ar, fw));
-		/* which parts of the 2 MB window answer? */
-		{
-			static const uint32_t offs[] = { 0x0, 0x800, 0x8f0,
-			    0x3a000, 0x40000, 0x7fffc, 0x80000, 0x80008,
-			    0x100000, 0x1ffffc };
-			char line[200];
-			int n = 0, j;
-
-			for (j = 0; j < (int)nitems(offs); j++) {
-				n += ksnprintf(line + n, sizeof(line) - n,
-				    "%x:%x ", offs[j],
-				    athp_reg_read32(ar, offs[j]));
-				if (j == 4 || j == (int)nitems(offs) - 1) {
-					kprintf("athp diag: %s\n", line);
-					n = 0;
-				}
-			}
-		}
-		/* do writes reach the chip at all?  FW_INDICATOR is RW */
-		{
-			uint32_t o = athp_reg_read32(ar, fw);
-
-			athp_reg_write32(ar, fw, 0x5a5a0000);
-			kprintf("athp diag: write test fw %08x -> %08x; "
-			    "intr_en %08x\n", o, athp_reg_read32(ar, fw),
-			    athp_reg_read32(ar, lb + 0x8));
-			athp_reg_write32(ar, fw, o);
-		}
-		athp_reg_write32(ar, lb + PCIE_SOC_WAKE_ADDRESS,
-		    PCIE_SOC_WAKE_V_MASK);
-		for (k = 0; k < 100; k++) {
-			if (RTC_STATE_V_GET(athp_reg_read32(ar,
-			    lb + RTC_STATE_ADDRESS)) == 3)
-				break;
-			DELAY(1000);
-		}
-		kprintf("athp diag: after wake %d ms: rtc %08x wake %08x "
-		    "fw %08x\n", k,
-		    athp_reg_read32(ar, lb + RTC_STATE_ADDRESS),
-		    athp_reg_read32(ar, lb + PCIE_SOC_WAKE_ADDRESS),
-		    athp_reg_read32(ar, fw));
-	}
 	/*
 	 * The cold reset takes the chip's PCIe core down too; with the
 	 * a0noc path to RAM clocked, the phone rebooted during it.  The
-	 * chip was just power-cycled by the bring-up, and the Android
-	 * driver never cold-resets it: warm reset only, unless
-	 * hw.mi5.wlan_cold=1.
+	 * chip was just power-cycled by the bring-up; hw.mi5.wlan_cold=0
+	 * skips it (ath10k itself always does cold, then warm).
 	 */
 	if (!athp_dfly_cold) {
 		athp_dfly_status("chip reset: warm only");
