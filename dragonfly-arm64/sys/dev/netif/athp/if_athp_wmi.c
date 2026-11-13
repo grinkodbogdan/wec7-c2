@@ -2338,6 +2338,12 @@ int ath10k_wmi_event_mgmt_rx(struct ath10k *ar, struct athp_buf *pbuf)
 
 	ath10k_dbg(ar, ATH10K_DBG_MGMT,
 		   "event mgmt rx status %08x\n", rx_status);
+#ifdef ATHP_DFLY
+	athp_dfly_rx_mgmt++;
+	if (rx_status & (WMI_RX_STATUS_ERR_DECRYPT |
+	    WMI_RX_STATUS_ERR_KEY_CACHE_MISS | WMI_RX_STATUS_ERR_CRC))
+		athp_dfly_rx_err++;
+#endif
 
 	if (test_bit(ATH10K_CAC_RUNNING, &ar->dev_flags)) {
 		athp_freebuf(ar, &ar->buf_rx, pbuf);
@@ -2417,8 +2423,12 @@ int ath10k_wmi_event_mgmt_rx(struct ath10k *ar, struct athp_buf *pbuf)
 		}
 	}
 
-	if (ieee80211_is_beacon(hdr))
+	if (ieee80211_is_beacon(hdr)) {
+#ifdef ATHP_DFLY
+		athp_dfly_rx_beacon++;
+#endif
 		ath10k_mac_handle_beacon(ar, pbuf);
+	}
 
 	ath10k_dbg(ar, ATH10K_DBG_MGMT,
 		   "event mgmt rx chan %d freq %d snr %d, rate %u isprot %d isauth %d\n",

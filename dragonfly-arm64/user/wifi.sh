@@ -61,10 +61,11 @@ scan)
 	up || exit 1
 	# what the scan does goes to the kernel log (Wi-Fi app shows it):
 	# net80211 scan + state machine, athp's MAC/scan and management
-	sysctl -q net.wlan.0.debug=0x00280000 >/dev/null 2>&1
+	sysctl -q net.wlan.0.debug=0x08280000 >/dev/null 2>&1
 	sysctl -q dev.athp.0.debug=0x00300000 >/dev/null 2>&1
 	# scans, waits for the result and lists it (with -v, the IEs)
 	ifconfig -v "$IF" scan 2>&1
+	echo "athp: frames: $(sysctl -n hw.mi5.wlan_rx)" > /dev/console
 	;;
 connect)
 	[ -r "$2" ] || { echo "usage: wifi.sh connect CONF"; exit 1; }

@@ -208,7 +208,8 @@ void	athp_dfly_dma_diag(struct ath10k *, const char *);
 void	athp_dfly_note(const char *fmt, ...) __printflike(1, 2);
 extern volatile int athp_dfly_in_reset;
 extern uint32_t athp_dfly_last_ind;
-extern int athp_dfly_cold;		/* hw.mi5.wlan_cold */	/* FW_INDICATOR after the target wait */	/* chip resetting: BAR off limits */
+extern int athp_dfly_cold;
+extern int athp_dfly_rx_mgmt, athp_dfly_rx_beacon, athp_dfly_rx_err;	/* hw.mi5.wlan_rx */		/* hw.mi5.wlan_cold */	/* FW_INDICATOR after the target wait */	/* chip resetting: BAR off limits */
 
 
 /* athp brings its own idr; keep it apart from the kernel's (drm) one */

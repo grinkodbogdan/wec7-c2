@@ -2460,6 +2460,9 @@ function wifi_app.draw(inst)
 	end
 	if #rows == 0 and not w.busy and w.ready then
 		-- nothing found: what the driver and net80211 said, to go on
+		table.insert(rows, {text = "firmware frames: " ..
+			string.gsub(run("sysctl -n hw.mi5.wlan_rx"), "\n", ""),
+			size = 10, font = F_MONO, nosep = true, col = C.text2})
 		local log = run("dmesg | grep -E '^(athp|wlan)' | " ..
 			"grep -v -E 'flush|regio_s_|warm:|ind 0' | tail -14")
 		for l in string.gmatch(log, "[^\n]+") do

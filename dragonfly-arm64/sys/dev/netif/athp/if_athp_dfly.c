@@ -156,6 +156,20 @@ static device_t athp_dev;
 static thread_t athp_attach_td;	/* paces its steps for the UI */
 
 SYSCTL_DECL(_hw_mi5);
+/* management frames the firmware handed up (scans see beacons here) */
+int athp_dfly_rx_mgmt, athp_dfly_rx_beacon, athp_dfly_rx_err;
+
+static int
+sysctl_wlan_rx(SYSCTL_HANDLER_ARGS)
+{
+	char buf[64];
+
+	ksnprintf(buf, sizeof(buf), "mgmt %d beacons %d errors %d",
+	    athp_dfly_rx_mgmt, athp_dfly_rx_beacon, athp_dfly_rx_err);
+	return (sysctl_handle_string(oidp, buf, sizeof(buf), req));
+}
+SYSCTL_PROC(_hw_mi5, OID_AUTO, wlan_rx, CTLTYPE_STRING | CTLFLAG_RD, 0, 0,
+    sysctl_wlan_rx, "A", "Wi-Fi management frames received");
 /* set once the driver has registered with net80211, and kept: later
  * status lines (the firmware restarts when wlan0 goes up) do not clear it */
 static int wlan_ready;
