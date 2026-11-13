@@ -520,11 +520,20 @@ pcie0_up(void)
 	st("a0noc clocks: enabling snoc_axi (was %08x) cnoc_ahb (was %08x)",
 	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
 	pace();
+	/*
+	 * Mainline Linux keeps every aggre0 clock on (CLK_IS_CRITICAL in
+	 * gcc-msm8996): the NoC's bus and config clocks, its MPU (access
+	 * control) config clock, the QoS generator's reference, and the
+	 * SMMU's.  Offsets from Xiaomi's msm-clocks-hwio-8996.h.
+	 */
 	wr(GCC_AGGRE0_SNOC_AXI_CBCR, rd(GCC_AGGRE0_SNOC_AXI_CBCR) | 1U);
 	wr(GCC_AGGRE0_CNOC_AHB_CBCR, rd(GCC_AGGRE0_CNOC_AHB_CBCR) | 1U);
+	wr(GCC + 0x85000, rd(GCC + 0x85000) | 1U);	/* aggre0_noc_mpu_cfg_ahb */
+	wr(GCC + 0x8101c, rd(GCC + 0x8101c) | 1U);	/* aggre0_noc_qosgen_extref */
 	DELAY(100);
-	st("a0noc clocks on: snoc_axi %08x cnoc_ahb %08x",
-	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR));
+	st("a0noc clocks on: snoc_axi %08x cnoc_ahb %08x mpu_cfg %08x",
+	    rd(GCC_AGGRE0_SNOC_AXI_CBCR), rd(GCC_AGGRE0_CNOC_AHB_CBCR),
+	    rd(GCC + 0x85000));
 	pace();
 	st("clocks on; parf version reads 0x%08x", rd(PARF + 0x00));
 	smmu_bypass();
@@ -535,6 +544,8 @@ pcie0_up(void)
 	wr(PARF + PARF_SYS_CTRL, 0x365e);
 	rmw(PARF + PARF_MHI_CLOCK_RESET_CTRL, 0, 1U << 4);
 	wr(PARF + PARF_SLV_ADDR_SPACE_SIZE, 0x01000000);	/* 16 MB */
+	/* mainline qcom_pcie_post_init_2_3_2: AXI master write-address halt */
+	rmw(PARF + 0x1a8, 0, 1U << 31);
 
 	/* the PHY, then its pipe clock */
 	phy_common_init();

@@ -645,6 +645,9 @@ ath10k_pci_warm_reset(struct ath10k_pci *ar_pci)
 	ar->stats.fw_warm_reset_counter++;
 	ATHP_DATA_UNLOCK(ar);
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: irq_disable");
+#endif
 	ath10k_pci_irq_disable(ar_pci);
 
 	/* Make sure the target CPU is not doing anything dangerous, e.g. if it
@@ -652,16 +655,37 @@ ath10k_pci_warm_reset(struct ath10k_pci *ar_pci)
 	 * then it is possible for the device to confuse pci-e controller to
 	 * the point of bringing host system to a complete stop (i.e. hang).
 	 */
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: warm_reset_si0");
+#endif
 	ath10k_pci_warm_reset_si0(ar_pci);
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: warm_reset_cpu");
+#endif
 	ath10k_pci_warm_reset_cpu(ar_pci);
 	ath10k_pci_init_pipes(ar);
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: wait_for_target_init");
+#endif
 	ath10k_pci_wait_for_target_init(ar_pci);
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: warm_reset_clear_lf");
+#endif
 	ath10k_pci_warm_reset_clear_lf(ar_pci);
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: warm_reset_ce");
+#endif
 	ath10k_pci_warm_reset_ce(ar_pci);
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: warm_reset_cpu");
+#endif
 	ath10k_pci_warm_reset_cpu(ar_pci);
 	ath10k_pci_init_pipes(ar);
 
+#ifdef ATHP_DFLY
+	athp_dfly_status("warm: wait_for_target_init");
+#endif
 	ret = ath10k_pci_wait_for_target_init(ar_pci);
 	if (ret) {
 		ath10k_warn(ar, "failed to wait for target init: %d\n", ret);
