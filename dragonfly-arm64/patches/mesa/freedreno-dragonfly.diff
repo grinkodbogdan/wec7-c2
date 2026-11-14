@@ -1,0 +1,81 @@
+--- a/src/gallium/drivers/freedreno/freedreno_screen.c
++++ b/src/gallium/drivers/freedreno/freedreno_screen.c
+@@ -43,7 +43,10 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include "drm-uapi/drm_fourcc.h"
++#ifdef __linux__
+ #include <sys/sysinfo.h>
++#endif
++#include "util/os_misc.h"
+ 
+ #include "freedreno_fence.h"
+ #include "freedreno_perfetto.h"
+@@ -1177,9 +1180,15 @@
+    screen->driconf.enable_throttling =
+          !driQueryOptionb(config->options, "disable_throttling");
+ 
++#ifdef __linux__
+    struct sysinfo si;
+    sysinfo(&si);
+    screen->ram_size = si.totalram;
++#else
++   uint64_t ram = 0;
++   os_get_total_physical_memory(&ram);
++   screen->ram_size = ram;
++#endif
+ 
+    DBG("Pipe Info:");
+    DBG(" GPU-id:          %s", fd_dev_name(screen->dev_id));
+--- a/src/gallium/drivers/freedreno/freedreno_util.h
++++ b/src/gallium/drivers/freedreno/freedreno_util.h
+@@ -27,6 +27,13 @@
+ #ifndef FREEDRENO_UTIL_H_
+ #define FREEDRENO_UTIL_H_
+ 
++#if defined(__DragonFly__)
++#include <unistd.h>
++#define fd_gettid() ((pid_t)lwp_gettid())
++#else
++#define fd_gettid() ((pid_t)syscall(SYS_gettid))
++#endif
++
+ #include "common/freedreno_common.h"
+ 
+ #include "drm/freedreno_drmif.h"
+@@ -117,7 +124,7 @@
+ #define DBG(fmt, ...)                                                          \
+    do {                                                                        \
+       if (FD_DBG(MSGS))                                                        \
+-         mesa_logi("%5d: %s:%d: " fmt, ((pid_t)syscall(SYS_gettid)),           \
++         mesa_logi("%5d: %s:%d: " fmt, (fd_gettid()),           \
+                                         __func__, __LINE__,                    \
+                                         ##__VA_ARGS__);                        \
+    } while (0)
+--- a/src/gallium/drivers/freedreno/freedreno_query_acc.h
++++ b/src/gallium/drivers/freedreno/freedreno_query_acc.h
+@@ -72,7 +72,7 @@
+  * ever changed, and to make the hw requirements more obvious)
+  */
+ #define ASSERT_ALIGNED(type, field, nbytes) \
+-   STATIC_ASSERT((offsetof(type, field) % nbytes) == 0)
++   STATIC_ASSERT((__builtin_offsetof(type, field) % nbytes) == 0)
+ 
+ struct fd_acc_sample_provider {
+    unsigned query_type;
+--- a/src/freedreno/ir3/ir3_disk_cache.c
++++ b/src/freedreno/ir3/ir3_disk_cache.c
+@@ -54,6 +54,13 @@
+    const char *renderer = fd_dev_name(compiler->dev_id);
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(ir3_disk_cache_init);
++   /*
++    * DragonFly/arm64: a static program has no dl_iterate_phdr()-visible
++    * build id, so no note; run without the shader disk cache instead of
++    * hashing build_id_data(NULL).
++    */
++   if (note == NULL)
++      return;
+    assert(note && build_id_length(note) == 20); /* sha1 */
+ 
+    const uint8_t *id_sha1 = build_id_data(note);

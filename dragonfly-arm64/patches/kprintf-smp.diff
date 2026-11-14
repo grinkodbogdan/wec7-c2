@@ -1,0 +1,31 @@
+diff --git a/sys/kern/subr_prf.c b/sys/kern/subr_prf.c
+index f72881998b..dec2bbf241 100644
+--- a/sys/kern/subr_prf.c
++++ b/sys/kern/subr_prf.c
+@@ -570,7 +570,26 @@ kvcprintf(char const *fmt, void (*func)(int, void*), void *arg, __va_list ap)
+ 	if (usespin) {
+ 		crit_enter_hard();
+ 		if (spin_trylock(&cons_spin) == 0) {
++#ifdef __aarch64__
++			/*
++			 * A framebuffer console is slow enough that threads
++			 * printing on other cpus at the same time lose whole
++			 * messages.  Outside interrupts, wait a bounded time
++			 * (the lock is never held across a nested kprintf on
++			 * this cpu while we are not in an interrupt).
++			 */
++			int tries = 0;
++
++			if (mycpu->gd_intr_nesting_level != 0)
++				goto headoncrash;
++			while (spin_trylock(&cons_spin) == 0) {
++				if (++tries > 2000000)
++					goto headoncrash;	/* give up */
++				cpu_pause();
++			}
++#else
+ 			goto headoncrash;	/* failed */
++#endif
+ 		}
+ 	}
+ 

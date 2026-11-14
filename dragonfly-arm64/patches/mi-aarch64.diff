@@ -1,0 +1,115 @@
+diff --git a/sys/kern/imgact_elf.c b/sys/kern/imgact_elf.c
+index d8034b18..fd425071 100644
+--- a/sys/kern/imgact_elf.c
++++ b/sys/kern/imgact_elf.c
+@@ -98,7 +98,7 @@ static u_long pie_base_hint(struct proc *p);
+ static int elf_legacy_coredump = 0;
+ static int __elfN(fallback_brand) = -1;
+ static int elf_pie_base_mmap = 0;
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ SYSCTL_NODE(_kern, OID_AUTO, elf64, CTLFLAG_RW, 0, "");
+ SYSCTL_INT(_debug, OID_AUTO, elf64_legacy_coredump, CTLFLAG_RW,
+     &elf_legacy_coredump, 0, "legacy coredump mode");
+@@ -1877,7 +1877,7 @@ __elfN(bsd_trans_osrel)(const Elf_Note *note, int32_t *osrel)
+ /*
+  * Tell kern_execve.c about it, with a little help from the linker.
+  */
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ static struct execsw elf_execsw = {exec_elf64_imgact, "ELF64"};
+ EXEC_SET_ORDERED(elf64, elf_execsw, SI_ORDER_FIRST);
+ #else /* i386 assumed */
+diff --git a/sys/kern/lwkt_ipiq.c b/sys/kern/lwkt_ipiq.c
+index 5aecac4b..4543776f 100644
+--- a/sys/kern/lwkt_ipiq.c
++++ b/sys/kern/lwkt_ipiq.c
+@@ -277,7 +277,7 @@ lwkt_send_ipiq3(globaldata_t target, ipifunc3_t func, void *arg1, int arg2)
+ 	}
+ 	atomic_swap_int(&ip->ip_drain, olimit);
+ 	DEBUG_POP_INFO();
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ 	write_rflags(rflags);
+ #else
+ #error "no write_*flags"
+@@ -464,7 +464,7 @@ lwkt_wait_ipiq(globaldata_t target, int seq)
+     if (target != mycpu) {
+ 	ip = &mycpu->gd_ipiq[target->gd_cpuid];
+ 	if ((int)(ip->ip_xindex - seq) < 0) {
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ 	    unsigned long rflags = read_rflags();
+ #else
+ #error "no read_*flags"
+@@ -510,7 +510,7 @@ lwkt_wait_ipiq(globaldata_t target, int seq)
+ 		cpu_lfence();
+ 	    }
+ 	    DEBUG_POP_INFO();
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ 	    write_rflags(rflags);
+ #else
+ #error "no write_*flags"
+diff --git a/sys/kern/vfs_vnops.c b/sys/kern/vfs_vnops.c
+index dd89570b..58b299f7 100644
+--- a/sys/kern/vfs_vnops.c
++++ b/sys/kern/vfs_vnops.c
+@@ -616,7 +616,7 @@ vn_set_fpf_offset(struct file *fp, off_t offset)
+ static __inline off_t
+ vn_poll_fpf_offset(struct file *fp)
+ {
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ 	return(fp->f_offset);
+ #else
+ 	off_t off = vn_get_fpf_offset(fp);
+diff --git a/sys/sys/disklabel32.h b/sys/sys/disklabel32.h
+index b2bec8ab..f9c9172a 100644
+--- a/sys/sys/disklabel32.h
++++ b/sys/sys/disklabel32.h
+@@ -51,7 +51,8 @@
+  */
+ 
+ /* XXX these should be defined per controller (or drive) elsewhere, not here! */
+-#if defined(__i386__) /* used in stand/boot */ || defined(__x86_64__)
++#if defined(__i386__) /* used in stand/boot */ || defined(__x86_64__) || \
++    defined(__aarch64__)
+ #define LABELSECTOR32	1			/* sector containing label */
+ #define LABELOFFSET32	0			/* offset of label in sector */
+ #endif
+diff --git a/sys/sys/systm.h b/sys/sys/systm.h
+index 801cf87d..8bb444c0 100644
+--- a/sys/sys/systm.h
++++ b/sys/sys/systm.h
+@@ -364,7 +364,7 @@ typedef void timeout_t (void *);	/* timeout function type */
+  * For the alpha arch, some of these functions are static __inline, and
+  * the others should be.
+  */
+-#if defined(__x86_64__)
++#if defined(__x86_64__) || defined(__aarch64__)
+ void		setdelayed (void);
+ void		setsoftcambio (void);
+ void		setsoftcamnet (void);
+@@ -380,7 +380,7 @@ void		splz_check (void);
+ void		cpu_mmw_pause_int(int*, int, int, int);
+ void		cpu_mmw_pause_long(long*, long, int, int);
+ void		cpu_smp_stopped(void);
+-#endif /* __x86_64__ */
++#endif /* __x86_64__ || __aarch64__ */
+ 
+ /*
+  * Various callout lists.
+diff --git a/sys/vm/vm_page.h b/sys/vm/vm_page.h
+index b7207a3d..3f9e89f0 100644
+--- a/sys/vm/vm_page.h
++++ b/sys/vm/vm_page.h
+@@ -92,7 +92,7 @@
+ #include <sys/spinlock.h>
+ #endif
+ 
+-#ifdef __x86_64__
++#if defined(__x86_64__) || defined(__aarch64__)
+ #include <machine/vmparam.h>
+ #endif
+ 

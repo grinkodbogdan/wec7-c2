@@ -1,0 +1,47 @@
+/*
+ * Linker script for the DragonFly arm64 platform kernel.
+ *
+ * The kernel is linked at KERNBASE and is fully position independent
+ * until locore has turned the MMU on, so it can be loaded at any
+ * 2MB-aligned physical address by a bootloader that speaks the Linux
+ * arm64 Image protocol (QEMU -kernel, U-Boot booti, Android abl).
+ */
+OUTPUT_FORMAT("elf64-littleaarch64")
+OUTPUT_ARCH(aarch64)
+ENTRY(_start)
+
+KERNBASE = 0xffffffff80000000;
+
+SECTIONS
+{
+	. = KERNBASE;
+	kernbase = .;
+	btext = .;
+	.text : {
+		KEEP(*(.text.boot))
+		*(.text .text.*)
+	}
+	. = ALIGN(4096);
+	etext = .;
+	.rodata : { *(.rodata .rodata.*) }
+	.note.gnu.build-id : {
+		PROVIDE(__build_id_start = .);
+		*(.note.gnu.build-id)
+		PROVIDE(__build_id_end = .);
+	}
+	. = ALIGN(4096);
+	.data : { *(.data .data.*) }
+	/*
+	 * Linker sets (SYSINIT, sysctl, console drivers, ...) are orphan
+	 * sections named set_*; they land here and the linker provides
+	 * the __start_set_* / __stop_set_* symbols that bracket them.
+	 */
+	. = ALIGN(4096);
+	__bss_start = .;
+	.bss : { *(.bss .bss.*) *(COMMON) }
+	. = ALIGN(4096);
+	__bss_end = .;
+	_end = .;
+	end = .;
+	/DISCARD/ : { *(.comment) *(.note.GNU-stack) *(.eh_frame*) }
+}

@@ -1,0 +1,35 @@
+/*
+ * aarch64 machine-dependent libc symbols.
+ */
+DF404.0 {
+	_setjmp;
+	_longjmp;
+	getcontext;
+	fabs;
+	fpgetmask;
+	fpgetround;
+	fpsetmask;
+	fpsetround;
+	makecontext;
+	setjmp;
+	longjmp;
+	sigsetjmp;
+	siglongjmp;
+	brk;
+	sbrk;
+};
+
+DFprivate_1.0 {
+	__flt_rounds;
+	__infinity;
+	__nan;
+	_DYNAMIC;
+	_brk;
+	_end;
+	_getcontext;
+	_makecontext;
+	.curbrk;
+	.minbrk;
+	.cerror;
+	__cerror_set;
+};

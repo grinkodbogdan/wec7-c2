@@ -1,0 +1,199 @@
+diff --git a/include/float.h b/include/float.h
+index 1d074a6906..306431c6c5 100644
+--- a/include/float.h
++++ b/include/float.h
+@@ -47,8 +47,12 @@ __END_DECLS
+ #else
+ #define	FLT_EVAL_METHOD	(-1)		/* i387 semantics are...interesting */
+ #endif
++#ifdef __aarch64__
++#define	DECIMAL_DIG	36		/* max precision in decimal digits */
++#else
+ #define	DECIMAL_DIG	21		/* max precision in decimal digits */
+ #endif
++#endif
+ 
+ #define FLT_MANT_DIG	24		/* p */
+ #define FLT_EPSILON	1.19209290E-07F	/* b**(1-p) */
+@@ -80,6 +84,23 @@ __END_DECLS
+ #define	DBL_HAS_SUBNORM	1
+ #endif /* __ISO_C_VISIBLE >= 2011 */
+ 
++#ifdef __aarch64__
++/* IEEE 754 quad precision (values as FreeBSD/arm64) */
++#define LDBL_MANT_DIG	113
++#define LDBL_EPSILON	1.925929944387235853055977942584927319E-34L
++#define LDBL_DIG	33
++#define LDBL_MIN_EXP	(-16381)
++#define LDBL_MIN	3.362103143112093506262677817321752603E-4932L
++#define LDBL_MIN_10_EXP	(-4931)
++#define LDBL_MAX_EXP	16384
++#define LDBL_MAX	1.189731495357231765085759326628007016E+4932L
++#define LDBL_MAX_10_EXP	4932
++#if __ISO_C_VISIBLE >= 2011
++#define	LDBL_TRUE_MIN	6.475175119438025110924438958227646552E-4966L
++#define	LDBL_DECIMAL_DIG 36
++#define	LDBL_HAS_SUBNORM 1
++#endif /* __ISO_C_VISIBLE >= 2011 */
++#else
+ #define LDBL_MANT_DIG	64
+ #define LDBL_EPSILON	1.0842021724855044340E-19L
+ #define LDBL_DIG	18
+@@ -95,4 +116,6 @@ __END_DECLS
+ #define	LDBL_HAS_SUBNORM 1
+ #endif /* __ISO_C_VISIBLE >= 2011 */
+ 
++#endif /* __aarch64__ */
++
+ #endif /* _FLOAT_H_ */
+diff --git a/lib/libc/gen/tls.c b/lib/libc/gen/tls.c
+index 0e9b087486..0bb21d074f 100644
+--- a/lib/libc/gen/tls.c
++++ b/lib/libc/gen/tls.c
+@@ -51,7 +51,7 @@ struct tls_tcb *__libc_allocate_tls(void);
+ void __libc_free_tls(struct tls_tcb *tcb);
+ void __libc_call_init(void);
+ 
+-#if !defined(RTLD_STATIC_TLS_VARIANT_II)
++#if !defined(RTLD_STATIC_TLS_VARIANT_I) && !defined(RTLD_STATIC_TLS_VARIANT_II)
+ #error "Unsupported TLS layout"
+ #endif
+ 
+@@ -61,6 +61,9 @@ static size_t tls_static_space;
+ static size_t tls_init_size;
+ static void *tls_init;
+ static struct tls_tcb *initial_tcb;
++#ifdef RTLD_STATIC_TLS_VARIANT_I
++static size_t tls_static_align = RTLD_STATIC_TLS_ALIGN;
++#endif
+ #endif
+ 
+ void *__libc_tls_get_addr(void *ti);
+@@ -80,6 +83,75 @@ __libc_tls_get_addr_tcb(struct tls_tcb *tcb __unused, void *got_ptr __unused)
+ 
+ #ifndef PIC
+ 
++#ifdef RTLD_STATIC_TLS_VARIANT_I
++
++/*
++ * Variant I (aarch64): the thread pointer addresses a 16-byte ABI
++ * header (tcb_dtv, tcb_pthread) inside the TCB, and the TLS block
++ * follows at TLS_TP_HDR_SIZE rounded up to the segment's alignment.
++ * The rest of the TCB lies below the thread pointer.  tcb_unused[0]
++ * remembers the allocation.
++ */
++void
++__libc_free_tls(struct tls_tcb *tcb)
++{
++	if (tcb == initial_tcb) {
++		/* initial_tcb was allocated with mmap(), cannot call free() */
++	} else {
++		free(tcb->tcb_unused[0]);
++	}
++}
++
++struct tls_tcb *
++__libc_allocate_tls(void)
++{
++	size_t align, tlsoff, bytes;
++	struct tls_tcb *tcb;
++	Elf_Addr *dtv;
++	char *raw, *tp;
++
++	align = tls_static_align;
++	if (align < RTLD_STATIC_TLS_ALIGN)
++		align = RTLD_STATIC_TLS_ALIGN;
++	tlsoff = roundup2(TLS_TP_HDR_SIZE, align);
++	bytes = TLS_TCB_TP_OFFSET + align + tlsoff + tls_static_space +
++	    3 * sizeof(*dtv);
++
++	/* See the variant II version below on mmap() for the first. */
++	if (initial_tcb == NULL) {
++		bytes = (bytes + PAGE_MASK) & ~(size_t)PAGE_MASK;
++		raw = mmap((void *)1, bytes, PROT_READ | PROT_WRITE,
++			   MAP_PRIVATE | MAP_ANON, -1, 0);
++	} else {
++		raw = malloc(bytes);
++	}
++
++	tp = (char *)roundup2((uintptr_t)raw + TLS_TCB_TP_OFFSET, align);
++	tcb = (struct tls_tcb *)(tp - TLS_TCB_TP_OFFSET);
++	dtv = (Elf_Addr *)(tp + tlsoff + tls_static_space);
++
++	memset(tcb, 0, sizeof(*tcb));
++	tcb->tcb_self = tcb;
++	tcb->tcb_dtv = dtv;
++	tcb->tcb_unused[0] = raw;
++
++	dtv[0] = 1;
++	dtv[1] = 1;
++	dtv[2] = (Elf_Addr)(tp + tlsoff);
++
++	memcpy(tp + tlsoff, tls_init, tls_init_size);
++	memset(tp + tlsoff + tls_init_size, 0,
++	    tls_static_space - tls_init_size);
++
++	if (initial_tcb == NULL) {
++		initial_tcb = tcb;
++		tls_set_tcb(tcb);
++	}
++	return (tcb);
++}
++
++#else /* RTLD_STATIC_TLS_VARIANT_II */
++
+ /*
+  * Free Static TLS, weakly bound to _rtld_free_tls()
+  */
+@@ -168,6 +240,8 @@ __libc_allocate_tls(void)
+ 	return (tcb);
+ }
+ 
++#endif /* RTLD_STATIC_TLS_VARIANT_I */
++
+ #else
+ 
+ struct tls_tcb *
+@@ -236,6 +310,9 @@ _libc_init_tls(void)
+ 			    phdr[i].p_align);
+ 			tls_init_size = phdr[i].p_filesz;
+ 			tls_init = (void*) phdr[i].p_vaddr;
++#ifdef RTLD_STATIC_TLS_VARIANT_I
++			tls_static_align = phdr[i].p_align;
++#endif
+ 		}
+ 	}
+ #endif
+diff --git a/lib/libc/thread/thr_umtx.h b/lib/libc/thread/thr_umtx.h
+index c44b35f65c..858a324f14 100644
+--- a/lib/libc/thread/thr_umtx.h
++++ b/lib/libc/thread/thr_umtx.h
+@@ -30,7 +30,11 @@
+ 
+ #include <unistd.h>
+ 
++#if defined(__aarch64__)
++#define	cpu_pause()	__asm __volatile("yield":::"memory")
++#else
+ #define	cpu_pause()	__asm __volatile("pause":::"memory")
++#endif
+ 
+ typedef int umtx_t;
+ 
+diff --git a/lib/libm/Makefile b/lib/libm/Makefile
+index b3337c48e4..405d77bd36 100644
+--- a/lib/libm/Makefile
++++ b/lib/libm/Makefile
+@@ -47,6 +47,12 @@ ARCH_SRCS = e_acos.S e_asin.S e_atan2.S e_exp.S e_fmod.S e_log.S e_log10.S \
+ 	    s_llrint.S s_llrintf.S s_lrint.S s_lrintf.S \
+ 	    s_rint.S s_rintf.S s_scalbnf.S s_significand.S \
+ 	    s_significandf.S s_sin.S s_sinf.S s_tan.S s_tanf.S
++.elif (${MACHINE_ARCH} == "aarch64")
++# No assembly; fenv.c for the FPCR/FPSR.  The 128-bit long double
++# functions (LONG_SRCS) need an ld128 source set, which is not in
++# contrib yet.
++.PATH:	${.CURDIR}/src/aarch64
++MACHINCS=   arm64/fenv.h arm64/ieee.h
+ .endif
+ 
+ COMMON_SRCS = b_exp__D.c b_log__D.c b_tgamma.c \

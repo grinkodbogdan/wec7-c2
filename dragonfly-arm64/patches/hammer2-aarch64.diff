@@ -1,0 +1,39 @@
+diff --git a/sbin/hammer2/lz4/hammer2_lz4.c b/sbin/hammer2/lz4/hammer2_lz4.c
+index 40dee63798..b212f5dab3 100644
+--- a/sbin/hammer2/lz4/hammer2_lz4.c
++++ b/sbin/hammer2/lz4/hammer2_lz4.c
+@@ -68,7 +68,7 @@ Note : this source file requires "hammer2_lz4_encoder.h"
+ // CPU Feature Detection
+ //**************************************
+ // 32 or 64 bits ?
+-#if (defined(__x86_64__) || defined(_M_X64))   // Detects 64 bits mode
++#if (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__))   // Detects 64 bits mode
+ #  define LZ4_ARCH64 1
+ #else
+ #  define LZ4_ARCH64 0
+diff --git a/sys/vfs/hammer2/hammer2_lz4.c b/sys/vfs/hammer2/hammer2_lz4.c
+index 80180ed791..f696dff48c 100644
+--- a/sys/vfs/hammer2/hammer2_lz4.c
++++ b/sys/vfs/hammer2/hammer2_lz4.c
+@@ -68,7 +68,7 @@ Note : this source file requires "hammer2_lz4_encoder.h"
+ // CPU Feature Detection
+ //**************************************
+ // 32 or 64 bits ?
+-#if (defined(__x86_64__) || defined(_M_X64))   // Detects 64 bits mode
++#if (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__))   // Detects 64 bits mode
+ #  define LZ4_ARCH64 1
+ #else
+ #  define LZ4_ARCH64 0
+diff --git a/sys/vfs/hammer2/xxhash/xxhash.c b/sys/vfs/hammer2/xxhash/xxhash.c
+index 14d4dcc78f..26980fbce1 100644
+--- a/sys/vfs/hammer2/xxhash/xxhash.c
++++ b/sys/vfs/hammer2/xxhash/xxhash.c
+@@ -84,7 +84,7 @@
+  * is guaranteed to be aligned.
+  */
+ #ifndef XXH_FORCE_ALIGN_CHECK /* can be defined externally */
+-#  if defined(__i386) || defined(_M_IX86) || defined(__x86_64__) || defined(_M_X64)
++#  if defined(__i386) || defined(_M_IX86) || defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)
+ #    define XXH_FORCE_ALIGN_CHECK 0
+ #  else
+ #    define XXH_FORCE_ALIGN_CHECK 1

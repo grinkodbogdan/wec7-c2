@@ -1,0 +1,20 @@
+# Meson cross file for DragonFly/arm64 (see tools/aarch64-dragonfly.cmake).
+# world.sh fills in @SYSROOT@ and @RESDIR@.
+[binaries]
+c = 'clang'
+cpp = 'clang++'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+pkg-config = 'false'
+
+[built-in options]
+c_args = ['--target=aarch64-unknown-none-elf', '-D__DragonFly__=6', '-D__ELF__', '-Xclang', '-fwchar-type=int', '-Xclang', '-fsigned-wchar', '-nostdinc', '-isystem@SYSROOT@/usr/include', '-isystem@SYSROOT@/usr/lib/clang/include']
+cpp_args = ['--target=aarch64-unknown-none-elf', '-D__DragonFly__=6', '-D__ELF__', '-Xclang', '-fwchar-type=int', '-Xclang', '-fsigned-wchar', '-nostdinc', '-isystem@SYSROOT@/usr/include/c++/v1', '-isystem@SYSROOT@/usr/include', '-isystem@SYSROOT@/usr/lib/clang/include']
+c_link_args = ['--target=aarch64-unknown-none-elf', '-fuse-ld=lld', '-nostdlib', '-static', '-Wl,--eh-frame-hdr', '@SYSROOT@/usr/lib/crt1.o', '@SYSROOT@/usr/lib/crti.o', '@SYSROOT@/usr/lib/crtbegin.o', '-L@SYSROOT@/usr/lib', '-lc', '-lcompiler_rt', '@SYSROOT@/usr/lib/crtend.o', '@SYSROOT@/usr/lib/crtn.o']
+cpp_link_args = ['--target=aarch64-unknown-none-elf', '-fuse-ld=lld', '-nostdlib', '-static', '-Wl,--eh-frame-hdr', '@SYSROOT@/usr/lib/crt1.o', '@SYSROOT@/usr/lib/crti.o', '@SYSROOT@/usr/lib/crtbegin.o', '-L@SYSROOT@/usr/lib', '-lc++', '-lc++abi', '-lunwind', '-lm', '-lc', '-lcompiler_rt', '@SYSROOT@/usr/lib/crtend.o', '@SYSROOT@/usr/lib/crtn.o']
+
+[host_machine]
+system = 'dragonfly'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'

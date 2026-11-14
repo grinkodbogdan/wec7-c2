@@ -1,0 +1,48 @@
+diff --git a/sbin/dhclient/dhclient.c b/sbin/dhclient/dhclient.c
+index 06a5408a76..59b6be93a5 100644
+--- a/sbin/dhclient/dhclient.c
++++ b/sbin/dhclient/dhclient.c
+@@ -445,8 +445,9 @@ main(int argc, char *argv[])
+ 		fprintf(stderr, " got link\n");
+ 
+  dispatch:
++	/* a ramdisk without a password database runs it as root */
+ 	if ((pw = getpwnam("_dhcp")) == NULL)
+-		error("no such user: _dhcp");
++		warning("no such user: _dhcp; not dropping privileges");
+ 
+ 	if (pipe(pipe_fd) == -1)
+ 		error("pipe");
+@@ -471,19 +472,21 @@ main(int argc, char *argv[])
+ 	/* set up the interface */
+ 	discover_interface();
+ 
+-	if (chroot(_PATH_VAREMPTY) == -1)
+-		error("chroot");
+-	if (chdir("/") == -1)
+-		error("chdir(\"/\")");
++	if (pw != NULL) {
++		if (chroot(_PATH_VAREMPTY) == -1)
++			error("chroot");
++		if (chdir("/") == -1)
++			error("chdir(\"/\")");
+ 
+-	if (setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) == -1)
+-		error("setresgid");
+-	if (setgroups(1, &pw->pw_gid) == -1)
+-		error("setgroups");
+-	if (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) == -1)
+-		error("setresuid");
++		if (setresgid(pw->pw_gid, pw->pw_gid, pw->pw_gid) == -1)
++			error("setresgid");
++		if (setgroups(1, &pw->pw_gid) == -1)
++			error("setgroups");
++		if (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) == -1)
++			error("setresuid");
+ 
+-	endpwent();
++		endpwent();
++	}
+ 
+ 	setproctitle("%s", ifi->name);
+ 
