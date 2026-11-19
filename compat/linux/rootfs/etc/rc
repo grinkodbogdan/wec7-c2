@@ -13,6 +13,7 @@ echo "rc: memory: $(grep MemTotal /proc/meminfo)"
 /usr/bin/std-test hello from rc
 echo "rc: std-test exit status $?"
 sleep 1 && echo "rc: slept 1 second"
+/etc/run-tests
 echo "rc: starting an interactive shell (type 'exit' to power off)"
 cd /root
 exec /bin/sh

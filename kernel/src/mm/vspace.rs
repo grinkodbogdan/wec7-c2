@@ -168,6 +168,28 @@ impl AddressSpace {
         true
     }
 
+    /// Remove a page's entry without freeing its frame (for moving it).
+    pub fn take_entry(&mut self, va: u64) -> Option<u64> {
+        let entry = self.leaf_mut(va, false)?;
+        if *entry & VALID == 0 {
+            return None;
+        }
+        let e = core::mem::replace(entry, 0);
+        mmu::flush_page(va, self.asid);
+        Some(e)
+    }
+
+    /// Install an entry taken with `take_entry` at a new address.
+    pub fn put_entry(&mut self, va: u64, e: u64) -> Result<(), MapError> {
+        let entry = self.leaf_mut(va, true).ok_or(MapError::NoMemory)?;
+        if *entry & VALID != 0 {
+            return Err(MapError::AlreadyMapped);
+        }
+        *entry = e;
+        mmu::table_barrier();
+        Ok(())
+    }
+
     /// Change the protection of a mapped page.
     pub fn protect(&mut self, va: u64, prot: Prot) -> bool {
         let Some(entry) = self.leaf_mut(va, false) else { return false };

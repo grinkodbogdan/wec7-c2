@@ -9,7 +9,7 @@ use crate::global::Global;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, addr_of_mut};
 
-const HEAP_SIZE: usize = 4 << 20;
+const HEAP_SIZE: usize = 16 << 20;
 const CLASSES: usize = 9; // 16 << 0 ..= 16 << 8 (4096)
 const PAGE: usize = 4096;
 

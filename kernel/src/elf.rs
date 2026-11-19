@@ -17,7 +17,7 @@ const ET_EXEC: u16 = 2;
 const ET_DYN: u16 = 3;
 
 /// Where things ended up, for building a Linux process's auxiliary vector.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ElfInfo {
     pub entry: u64,
     pub phdr: u64,
@@ -25,6 +25,8 @@ pub struct ElfInfo {
     pub phnum: u64,
     /// First page above the highest segment (initial program break).
     pub end: u64,
+    /// Loaded segments: (start page, end page, protection).
+    pub segments: alloc::vec::Vec<(u64, u64, Prot)>,
 }
 
 fn u16_at(b: &[u8], o: usize) -> Option<u16> {
@@ -64,6 +66,7 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
     let mut entry_ok = false;
     let mut phdr = 0;
     let mut end = 0;
+    let mut segments = alloc::vec::Vec::new();
     // Final protection per page; pages shared by two segments get the union.
     let mut pages: BTreeMap<u64, Prot> = BTreeMap::new();
 
@@ -133,6 +136,7 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
             entry_ok = true;
         }
         end = end.max(page_ceil(seg_end));
+        segments.push((page_floor(vaddr), page_ceil(seg_end), prot));
     }
     for (&page, &prot) in &pages {
         vs.protect(page, prot);
@@ -140,5 +144,5 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
     if !entry_ok {
         return Err("entry point is not inside an executable segment");
     }
-    Ok(ElfInfo { entry, phdr, phent: phent as u64, phnum: phnum as u64, end })
+    Ok(ElfInfo { entry, phdr, phent: phent as u64, phnum: phnum as u64, end, segments })
 }

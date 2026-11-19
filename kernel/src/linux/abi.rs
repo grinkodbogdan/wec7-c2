@@ -5,6 +5,7 @@
 pub const EPERM: i64 = 1;
 pub const ENOENT: i64 = 2;
 pub const ESRCH: i64 = 3;
+pub const ENXIO: i64 = 6;
 pub const EINTR: i64 = 4;
 pub const EIO: i64 = 5;
 pub const ENOEXEC: i64 = 8;
@@ -28,6 +29,7 @@ pub const ENOSYS: i64 = 38;
 pub const ENOTEMPTY: i64 = 39;
 pub const ELOOP: i64 = 40;
 pub const EAFNOSUPPORT: i64 = 97;
+pub const ETIMEDOUT: i64 = 110;
 
 // file types and modes
 pub const S_IFMT: u32 = 0o170000;
@@ -64,6 +66,7 @@ pub const MAP_SHARED: u64 = 1;
 pub const MAP_PRIVATE: u64 = 2;
 pub const MAP_FIXED: u64 = 0x10;
 pub const MAP_ANONYMOUS: u64 = 0x20;
+pub const MAP_32BIT: u64 = 0x40;
 pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
 
 // clone
@@ -159,6 +162,34 @@ pub const LINUX_REBOOT_CMD_HALT: u64 = 0xcdef_0123;
 // system call numbers (asm-generic)
 pub mod nr {
     pub const GETCWD: u64 = 17;
+    pub const EVENTFD2: u64 = 19;
+    pub const EPOLL_CREATE1: u64 = 20;
+    pub const EPOLL_CTL: u64 = 21;
+    pub const EPOLL_PWAIT: u64 = 22;
+    pub const SIGNALFD4: u64 = 74;
+    pub const TIMERFD_CREATE: u64 = 85;
+    pub const TIMERFD_SETTIME: u64 = 86;
+    pub const TIMERFD_GETTIME: u64 = 87;
+    pub const RT_SIGPENDING: u64 = 136;
+    pub const RT_SIGTIMEDWAIT: u64 = 137;
+    pub const RT_SIGQUEUEINFO: u64 = 138;
+    pub const SOCKETPAIR: u64 = 199;
+    pub const BIND: u64 = 200;
+    pub const LISTEN: u64 = 201;
+    pub const ACCEPT: u64 = 202;
+    pub const CONNECT: u64 = 203;
+    pub const GETSOCKNAME: u64 = 204;
+    pub const GETPEERNAME: u64 = 205;
+    pub const SENDTO: u64 = 206;
+    pub const RECVFROM: u64 = 207;
+    pub const SETSOCKOPT: u64 = 208;
+    pub const GETSOCKOPT: u64 = 209;
+    pub const SHUTDOWN: u64 = 210;
+    pub const SENDMSG: u64 = 211;
+    pub const RECVMSG: u64 = 212;
+    pub const ACCEPT4: u64 = 242;
+    pub const MEMFD_CREATE: u64 = 279;
+    pub const EPOLL_PWAIT2: u64 = 441;
     pub const DUP: u64 = 23;
     pub const DUP3: u64 = 24;
     pub const FCNTL: u64 = 25;

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Linux ABI conformance tests (from QRT's tests/linux). Each prints "<name>: ok".
+for t in /usr/libexec/flare-tests/*; do
+    echo "== $(basename $t)"
+    timeout 20 $t
+    echo "== $(basename $t) exit $?"
+done

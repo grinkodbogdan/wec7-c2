@@ -92,7 +92,12 @@ const BUSYBOX_APPLETS: &[&str] = &[
     "factor",
     "time",
     "watch",
+    "timeout",
+    "usleep",
 ];
+/// Linux ABI conformance tests (C, from QRT's tests/linux), built with the
+/// musl SDK in compat/linux/sdk and installed in /usr/libexec/flare-tests.
+const LINUX_TESTS: &[&str] = &["hello", "memory", "procs", "threads", "signals", "events"];
 const BUSYBOX_SBIN: &[&str] = &["init", "poweroff", "reboot", "halt"];
 const DEFAULT_SYSTEM: &str = "system/qemu-virt-phone.boot.toml";
 
@@ -132,14 +137,27 @@ const EXPECTED: &[&str] = &[
     "std-test: ok",
     "rc: std-test exit status 0",
     "rc: slept 1 second",
+    "events: ok",
+    "memory: ok",
+    "procs: ok",
+    "signals: ok",
+    "threads: 4 threads, counter 80000 (expected 80000), TLS private",
+    "threads: ok",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
 ];
 /// Typed into the console during `qemu-test` (read by the interactive shell).
 const TEST_INPUT: &[u8] = b"echo shell-$((40 + 2))\rexit\r";
-const FORBIDDEN: &[&str] =
-    &["KERNEL PANIC", "UNEXPECTED", "must never print", "panic:", "killed by SIG", "unimplemented system call"];
+const FORBIDDEN: &[&str] = &[
+    "KERNEL PANIC",
+    "UNEXPECTED",
+    "must never print",
+    "panic:",
+    "killed by SIG",
+    "unimplemented system call",
+    ": FAILED",
+];
 
 struct Opts {
     system: String,
@@ -275,6 +293,18 @@ fn busybox() -> PathBuf {
     bin
 }
 
+/// Build (once) the musl C toolchain for Linux test programs.
+fn linux_sdk() -> PathBuf {
+    let out = root().join("target").join("linux-sdk");
+    if !out.join(".stamp").exists() {
+        println!("xtask: building the musl SDK for Linux test programs");
+        let mut c = Command::new(root().join("compat/linux/sdk/build.sh"));
+        c.arg(&out);
+        run(c);
+    }
+    out.join("bin/flare-a64-cc")
+}
+
 /// Assemble the Linux root filesystem: compat/linux/rootfs, busybox with
 /// applet links, and the Linux test programs.
 fn assemble_rootfs() -> PathBuf {
@@ -299,6 +329,15 @@ fn assemble_rootfs() -> PathBuf {
     run(c);
     let dst = rootfs.join("usr/bin/std-test");
     std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/std-test"), &dst).unwrap();
+    let cc = linux_sdk();
+    let tests = rootfs.join("usr/libexec/flare-tests");
+    std::fs::create_dir_all(&tests).unwrap();
+    for t in LINUX_TESTS {
+        let mut c = Command::new(&cc);
+        c.args(["-O2", "-o"]).arg(tests.join(t)).arg(root().join("compat/linux/tests").join(format!("{}.c", t)));
+        c.arg("-lpthread");
+        run(c);
+    }
     rootfs
 }
 

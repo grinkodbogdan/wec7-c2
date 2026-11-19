@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install QEMU
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm clang lld llvm gcc-aarch64-linux-gnu linux-libc-dev-arm64-cross
       - name: Install Rust
         run: rustup show
       - name: Check formatting

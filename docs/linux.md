@@ -10,12 +10,30 @@ Verified on every `cargo xtask test`:
 
 * **busybox 1.36 (Alpine, static musl)** as pid 1, running `/etc/rc`:
   command substitution, arithmetic, redirection, pipelines, `ls`, `cat`,
-  `grep`, `wc`, `tr`, `sleep`, `uname`, reading `/proc/meminfo`, then an
+  `grep`, `wc`, `tr`, `sleep`, `timeout`, reading `/proc/meminfo`, then an
   **interactive shell** on the console (line editing works).
-* **A Rust `std` program** (`compat/linux/std-test`, target
-  `aarch64-unknown-linux-musl`, static-pie): args, heap, `HashMap`, files,
-  floating point, `thread::sleep`, `Command::output()` (fork + exec + pipes
-  + wait).
+* **A Rust `std` program** (`compat/linux/std-test`, static-pie): args,
+  heap, `HashMap`, files, floating point, `thread::sleep`,
+  `Command::output()`.
+* **The Linux ABI conformance suite** (`compat/linux/tests`, C programs
+  taken from [QRT](https://github.com/grinkodbogdan/qrt)'s `tests/linux`,
+  built with the musl SDK in `compat/linux/sdk`). All pass:
+  * `threads` — pthreads, mutexes, condition variables, join, TLS (futex).
+  * `signals` — handlers with and without `SA_SIGINFO`, masks and pending
+    sets, SIGSEGV from read-only/PROT_NONE/NULL with `sigaltstack` and
+    `siglongjmp`, SIGFPE, FP/SIMD state across a handler, `setitimer`,
+    `alarm`, `SA_RESTART`, EINTR, `sigsuspend`, `sigtimedwait`, SIGCHLD,
+    SIGPIPE, default actions, `pthread_kill`.
+  * `memory` — an 8 GiB `PROT_NONE` reservation committed with `mprotect`,
+    JIT (write then execute), no-execute data, memfd and `MAP_SHARED`
+    across fork, `/dev/shm`, `mremap`, `MADV_DONTNEED`, a 64 MB realloc,
+    `MAP_32BIT`, file mappings, 200 descriptors.
+  * `events` — eventfd, timerfd, signalfd, epoll (one-shot, delete,
+    timeouts), Unix sockets: socketpair with `SCM_RIGHTS`, datagram and
+    seqpacket, a named server with listen/accept and `SO_PEERCRED`,
+    abstract names, hang-up through epoll.
+  * `procs` — fork, execve, wait, pipes, dup2, `posix_spawn`, `popen`,
+    `O_CLOEXEC`, kill.
 
 ## How it fits Flare
 
@@ -32,42 +50,34 @@ Verified on every `cargo xtask test`:
 * The composition starts Linux with a `[linux]` section (`init`, `env`);
   `halt-when-finished = ["linux"]` powers off when init exits.
 
-## Implemented
+## Structure
 
-Processes: `clone` (fork and vfork semantics, copied address spaces),
-`execve` (ELF static and static-pie, `#!` scripts), `wait4`, `exit_group`,
-`kill`/`tgkill` (default actions), process groups and sessions, `uname`,
-`sysinfo`, rlimits, credentials (everyone is root).
+`kernel/src/linux/`:
 
-Memory: `brk`, `mmap` (anonymous and file-backed private), `munmap`,
-`mprotect` (including `PROT_NONE`), on-demand stack growth to 8 MiB.
+| File | What |
+| --- | --- |
+| `mod.rs` | tasks (threads) and processes (thread groups), exec, clone (fork, vfork, threads), exit, wait, futex, system-call dispatch |
+| `mm.rs` | VMAs over a Flare address space, demand paging, shared memory objects (`MAP_SHARED`, memfd, `/dev/shm`), mmap/mprotect/mremap/madvise/brk |
+| `signal.rs` | signal generation and delivery with Linux's arm64 `rt_sigframe` (layout as in QRT's `src/user/signal.c`), sigreturn, masks, alternate stack, itimers |
+| `fs.rs` | open files: regular files, devices, pipes, eventfd, timerfd, signalfd, epoll, memfd; file system calls; ppoll |
+| `net.rs` | Unix-domain sockets |
+| `vfs.rs` | in-memory file system from the initramfs (copy-on-write over the kernel image) |
+| `tty.rs` | console line discipline |
 
-Files: `openat`, `read`/`write`/`readv`/`writev`/`pread64`/`pwrite64`,
-`sendfile`, `lseek`, `getdents64`, `fstat`/`newfstatat`, `readlinkat`,
-`faccessat`, `mkdirat`, `unlinkat`, `symlinkat`, `renameat`, `ftruncate`,
-`dup`/`dup3`/`fcntl`, `pipe2`, `ppoll`, `getcwd`/`chdir`/`fchdir`.
-Devices: `/dev/console`, `/dev/tty`, `/dev/null`, `/dev/zero`,
-`/dev/urandom`. `/proc`: version, uptime, meminfo, cpuinfo, loadavg,
-mounts, filesystems, cmdline, stat, `self/exe`.
-
-TTY: termios (canonical and raw), echo, erase/kill, ^C (SIGINT to the
-foreground group), ^D, window size, foreground process group.
-
-Time: `clock_gettime`, `gettimeofday`, `nanosleep`, `clock_nanosleep`
-(wall clock from the board's PL031 RTC).
+Blocking system calls are re-run when anything changes (the kernel never
+blocks); a deliverable signal interrupts them with `EINTR` or restarts them
+(`SA_RESTART`) by re-issuing the `svc`.
 
 Unimplemented calls return `ENOSYS` and are logged once
 (`linux: unimplemented system call N`); the boot test fails if any appear.
 
 ## Not yet
 
-* **Threads** (`clone` with `CLONE_THREAD`) — needs several threads per
-  address space in the scheduler. Programs that spawn threads get `EAGAIN`.
-* **Signal handlers** — signals with default actions work; installed
-  handlers are recorded but not invoked.
 * **Dynamic linking** — `PT_INTERP` executables are refused.
-* Sockets, `epoll`, `pselect6`, `statx` (glibc and Rust fall back), shared
-  file mappings, file permissions.
+* **Internet sockets** — no network stack yet (QRT has one in `src/net`
+  that can be ported).
+* `pselect6`, `statx` (glibc and Rust fall back), file permissions,
+  job-control stops.
 
 ## Towards Android
 
@@ -75,11 +85,10 @@ Android needs everything above plus Android-specific contracts (spec §8.2):
 
 1. **Bionic static executables** (NDK) — mostly the same ABI as above, plus
    the property area (`/dev/__properties__`).
-2. **Threads and signal handlers** — required by bionic, ART and almost
-   every Android service.
-3. **Binder** (`/dev/binder` ioctl protocol) and **ashmem/memfd** — the IPC
-   and shared-memory model of every Android service; a natural fit for
-   Flare endpoints and memory capabilities.
+2. ~~Threads and signal handlers~~ — done.
+3. **Binder** (`/dev/binder` ioctl protocol) — the IPC of every Android
+   service; a natural fit for Flare endpoints. (memfd, the modern ashmem,
+   is done.)
 4. **Dynamic linking** (`linker64`) — all of Android userspace is dynamic.
 5. Then the AOSP userspace itself: `servicemanager`, `init`, ART + zygote,
    `system_server`, SurfaceFlinger with a Flare display service.

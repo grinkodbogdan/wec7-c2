@@ -16,8 +16,10 @@ use crate::{elf, klog, linux, platform};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use flare_abi::layout::{
     USER_BOOTINFO, USER_IMAGE_BASE, USER_IMAGE_END, USER_MMIO_BASE, USER_MMIO_END, USER_STACK_SIZE, USER_STACK_TOP,
 };
@@ -86,11 +88,12 @@ pub(crate) struct Component {
     /// The caller whose CALL we received and owe a reply.
     reply_to: Option<usize>,
     cspace: CSpace<MAX_CAPS>,
-    pub(crate) vspace: Option<AddressSpace>,
+    /// Shared by the threads of a Linux process.
+    pub(crate) vspace: Option<Rc<RefCell<AddressSpace>>>,
     /// Index into `boot::COMPONENTS` for boot components.
     boot: Option<usize>,
     /// Linux personality state, for Linux processes.
-    pub(crate) linux: Option<Box<linux::Process>>,
+    pub(crate) linux: Option<Box<linux::Task>>,
     /// Slot available for reuse (dynamic components only).
     pub(crate) free: bool,
     incarnation: u32,
@@ -261,6 +264,22 @@ impl Kernel {
     /// Pick the component to run next and load its state into `frame`.
     fn leave(&mut self, frame: &mut TrapFrame) {
         loop {
+            self.pick_next();
+            let c = self.current.expect("scheduler picked nothing");
+            // Linux signals are delivered on the way back to user mode.
+            if self.comps[c].linux.is_some() {
+                self.linux_deliver(c);
+                if self.comps[c].state != State::Running {
+                    continue;
+                }
+            }
+            break;
+        }
+        self.load(frame);
+    }
+
+    fn pick_next(&mut self) {
+        loop {
             self.linux_poll();
             self.flush_klog();
             if self.halting && self.console_drained() {
@@ -295,6 +314,9 @@ impl Kernel {
             self.handle_irqs();
         }
         self.need_resched = false;
+    }
+
+    fn load(&mut self, frame: &mut TrapFrame) {
         let c = self.current.expect("scheduler picked nothing");
         if self.ext_owner != Some(c) {
             if let Some(o) = self.ext_owner {
@@ -306,7 +328,7 @@ impl Kernel {
             self.ext_owner = Some(c);
         }
         *frame = self.comps[c].frame;
-        mmu::switch_to(self.comps[c].vspace.as_ref().expect("running component without address space").ttbr());
+        mmu::switch_to(self.comps[c].vspace.as_ref().expect("running component without address space").borrow().ttbr());
     }
 
     /// Save `c`'s FP/SIMD/TLS state if it is live in the CPU.
@@ -439,7 +461,7 @@ impl Kernel {
                 c.incarnation += 1;
             }
             c.started = true;
-            c.vspace = Some(vs);
+            c.vspace = Some(Rc::new(RefCell::new(vs)));
             *c.ext = Default::default();
             c.reply_to = None;
             c.cspace = CSpace::new();
@@ -478,9 +500,10 @@ impl Kernel {
                     self.teardown(i);
                     return Err("MMIO window exhausted");
                 }
-                let vs = self.comps[i].vspace.as_mut().unwrap();
+                let mut vs = self.comps[i].vspace.as_ref().unwrap().borrow_mut();
                 for off in (0..pend - pstart).step_by(PAGE_SIZE as usize) {
                     if vs.map_page(mmio_va + off, pstart + off, Prot::RW, true, false).is_err() {
+                        drop(vs);
                         self.teardown(i);
                         return Err("cannot map device registers");
                     }
@@ -545,8 +568,12 @@ impl Kernel {
         }
         let comp = &mut self.comps[c];
         if let Some(vs) = comp.vspace.take() {
-            self.free_asids.push(vs.asid());
-            vs.destroy();
+            // The last thread using an address space destroys it.
+            if let Ok(vs) = Rc::try_unwrap(vs) {
+                let vs = vs.into_inner();
+                self.free_asids.push(vs.asid());
+                vs.destroy();
+            }
         }
         if self.ext_owner == Some(c) {
             self.ext_owner = None;
@@ -559,9 +586,9 @@ impl Kernel {
         if let Some((o, s)) = v.owner {
             let comp = &mut self.comps[o];
             comp.cspace.clear_if(s, id);
-            if let (Some((va, size)), Some(vs)) = (v.mapping, comp.vspace.as_mut()) {
+            if let (Some((va, size)), Some(vs)) = (v.mapping, comp.vspace.as_ref()) {
                 for off in (0..size).step_by(PAGE_SIZE as usize) {
-                    vs.unmap(va + off);
+                    vs.borrow_mut().unmap(va + off);
                 }
             }
         }
@@ -684,7 +711,7 @@ impl Kernel {
     }
 
     pub(crate) fn copy_from_user(&self, c: usize, mut va: u64, len: usize) -> Result<Vec<u8>, Error> {
-        let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?;
+        let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?.borrow();
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
             let pa = vs.translate_user(va, false).ok_or(Error::BadAddress)?;
@@ -697,7 +724,7 @@ impl Kernel {
     }
 
     pub(crate) fn copy_to_user(&self, c: usize, mut va: u64, data: &[u8]) -> SysResult {
-        let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?;
+        let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?.borrow();
         // Validate the whole range first so a failure writes nothing.
         let mut check = va;
         let end = va.checked_add(data.len() as u64).ok_or(Error::BadAddress)?;

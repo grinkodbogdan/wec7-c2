@@ -9,6 +9,7 @@
 //! `data_len: u32`, `path`, `data` (file contents or symlink target).
 
 use super::abi::*;
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::{String, ToString};
@@ -23,14 +24,19 @@ pub const DEV_ZERO: u64 = (1 << 8) | 5;
 pub const DEV_URANDOM: u64 = (1 << 8) | 9;
 pub const DEV_TTY: u64 = 5 << 8;
 pub const DEV_CONSOLE: u64 = (5 << 8) | 1;
+pub const DEV_KMSG: u64 = (1 << 8) | 11;
 
 pub struct Node {
     pub ino: u64,
     pub mode: u32,
     pub rdev: u64,
-    pub data: Vec<u8>,
+    /// File contents or symlink target. Initramfs files borrow the archive
+    /// embedded in the kernel image and are copied on first write.
+    pub data: Cow<'static, [u8]>,
     pub children: BTreeMap<String, NodeRef>,
     pub mtime: u64,
+    /// Pages shared by MAP_SHARED mappings of this file.
+    pub shm: Option<super::mm::MemRef>,
 }
 
 impl Node {
@@ -84,7 +90,7 @@ pub fn split_parent(path: &str) -> (&str, &str) {
 impl Vfs {
     pub fn new() -> Vfs {
         let mut v = Vfs { root: Rc::new(RefCell::new(Node::dir(1, 0o755))), next_ino: 2 };
-        for d in ["/dev", "/proc", "/tmp", "/root", "/etc", "/bin"] {
+        for d in ["/dev", "/dev/shm", "/proc", "/tmp", "/root", "/etc", "/bin"] {
             let _ = v.mkdir_p(d, 0o755);
         }
         for (name, rdev, mode) in [
@@ -94,6 +100,7 @@ impl Vfs {
             ("random", DEV_URANDOM, 0o444),
             ("tty", DEV_TTY, 0o666),
             ("console", DEV_CONSOLE, 0o600),
+            ("kmsg", DEV_KMSG, 0o644),
         ] {
             let n = v.new_node(S_IFCHR | mode);
             n.borrow_mut().rdev = rdev;
@@ -106,10 +113,10 @@ impl Vfs {
             proc_dir.borrow_mut().children.insert(name.to_string(), n);
         }
         let n = v.new_node(S_IFLNK | 0o777);
-        n.borrow_mut().data = b"/proc/self".to_vec();
+        n.borrow_mut().data = Cow::Borrowed(b"/proc/self");
         let self_dir = v.new_node(S_IFDIR | 0o555);
         let exe = v.new_node(S_IFLNK | 0o777);
-        exe.borrow_mut().data = b"/bin/busybox".to_vec();
+        exe.borrow_mut().data = Cow::Borrowed(b"/bin/busybox");
         self_dir.borrow_mut().children.insert("exe".to_string(), exe);
         let proc_dir = v.lookup("/", "/proc", true).unwrap().node;
         proc_dir.borrow_mut().children.insert("self".to_string(), self_dir);
@@ -125,7 +132,7 @@ impl Vfs {
     }
 
     /// Unpack an initramfs archive. Returns the number of entries.
-    pub fn unpack(&mut self, mut a: &[u8]) -> Result<usize, &'static str> {
+    pub fn unpack(&mut self, mut a: &'static [u8]) -> Result<usize, &'static str> {
         let mut count = 0;
         while !a.is_empty() {
             if a.len() < 11 {
@@ -150,7 +157,7 @@ impl Vfs {
                     let (parent, name) = split_parent(path);
                     let dir = self.mkdir_p(parent, 0o755).map_err(|_| "cannot create directory")?;
                     let n = self.new_node(if kind == 1 { S_IFREG | (mode & 0o7777) } else { S_IFLNK | 0o777 });
-                    n.borrow_mut().data = data.to_vec();
+                    n.borrow_mut().data = Cow::Borrowed(data);
                     dir.borrow_mut().children.insert(name.to_string(), n);
                 }
                 _ => return Err("unknown initramfs entry kind"),
@@ -266,7 +273,7 @@ impl Vfs {
         let (parent, name) = split_parent(&abs);
         let dir = self.lookup("/", parent, true)?;
         let n = self.new_node(S_IFLNK | 0o777);
-        n.borrow_mut().data = target.as_bytes().to_vec();
+        n.borrow_mut().data = Cow::Owned(target.as_bytes().to_vec());
         dir.node.borrow_mut().children.insert(name.to_string(), n);
         Ok(())
     }
@@ -304,6 +311,14 @@ impl Vfs {
 
 impl Node {
     fn dir(ino: u64, perm: u32) -> Node {
-        Node { ino, mode: S_IFDIR | perm, rdev: 0, data: Vec::new(), children: BTreeMap::new(), mtime: 0 }
+        Node {
+            ino,
+            mode: S_IFDIR | perm,
+            rdev: 0,
+            data: Cow::Borrowed(&[]),
+            children: BTreeMap::new(),
+            mtime: 0,
+            shm: None,
+        }
     }
 }
