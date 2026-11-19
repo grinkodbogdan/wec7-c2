@@ -1,0 +1,9 @@
+[package]
+name = "flare-fhd"
+description = "Flare Hardware Description (FHD): loader, SoC/board layering, validation and code generation"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+flare-config = { path = "../../libs/config" }

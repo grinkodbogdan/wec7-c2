@@ -1,0 +1,32 @@
+# Flare Hardware Description — board layer
+#
+# A reference "phone" assembled on QEMU virt. This is the first Flare port:
+# everything board-specific lives here, not in the kernel.
+
+fhd = 0
+kind = "board"
+name = "qemu-virt-phone"
+soc = "qemu/virt"
+description = "Reference phone board on QEMU virt, used for framekernel bring-up"
+
+[memory.dram]
+size = 0x10000000          # 256 MiB fitted
+
+[device.rtc0]
+status = "okay"
+
+[device.gpio0]
+status = "okay"
+role = "buttons"           # power / volume keys (future input driver)
+
+[device.virtio0]
+status = "okay"
+role = "storage"           # virtio-blk userdata (future storage driver)
+
+[chosen]
+console = "uart0"
+
+[emulation]
+qemu-machine = "virt"
+qemu-cpu = "cortex-a53"
+memory-mib = 256

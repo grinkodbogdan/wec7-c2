@@ -1,0 +1,53 @@
+# Flare Hardware Description — SoC layer
+#
+# QEMU 'virt' machine, arm64. This layer records SoC-level facts only: what
+# exists on the chip and where. Board files decide what is fitted, wired up
+# and enabled. Interrupt numbers are GIC INTIDs.
+
+fhd = 0
+kind = "soc"
+name = "qemu-virt"
+arch = "arm64"
+cpus = 4
+description = "QEMU virt machine (GICv2, PL011, generic timer)"
+
+[memory.dram]
+base = 0x40000000
+size = 0x40000000          # 1 GiB window; boards narrow this to the fitted size
+
+[intc.gic]
+compatible = ["arm,gic-v2", "arm,cortex-a15-gic"]
+reg = [[0x08000000, 0x10000],      # distributor
+       [0x08010000, 0x10000]]      # CPU interface
+
+[timer.arch-timer]
+compatible = "arm,armv8-timer"
+interrupts = [27]          # EL1 virtual timer PPI
+
+[firmware.psci]
+compatible = "arm,psci-1.0"
+method = "hvc"             # QEMU without EL2/EL3 emulates PSCI behind HVC
+
+[device.uart0]
+compatible = ["arm,pl011", "arm,primecell"]
+reg = [0x09000000, 0x1000]
+interrupts = [33]          # SPI 1
+clock-hz = 24000000
+
+[device.rtc0]
+compatible = ["arm,pl031", "arm,primecell"]
+reg = [0x09010000, 0x1000]
+interrupts = [34]
+status = "disabled"
+
+[device.gpio0]
+compatible = ["arm,pl061", "arm,primecell"]
+reg = [0x09030000, 0x1000]
+interrupts = [39]
+status = "disabled"
+
+[device.virtio0]
+compatible = "virtio,mmio"
+reg = [0x0a000000, 0x200]
+interrupts = [48]
+status = "disabled"

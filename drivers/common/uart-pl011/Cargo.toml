@@ -1,0 +1,15 @@
+[package]
+name = "uart-pl011"
+description = "PL011 UART driver component: provides the console service"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "uart-pl011"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

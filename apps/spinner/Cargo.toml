@@ -1,0 +1,15 @@
+[package]
+name = "spinner"
+description = "Demo app that never yields, to exercise preemption"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "spinner"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../libs/rt" }

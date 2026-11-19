@@ -1,0 +1,8 @@
+[package]
+name = "flare-config"
+description = "Parser for the small TOML-like syntax shared by FHD files, component manifests and boot compositions"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

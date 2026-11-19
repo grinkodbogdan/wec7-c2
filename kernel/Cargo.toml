@@ -1,0 +1,21 @@
+[package]
+name = "flare-kernel"
+description = "The Flare framekernel (arm64)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "flare-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-abi = { path = "../interfaces/abi" }
+flare-cap = { path = "../libs/cap" }
+
+[build-dependencies]
+flare-fhd = { path = "../tools/fhd" }
+flare-cm = { path = "../component-manager" }
+flare-abi = { path = "../interfaces/abi" }

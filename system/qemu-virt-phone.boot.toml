@@ -1,0 +1,40 @@
+# Flare boot composition: the components started at boot and *exactly* the
+# capabilities each receives. Nothing that is not granted here is reachable.
+#
+# Grant syntax: "<local-name>=<kind>:<target>[:<rights>][:badge=<n>]"
+#   mmio:<device>[#n]        map register window n of a described device
+#   irq:<device>[#n]         interrupt line n of a described device
+#   endpoint:<name>:<rights> IPC endpoint (rights: send, recv, grant)
+#   klog:<rights>            kernel log (read, write)
+
+name = "qemu-virt-phone-demo"
+board = "qemu/virt-phone"
+
+# Test policy: power off once these instances have finished (exited or been
+# retired after exhausting their restarts).
+halt-when-finished = ["hello", "intruder"]
+
+[component.uart]
+manifest = "drivers/common/uart-pl011"
+grants = [
+    "uart=mmio:uart0",
+    "uart-irq=irq:uart0",
+    "console=endpoint:console:recv",
+    "klog=klog:read",
+]
+restart = "on-failure"
+max-restarts = 3
+
+[component.hello]
+manifest = "apps/hello"
+grants = ["console=endpoint:console:send:badge=1"]
+
+[component.spinner]
+manifest = "apps/spinner"
+grants = ["console=endpoint:console:send:badge=2"]
+
+[component.intruder]
+manifest = "apps/intruder"
+grants = ["console=endpoint:console:send:badge=3"]
+restart = "on-failure"
+max-restarts = 1

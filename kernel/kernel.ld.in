@@ -1,0 +1,48 @@
+/* Flare framekernel link script. @KERNEL_BASE@ is substituted by build.rs
+ * from the board's hardware description. */
+ENTRY(_start)
+
+SECTIONS
+{
+    . = @KERNEL_BASE@;
+    __kernel_start = .;
+
+    .text : {
+        KEEP(*(.text.boot))
+        *(.text .text.*)
+    }
+
+    . = ALIGN(4096);
+    .rodata : {
+        *(.rodata .rodata.*)
+    }
+
+    . = ALIGN(4096);
+    .data : {
+        *(.data .data.*)
+        *(.got .got.*)
+    }
+
+    . = ALIGN(16);
+    .bss (NOLOAD) : {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(COMMON)
+        . = ALIGN(16);
+        __bss_end = .;
+    }
+
+    .stack (NOLOAD) : {
+        . = ALIGN(16);
+        . = . + 0x10000;
+        __stack_top = .;
+    }
+
+    . = ALIGN(4096);
+    __kernel_end = .;
+
+    /DISCARD/ : {
+        *(.eh_frame*)
+        *(.comment)
+    }
+}

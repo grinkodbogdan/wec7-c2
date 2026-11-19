@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "interfaces/abi",
+    "libs/config",
+    "libs/cap",
+    "libs/rt",
+    "tools/fhd",
+    "component-manager",
+    "kernel",
+    "drivers/common/uart-pl011",
+    "apps/hello",
+    "apps/spinner",
+    "apps/intruder",
+    "xtask",
+]
+# Crates that build and test on the host. The kernel and the components are
+# bare-metal arm64 crates; build them with `cargo xtask build`.
+default-members = [
+    "interfaces/abi",
+    "libs/config",
+    "libs/cap",
+    "tools/fhd",
+    "component-manager",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[profile.release]
+debug = true

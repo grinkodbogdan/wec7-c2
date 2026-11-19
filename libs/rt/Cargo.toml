@@ -1,0 +1,9 @@
+[package]
+name = "flare-rt"
+description = "Runtime for native Flare components: entry point, system-call wrappers, console client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+flare-abi = { path = "../../interfaces/abi" }

@@ -1,0 +1,15 @@
+[package]
+name = "intruder"
+description = "Demo app that probes authority boundaries and faults on purpose"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "intruder"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../libs/rt" }

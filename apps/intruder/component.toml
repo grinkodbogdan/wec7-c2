@@ -1,0 +1,7 @@
+[component]
+name = "intruder"
+version = "0.1.0"
+kind = "app"
+
+[requires]
+interfaces = ["flare.console@1.0"]

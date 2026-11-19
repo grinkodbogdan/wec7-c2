@@ -1,0 +1,15 @@
+[component]
+name = "uart-pl011"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # stateless apart from buffered input; restart is cheap
+
+[binds]
+compatible = ["arm,pl011"]
+
+[provides]
+interfaces = ["flare.console@1.0"]
+
+[lifecycle]
+quiesce = false
+checkpoint = false

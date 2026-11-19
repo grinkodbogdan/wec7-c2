@@ -1,0 +1,8 @@
+[package]
+name = "flare-abi"
+description = "Flare framekernel ABI: system calls, capability kinds and rights, IPC messages, boot info and component address-space layout"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
