@@ -1,0 +1,15 @@
+[package]
+name = "virtio-blk"
+description = "virtio-blk (virtio-mmio v2) storage driver component"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "virtio-blk"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

@@ -1,0 +1,14 @@
+[component]
+name = "virtio-blk"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # the device is reset and re-initialised; clients retry
+
+[binds]
+compatible = ["virtio,mmio"]
+
+[provides]
+interfaces = ["flare.block@1.0"]
+
+[requires]
+interfaces = ["flare.console@1.0"]

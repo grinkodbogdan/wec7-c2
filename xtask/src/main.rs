@@ -127,6 +127,14 @@ const EXPECTED: &[&str] = &[
     "supervisor: restarting 'uart' (incarnation 1)",
     "uart-pl011: console service online (incarnation 1, user-space driver)",
     "rc: still talking after the console driver restarted",
+    "rtc-pl031: wall clock 20",
+    "gpio-keys: watching the power key (incarnation 0)",
+    "virtio-blk: 64 sectors (32 KiB), incarnation 0, user-space driver with DMA",
+    "storage-test: disk of 64 sectors, sector 0 says: FLARE userdata disk",
+    "supervisor: restarting 'storage' (incarnation 1)",
+    "virtio-blk: 64 sectors (32 KiB), incarnation 1, user-space driver with DMA",
+    "storage-test: all reads correct across a driver restart",
+    "gpio-keys: power key pressed",
     "rc: arithmetic: 6 * 7 = 42",
     "rc: file round-trip: written by sh",
     "rc: pipeline: 3 words",
@@ -399,13 +407,57 @@ fn qemu_command(o: &Opts, kernel: &Path) -> Command {
         "-kernel",
     ]);
     c.arg(kernel);
+    // Emulated devices the board describes; @disk is the userdata image.
+    let disk = disk_image();
+    if let Some(args) = p.emulation.get("qemu-args").and_then(|v| v.as_str_list()) {
+        for a in args {
+            c.arg(a.replace("@disk", &disk.display().to_string()));
+        }
+    }
     c
+}
+
+/// The userdata disk: sector 0 names it, sector n starts "FLARE-SECTOR-n".
+fn disk_image() -> PathBuf {
+    let path = root().join("target/flare-disk.img");
+    let mut img = vec![0u8; 64 * 512];
+    let head = b"FLARE userdata disk\n";
+    img[..head.len()].copy_from_slice(head);
+    for n in 1..64 {
+        let tag = format!("FLARE-SECTOR-{:04}", n);
+        img[n * 512..n * 512 + tag.len()].copy_from_slice(tag.as_bytes());
+    }
+    std::fs::write(&path, img).unwrap_or_else(|e| die(&format!("cannot write {}: {}", path.display(), e)));
+    path
+}
+
+/// Press the board's power key through QEMU's QMP socket.
+fn qmp_powerdown(sock: &Path) -> bool {
+    use std::io::{BufRead, BufReader};
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(sock) else { return false };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut w = stream;
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line); // greeting
+    for cmd in ["{\"execute\":\"qmp_capabilities\"}\n", "{\"execute\":\"system_powerdown\"}\n"] {
+        if w.write_all(cmd.as_bytes()).is_err() {
+            return false;
+        }
+        line.clear();
+        let _ = reader.read_line(&mut line);
+    }
+    true
 }
 
 fn qemu_test(o: &Opts) -> bool {
     let kernel = build(o);
     println!("xtask: booting {} in QEMU", kernel.display());
+    let qmp = root().join("target/qemu-qmp.sock");
+    let _ = std::fs::remove_file(&qmp);
     let mut child = qemu_command(o, &kernel)
+        .arg("-qmp")
+        .arg(format!("unix:{},server=on,wait=off", qmp.display()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -413,6 +465,7 @@ fn qemu_test(o: &Opts) -> bool {
         .unwrap_or_else(|e| die(&format!("cannot start qemu-system-aarch64: {}", e)));
     let mut stdin = child.stdin.take().unwrap();
     let mut typed = false;
+    let mut pressed = false;
     let output = Arc::new(Mutex::new(Vec::new()));
     let mut stdout = child.stdout.take().unwrap();
     let sink = output.clone();
@@ -433,8 +486,13 @@ fn qemu_test(o: &Opts) -> bool {
         if child.try_wait().unwrap().is_some() {
             break;
         }
-        // Type into the interactive shell once it is up.
-        if !typed && String::from_utf8_lossy(&output.lock().unwrap()).contains("flare:~# ") {
+        // Once the interactive shell is up: press the power key, and when
+        // the keys driver has reported it, type into the shell.
+        let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+        if !pressed && seen.contains("flare:~# ") {
+            pressed = qmp_powerdown(&qmp);
+        }
+        if !typed && pressed && seen.contains("gpio-keys: power key pressed") {
             let _ = stdin.write_all(TEST_INPUT);
             let _ = stdin.flush();
             typed = true;

@@ -1,0 +1,15 @@
+[package]
+name = "storage-test"
+description = "Reads the disk through the storage driver, across driver restarts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "storage-test"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../libs/rt" }

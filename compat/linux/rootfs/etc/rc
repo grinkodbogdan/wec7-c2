@@ -8,6 +8,8 @@ echo "rc: components:"; cat /proc/components
 # Hot-restart the console driver while everything keeps using it.
 echo restart uart > /dev/flarectl && cat /dev/flarectl
 echo "rc: still talking after the console driver restarted"
+# Hot-restart the storage driver while storage-test is reading the disk.
+echo restart storage > /dev/flarectl && cat /dev/flarectl
 echo "rc: arithmetic: 6 * 7 = $((6 * 7))"
 mkdir -p /tmp/demo && echo "written by sh" > /tmp/demo/file.txt
 echo "rc: file round-trip: $(cat /tmp/demo/file.txt)"

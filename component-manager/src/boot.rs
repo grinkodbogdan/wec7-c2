@@ -48,6 +48,10 @@ pub enum GrantKind {
     Klog {
         rights: Rights,
     },
+    /// `size` bytes of DMA-able memory.
+    Dma {
+        size: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,6 +151,13 @@ pub fn parse_grant(s: &str) -> Result<Grant, String> {
                 Some(b) => num(b.strip_prefix("badge=").ok_or_else(|| format!("grant '{}': expected badge=<n>", s))?)?,
             };
             GrantKind::Endpoint { name: name.to_string(), rights, badge }
+        }
+        ["dma", size] => {
+            let n = match size.strip_suffix('k') {
+                Some(k) => num(k)? * 1024,
+                None => num(size)?,
+            };
+            GrantKind::Dma { size: n }
         }
         ["klog", r] => GrantKind::Klog { rights: Rights::parse(r).ok_or_else(|| format!("grant '{}': bad rights '{}'", s, r))? },
         _ => {
@@ -372,6 +383,14 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
                         *ep_send.entry(name.clone()).or_default() += 1;
                     }
                 }
+                GrantKind::Dma { size } => {
+                    if m.kind != Kind::Driver {
+                        errs.push(format!("'{}' is a {:?}, only drivers may receive DMA memory", who, m.kind));
+                    }
+                    if *size == 0 || *size > 1 << 20 {
+                        errs.push(format!("'{}': DMA region must be 1 byte to 1 MiB", who));
+                    }
+                }
                 GrantKind::Klog { rights } => {
                     if rights.0 == 0 || !rights.is_subset_of(Rights::READ | Rights::WRITE) {
                         errs.push(format!("'{}': klog rights must be read and/or write", who));
@@ -386,9 +405,6 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     for ep in comp.endpoints() {
         if ep_recv.get(&ep).copied().unwrap_or(0) == 0 {
             errs.push(format!("endpoint '{}' has no receiver", ep));
-        }
-        if ep_send.get(&ep).copied().unwrap_or(0) == 0 {
-            errs.push(format!("endpoint '{}' has no sender", ep));
         }
     }
     if klog_readers.len() > 1 {
@@ -477,6 +493,5 @@ grants = ["console=endpoint:console:send:badge=0x10"]
         assert!(has("only drivers may receive device registers"), "{:?}", errs);
         assert!(has("only one component may read the kernel log"), "{:?}", errs);
         assert!(has("unknown or disabled device 'gpio0'"), "{:?}", errs);
-        assert!(has("endpoint 'console' has no sender"), "{:?}", errs);
     }
 }

@@ -34,9 +34,14 @@ use flare_cap::{CSpace, CapId, Cdt};
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Object {
     Endpoint(usize),
-    Mmio { device: usize, reg: usize },
+    Mmio {
+        device: usize,
+        reg: usize,
+    },
     Irq(u32),
     Klog,
+    /// A DMA region: (component, slot) it was granted to.
+    Dma(usize, usize),
 }
 
 impl Object {
@@ -46,6 +51,7 @@ impl Object {
             Object::Mmio { .. } => CapKind::Mmio,
             Object::Irq(_) => CapKind::Irq,
             Object::Klog => CapKind::Klog,
+            Object::Dma(..) => CapKind::Dma,
         }
     }
 }
@@ -547,6 +553,7 @@ impl Kernel {
                 GrantKind::Irq { intid } => (Object::Irq(intid), Rights::READ | Rights::WRITE, 0),
                 GrantKind::Endpoint { endpoint, rights, badge } => (Object::Endpoint(endpoint), rights, badge),
                 GrantKind::Klog { rights } => (Object::Klog, rights, 0),
+                GrantKind::Dma { .. } => (Object::Dma(i, slot), Rights::READ | Rights::WRITE | Rights::MAP, 0),
             };
             let mut desc =
                 CapDesc { slot: slot as u32, kind: obj.kind() as u32, vaddr: 0, size: 0, name: fixed_from_str(g.name) };
@@ -570,6 +577,27 @@ impl Kernel {
                 desc.vaddr = mmio_va + (r.base - pstart);
                 desc.size = r.size;
                 mmio_va += pend - pstart;
+            }
+            if let GrantKind::Dma { size } = g.kind {
+                // Zeroed pages owned by the mapping: freed when the
+                // capability goes (unmapping an owned page frees it).
+                let len = page_ceil(size);
+                if mmio_va + len > USER_MMIO_END {
+                    self.teardown(i);
+                    return Err("MMIO window exhausted");
+                }
+                let mut vs = self.comps[i].vspace.as_ref().unwrap().borrow_mut();
+                for off in (0..len).step_by(PAGE_SIZE as usize) {
+                    if vs.map_new(mmio_va + off, Prot::RW).is_err() {
+                        drop(vs);
+                        self.teardown(i);
+                        return Err("out of memory for DMA");
+                    }
+                }
+                cap.mapping = Some((mmio_va, len));
+                desc.vaddr = mmio_va;
+                desc.size = size;
+                mmio_va += len;
             }
             let root = self.root(obj);
             let id = self.cdt.derive(root, cap).expect("kernel root vanished");
@@ -921,6 +949,7 @@ impl Kernel {
             nr::KLOG_BIND => self.sys_klog_bind(c, a[0], a[1], a[2]),
             nr::KLOG_READ => self.sys_klog_read(c, a[0], a[1], a[2]),
             nr::TTY_INPUT => self.sys_tty_input(c, a[0], a[1], a[2]),
+            nr::DMA_PADDR => self.sys_dma_paddr(c, a[0], a[1]),
             nr::EXIT => {
                 self.exit(c, a[0] as i64);
                 return;
@@ -937,6 +966,18 @@ impl Kernel {
         let bytes = self.copy_from_user(c, ptr, len.min(512) as usize)?;
         klog::write(&bytes);
         self.ret(c, &[]);
+        Ok(())
+    }
+
+    fn sys_dma_paddr(&mut self, c: usize, slot: u64, offset: u64) -> SysResult {
+        let (_, cap) = self.typed(c, slot, CapKind::Dma, Rights::NONE)?;
+        let (va, size) = cap.mapping.ok_or(Error::InvalidArg)?;
+        if offset >= size {
+            return Err(Error::InvalidArg);
+        }
+        let pa = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?.borrow().lookup(va + offset);
+        let pa = pa.ok_or(Error::BadAddress)?;
+        self.ret(c, &[pa]);
         Ok(())
     }
 

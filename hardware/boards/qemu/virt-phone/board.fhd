@@ -17,11 +17,11 @@ status = "okay"
 
 [device.gpio0]
 status = "okay"
-role = "buttons"           # power / volume keys (future input driver)
+role = "buttons"           # QEMU wires the power key to line 3
 
-[device.virtio0]
+[device.virtio31]
 status = "okay"
-role = "storage"           # virtio-blk userdata (future storage driver)
+role = "storage"           # virtio-blk: the userdata disk
 
 [chosen]
 console = "uart0"
@@ -30,3 +30,8 @@ console = "uart0"
 qemu-machine = "virt"
 qemu-cpu = "cortex-a53"
 memory-mib = 256
+# Emulated devices behind the described ones. @disk is the disk image the
+# build tools create.
+qemu-args = ["-global", "virtio-mmio.force-legacy=false",
+             "-drive", "if=none,file=@disk,format=raw,id=userdata",
+             "-device", "virtio-blk-device,drive=userdata"]

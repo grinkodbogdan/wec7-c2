@@ -13,7 +13,8 @@ most one capability: an object reference, a set of rights and a badge.
 | `endpoint` | IPC endpoint | `send`, `recv` |
 | `mmio` | A device register window, mapped at boot | — (holding it is the authority) |
 | `irq` | An interrupt line | — |
-| `klog` | The kernel log | `write` (debug output), `read` (become the log reader) |
+| `klog` | The kernel log | `write` (debug output, TTY input), `read` (become the log reader) |
+| `dma` | Memory a driver may hand to its device, mapped into the driver | — (`DMA_PADDR` gives physical addresses) |
 
 Rules:
 
@@ -49,6 +50,8 @@ status (0 = success, else an error code).
 | 11 | `KLOG_BIND` | klog slot (read), ep slot (recv), bit | |
 | 12 | `KLOG_READ` | klog slot, ptr, len | `x1` bytes read |
 | 13 | `EXIT` | code | does not return |
+| 14 | `TTY_INPUT` | klog slot (write), ptr, len | |
+| 15 | `DMA_PADDR` | dma slot, offset | `x1` physical address |
 
 Errors: `E_NO_CAP` 1, `E_WRONG_TYPE` 2, `E_RIGHTS` 3, `E_INVALID_ARG` 4,
 `E_NO_MEMORY` 5, `E_NO_SLOT` 6, `E_PEER_DIED` 7, `E_BAD_ADDRESS` 8,

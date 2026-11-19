@@ -30,6 +30,9 @@ pub enum GrantKind {
     Klog {
         rights: Rights,
     },
+    Dma {
+        size: u64,
+    },
 }
 
 #[derive(Debug)]

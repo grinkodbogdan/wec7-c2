@@ -182,6 +182,7 @@ fn main() {
                     badge
                 ),
                 GrantKind::Klog { rights } => format!("GrantKind::Klog {{ rights: Rights({}) }}", rights.0),
+                GrantKind::Dma { size } => format!("GrantKind::Dma {{ size: {:#x} }}", size),
             };
             let _ = writeln!(g, "            Grant {{ name: {:?}, kind: {} }},", gr.local, kind);
         }

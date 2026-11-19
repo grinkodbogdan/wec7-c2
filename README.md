@@ -58,7 +58,11 @@ flare: system halted after 197 ticks (9 capabilities live, 38 frames in use)
 * A **misbehaving component** is contained: it is stopped on a fault,
   restarted according to its policy, then retired. Nothing else is affected.
 * A component that **never yields** does not stall the system (timer
-  preemption).
+  preemption on every CPU — the board's 4 cores all run user code).
+* **Every device on the board has a user-space driver**: UART console,
+  PL031 clock, PL061 power key, virtio-blk storage (with DMA). Drivers are
+  **hot-restartable**: the boot test restarts the console and storage
+  drivers while clients use them, and nothing is lost.
 * The **Linux personality** boots busybox as pid 1 from an initramfs: shell
   scripts, pipes, fork/exec/wait, files, `/proc`, an interactive shell on the
   console, and a Rust `std` program (heap, files, time, FP, `Command`).

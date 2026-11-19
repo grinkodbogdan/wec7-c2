@@ -78,7 +78,7 @@ pub enum FileKind {
     Socket(Rc<RefCell<Socket>>),
     Binder(Rc<RefCell<super::binder::BinderProc>>),
     /// The supervisor's control device: write a command, read the answer.
-    FlareCtl(Vec<u8>),
+    FlareCtl,
 }
 
 pub struct OpenFile {
@@ -289,7 +289,7 @@ impl Kernel {
             }
             FileKind::PipeW(_) | FileKind::Epoll(_) => Err(EBADF),
             FileKind::Binder(_) => Err(EINVAL),
-            FileKind::FlareCtl(_) => {
+            FileKind::FlareCtl => {
                 drop(f);
                 let resp = &mut self.lx().ctl_response;
                 let n = max.min(resp.len());
@@ -301,7 +301,7 @@ impl Kernel {
     pub(crate) fn file_write(&mut self, c: usize, file: &FileRef, data: &[u8]) -> Result<usize, i64> {
         let mut f = file.borrow_mut();
         let append = f.flags & O_APPEND != 0;
-        if let FileKind::FlareCtl(_) = f.kind {
+        if let FileKind::FlareCtl = f.kind {
             drop(f);
             let cmd = String::from_utf8_lossy(data).into_owned();
             let pid = self.proc(c).pid;
@@ -518,7 +518,7 @@ impl Kernel {
             return Err(ENOTDIR);
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
-                vfs::DEV_FLARECTL => FileKind::FlareCtl(Vec::new()),
+                vfs::DEV_FLARECTL => FileKind::FlareCtl,
                 vfs::DEV_BINDER | vfs::DEV_HWBINDER | vfs::DEV_VNDBINDER => {
                     let dev = match n.rdev {
                         vfs::DEV_HWBINDER => "hwbinder",

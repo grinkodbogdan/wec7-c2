@@ -1,0 +1,15 @@
+[package]
+name = "rtc-pl031"
+description = "PL031 real-time clock driver component: provides the wall clock"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rtc-pl031"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

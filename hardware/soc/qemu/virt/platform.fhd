@@ -46,8 +46,10 @@ reg = [0x09030000, 0x1000]
 interrupts = [39]
 status = "disabled"
 
-[device.virtio0]
+# 32 virtio-mmio transports at 0x0a000000 + n * 0x200, INTID 48 + n.
+# QEMU plugs the first -device into the highest one.
+[device.virtio31]
 compatible = "virtio,mmio"
-reg = [0x0a000000, 0x200]
-interrupts = [48]
+reg = [0x0a003e00, 0x200]
+interrupts = [79]
 status = "disabled"

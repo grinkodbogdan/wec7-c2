@@ -105,6 +105,11 @@ pub fn tty_input(klog: Slot, bytes: &[u8]) -> Result<(), Error> {
     status(raw(nr::TTY_INPUT, [klog, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0, 0])[0])
 }
 
+pub fn dma_paddr(dma: Slot, offset: u64) -> Result<u64, Error> {
+    let r = raw(nr::DMA_PADDR, [dma, offset, 0, 0, 0, 0, 0, 0]);
+    status(r[0]).map(|_| r[1])
+}
+
 pub fn exit(code: i32) -> ! {
     raw(nr::EXIT, [code as i64 as u64, 0, 0, 0, 0, 0, 0, 0]);
     loop {

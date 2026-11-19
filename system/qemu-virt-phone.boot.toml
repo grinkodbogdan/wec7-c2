@@ -12,7 +12,7 @@ board = "qemu/virt-phone"
 
 # Power off once these have finished: native instances (exited, or retired
 # after exhausting their restarts) and "linux" (the Linux init process).
-halt-when-finished = ["hello", "intruder", "linux"]
+halt-when-finished = ["hello", "intruder", "storage-test", "linux"]
 
 [component.uart]
 manifest = "drivers/common/uart-pl011"
@@ -24,6 +24,40 @@ grants = [
 ]
 restart = "on-failure"
 max-restarts = 3
+
+[component.rtc]
+manifest = "drivers/common/rtc-pl031"
+grants = ["regs=mmio:rtc0", "rtc=endpoint:rtc:recv", "console=endpoint:console:send:badge=4"]
+restart = "on-failure"
+
+[component.keys]
+manifest = "drivers/common/gpio-keys-pl061"
+grants = [
+    "regs=mmio:gpio0",
+    "irq=irq:gpio0",
+    "events=endpoint:keys:recv",
+    "console=endpoint:console:send:badge=5",
+]
+restart = "on-failure"
+
+[component.storage]
+manifest = "drivers/virtio/blk"
+grants = [
+    "regs=mmio:virtio31",
+    "irq=irq:virtio31",
+    "dma=dma:12k",
+    "blk=endpoint:storage:recv",
+    "console=endpoint:console:send:badge=6",
+]
+restart = "on-failure"
+
+[component.storage-test]
+manifest = "apps/storage-test"
+grants = [
+    "storage=endpoint:storage:send",
+    "rtc=endpoint:rtc:send",
+    "console=endpoint:console:send:badge=7",
+]
 
 [component.hello]
 manifest = "apps/hello"

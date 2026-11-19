@@ -103,3 +103,28 @@ incarnation, up to `max-restarts`; then it is retired.
   are touched** — transitive dependents are not restarted.
 
 Try it: `cargo xtask cm resolve`, `cargo xtask cm swap uart drivers/common/uart-pl011`.
+
+## Run-time management (supervisor)
+
+Boot components can be managed while the system runs:
+
+| Command | Effect |
+| --- | --- |
+| `list` | instances with state, incarnation and restarts |
+| `stop <instance>` | tear it down: every capability revoked, MMIO unmapped, IRQ and log bindings dropped, memory freed |
+| `start <instance>` | start it again with fresh grants from the composition |
+| `restart <instance>` | stop + start; the new incarnation is told its number in `BootInfo` |
+
+Clients do not need to know: endpoints outlive their server, so requests
+queued during the gap are answered by the next incarnation, and a call that
+was in flight fails with `E_PEER_DIED` and is retried by `flare-rt`
+(`sys::call_retry`). The boot test restarts the console driver and the
+storage driver (while a client reads the disk) and checks nothing is lost.
+
+With `[linux] control = true` in the composition, Linux root drives the
+supervisor through `/dev/flarectl` (write a command, read the answer) and
+sees the table in `/proc/components`:
+
+```sh
+echo restart storage > /dev/flarectl && cat /dev/flarectl
+```

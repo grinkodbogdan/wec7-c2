@@ -54,6 +54,9 @@ pub mod syscall {
     /// `(klog_slot, ptr, len)` — deliver console input to the kernel's
     /// Linux TTY. Needs `Klog` + WRITE (held by the console driver).
     pub const TTY_INPUT: u64 = 14;
+    /// `(dma_slot, offset)` — physical address of a byte of a DMA region
+    /// (for programming a device); returned in `x1`.
+    pub const DMA_PADDR: u64 = 15;
 }
 
 /// Error codes returned in `x0`.
@@ -216,6 +219,8 @@ pub enum CapKind {
     Irq = 3,
     /// The kernel log.
     Klog = 4,
+    /// Memory a driver may hand to its device for DMA, mapped into it.
+    Dma = 5,
 }
 
 impl CapKind {
@@ -225,6 +230,7 @@ impl CapKind {
             2 => CapKind::Mmio,
             3 => CapKind::Irq,
             4 => CapKind::Klog,
+            5 => CapKind::Dma,
             _ => CapKind::Null,
         }
     }
@@ -235,6 +241,7 @@ impl CapKind {
             CapKind::Mmio => "mmio",
             CapKind::Irq => "irq",
             CapKind::Klog => "klog",
+            CapKind::Dma => "dma",
         }
     }
 }
@@ -344,6 +351,28 @@ pub fn fixed_from_str<const N: usize>(s: &str) -> [u8; N] {
 
 /// IPC protocols of shared system services.
 pub mod proto {
+    /// `flare.block@1.0` — a block device in 512-byte sectors.
+    ///
+    /// Requests are CALLs with the operation as the label. Data travels in
+    /// message words, 48 bytes per call.
+    pub mod block {
+        pub const INTERFACE: &str = "flare.block@1.0";
+        pub const SECTOR: usize = 512;
+        /// Reply: `words[0]` = capacity in sectors, `words[1]` = the
+        /// driver's incarnation (changes when it is restarted or replaced).
+        pub const INFO: u64 = 1;
+        /// `words[0]` = sector, `words[1]` = byte offset in it. Reply label =
+        /// bytes returned (up to 48, in the words), or `u64::MAX` on error.
+        pub const READ: u64 = 2;
+    }
+
+    /// `flare.rtc@1.0` — the wall clock.
+    pub mod rtc {
+        pub const INTERFACE: &str = "flare.rtc@1.0";
+        /// Reply: `words[0]` = seconds since 1970.
+        pub const GET_TIME: u64 = 1;
+    }
+
     /// `flare.console@1.0` — byte-stream console service.
     ///
     /// Requests are CALLs. The label carries the operation in its low 32 bits

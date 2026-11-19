@@ -1,0 +1,14 @@
+[component]
+name = "rtc-pl031"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # stateless: the clock keeps time in hardware
+
+[binds]
+compatible = ["arm,pl031"]
+
+[provides]
+interfaces = ["flare.rtc@1.0"]
+
+[requires]
+interfaces = ["flare.console@1.0"]

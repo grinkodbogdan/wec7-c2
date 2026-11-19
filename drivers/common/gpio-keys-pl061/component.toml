@@ -1,0 +1,14 @@
+[component]
+name = "gpio-keys-pl061"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"
+
+[binds]
+compatible = ["arm,pl061"]
+
+[provides]
+interfaces = ["flare.input@1.0"]
+
+[requires]
+interfaces = ["flare.console@1.0"]
