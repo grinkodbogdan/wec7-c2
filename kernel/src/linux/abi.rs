@@ -30,6 +30,7 @@ pub const ENOTEMPTY: i64 = 39;
 pub const ELOOP: i64 = 40;
 pub const EAFNOSUPPORT: i64 = 97;
 pub const ETIMEDOUT: i64 = 110;
+pub const ELIBBAD: i64 = 80;
 
 // file types and modes
 pub const S_IFMT: u32 = 0o170000;

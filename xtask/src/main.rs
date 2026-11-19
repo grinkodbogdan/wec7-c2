@@ -143,6 +143,8 @@ const EXPECTED: &[&str] = &[
     "signals: ok",
     "threads: 4 threads, counter 80000 (expected 80000), TLS private",
     "threads: ok",
+    "dynamic: dlopen/dlsym: ok",
+    "dynamic: ok",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
@@ -312,7 +314,7 @@ fn assemble_rootfs() -> PathBuf {
     let rootfs = root().join("target").join("flare-rootfs");
     let _ = std::fs::remove_dir_all(&rootfs);
     copy_tree(&root().join("compat/linux/rootfs"), &rootfs);
-    for d in ["bin", "sbin", "usr/bin", "root", "tmp", "dev", "proc"] {
+    for d in ["bin", "sbin", "lib", "usr/bin", "usr/lib", "root", "tmp", "dev", "proc"] {
         std::fs::create_dir_all(rootfs.join(d)).unwrap();
     }
     let bb = rootfs.join("bin/busybox");
@@ -338,6 +340,25 @@ fn assemble_rootfs() -> PathBuf {
         c.arg("-lpthread");
         run(c);
     }
+    // Dynamic linking: musl's loader, a shared library, a dlopen plugin.
+    let dyn_cc = cc.with_file_name("flare-a64-cc-dyn");
+    let sysroot = root().join("target/linux-sdk/sysroot");
+    std::fs::create_dir_all(rootfs.join("lib")).unwrap();
+    std::fs::copy(sysroot.join("usr/lib/libc.so"), rootfs.join("lib/ld-musl-aarch64.so.1")).unwrap();
+    symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("usr/lib/libc.so")).unwrap();
+    let src = root().join("compat/linux/tests/dynamic");
+    let lib = rootfs.join("usr/lib");
+    for (out, file, extra) in
+        [("libgreet.so", "libgreet.c", &["-shared"][..]), ("plugin.so", "plugin.c", &["-shared", "-lgreet"][..])]
+    {
+        let mut c = Command::new(&dyn_cc);
+        c.args(["-O2", "-o"]).arg(lib.join(out)).arg(src.join(file)).arg("-L").arg(&lib).args(extra);
+        run(c);
+    }
+    let mut c = Command::new(&dyn_cc);
+    c.args(["-O2", "-fPIE", "-pie", "-o"]).arg(tests.join("dynamic")).arg(src.join("dynamic.c"));
+    c.arg("-L").arg(&lib).args(["-lgreet", "-Wl,-rpath,/usr/lib"]);
+    run(c);
     rootfs
 }
 

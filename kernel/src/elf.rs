@@ -25,6 +25,8 @@ pub struct ElfInfo {
     pub phnum: u64,
     /// First page above the highest segment (initial program break).
     pub end: u64,
+    /// The program interpreter (dynamic linker) named by PT_INTERP.
+    pub interp: Option<alloc::string::String>,
     /// Loaded segments: (start page, end page, protection).
     pub segments: alloc::vec::Vec<(u64, u64, Prot)>,
 }
@@ -67,6 +69,7 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
     let mut phdr = 0;
     let mut end = 0;
     let mut segments = alloc::vec::Vec::new();
+    let mut interp = None;
     // Final protection per page; pages shared by two segments get the union.
     let mut pages: BTreeMap<u64, Prot> = BTreeMap::new();
 
@@ -77,7 +80,13 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
         let vaddr = u64_at(image, ph + 16).ok_or("truncated program header")?.wrapping_add(bias);
         match ty {
             PT_PHDR => phdr = vaddr,
-            PT_INTERP => return Err("dynamically linked executables are not supported yet"),
+            PT_INTERP => {
+                let filesz = u64_at(image, ph + 32).ok_or("truncated program header")? as usize;
+                let raw = image.get(offset..offset + filesz).ok_or("bad PT_INTERP")?;
+                let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+                interp = Some(alloc::string::String::from_utf8_lossy(&raw[..end]).into_owned());
+                continue;
+            }
             PT_LOAD => {}
             _ => continue,
         }
@@ -144,5 +153,5 @@ pub fn load(image: &[u8], vs: &mut AddressSpace, window: Range<u64>, pie_base: u
     if !entry_ok {
         return Err("entry point is not inside an executable segment");
     }
-    Ok(ElfInfo { entry, phdr, phent: phent as u64, phnum: phnum as u64, end, segments })
+    Ok(ElfInfo { entry, phdr, phent: phent as u64, phnum: phnum as u64, end, interp, segments })
 }

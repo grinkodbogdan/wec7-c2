@@ -57,6 +57,8 @@ pub const MMAP_TOP: u64 = 0x7f_0000_0000;
 pub const SIGTRAMP: u64 = 0x7f_ffff_e000;
 /// Load address of position-independent executables.
 const PIE_BASE: u64 = 0x55_5555_0000;
+/// Load address of the program interpreter (dynamic linker).
+const INTERP_BASE: u64 = 0x7f_4000_0000;
 pub const MAX_FDS: usize = 1024;
 
 pub fn proc_files() -> &'static [&'static str] {
@@ -448,8 +450,30 @@ impl Kernel {
                 return fail(self, vs, ENOEXEC);
             }
         };
+        // Dynamically linked: the interpreter (e.g. ld-musl, linker64) runs
+        // first and loads the program's libraries itself.
+        let interp = match &info.interp {
+            None => None,
+            Some(ipath) => {
+                let data = match self.lx().vfs.lookup("/", ipath, true) {
+                    Ok(r) if r.node.borrow().is_reg() => r.node.borrow().data.clone(),
+                    _ => {
+                        kprintln!("linux: exec {}: interpreter {} not found", path, ipath);
+                        return fail(self, vs, ENOENT);
+                    }
+                };
+                match elf::load(&data, &mut vs, USER_MIN_ADDR..STACK_LIMIT, INTERP_BASE) {
+                    Ok(i) if i.interp.is_none() => Some(i),
+                    Ok(_) => return fail(self, vs, ELIBBAD),
+                    Err(e) => {
+                        kprintln!("linux: exec {}: interpreter {}: {}", path, ipath, e);
+                        return fail(self, vs, ELIBBAD);
+                    }
+                }
+            }
+        };
         let mut mm = Mm { vmas: Vec::new(), brk_start: info.end, brk: info.end };
-        for &(s, e, prot) in &info.segments {
+        for &(s, e, prot) in info.segments.iter().chain(interp.iter().flat_map(|i| i.segments.iter())) {
             let p = PROT_READ | if prot.write { PROT_WRITE } else { 0 } | if prot.exec { PROT_EXEC } else { 0 };
             mm.carve(s, e);
             mm.insert(Vma { start: s, end: e, prot: p, backing: Backing::Anon });
@@ -501,7 +525,7 @@ impl Kernel {
             (AT_PHENT, info.phent),
             (AT_PHNUM, info.phnum),
             (AT_PAGESZ, PAGE_SIZE),
-            (AT_BASE, 0),
+            (AT_BASE, if interp.is_some() { INTERP_BASE } else { 0 }),
             (AT_FLAGS, 0),
             (AT_ENTRY, info.entry),
             (AT_UID, 0),
@@ -548,7 +572,7 @@ impl Kernel {
         let comp = &mut self.comps[c];
         comp.name = name;
         comp.frame = crate::arch::TrapFrame::zeroed();
-        comp.frame.elr = info.entry;
+        comp.frame.elr = interp.as_ref().map_or(info.entry, |i| i.entry);
         comp.frame.sp_el0 = sp;
         *comp.ext = Default::default();
         if self.ext_owner == Some(c) {
