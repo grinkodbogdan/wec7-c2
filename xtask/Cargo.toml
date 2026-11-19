@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 flare-fhd = { path = "../tools/fhd" }
 flare-cm = { path = "../component-manager" }
+fdb = { path = "../tools/fdb" }

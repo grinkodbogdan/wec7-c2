@@ -1,0 +1,15 @@
+[package]
+name = "virtio-console"
+description = "virtio-console (virtio-mmio v2) driver component: a byte stream to a Linux character device"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "virtio-console"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

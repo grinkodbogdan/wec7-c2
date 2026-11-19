@@ -41,6 +41,10 @@ pub enum GrantKind {
     Input {
         device: usize,
     },
+    /// `SERIAL_DEVICES[device]`.
+    Serial {
+        device: usize,
+    },
 }
 
 #[derive(Debug)]

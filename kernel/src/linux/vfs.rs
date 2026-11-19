@@ -35,6 +35,10 @@ pub const DEV_FLARECTL: u64 = (10 << 8) | 63;
 pub const DEV_DRI_CARD0: u64 = 226 << 8;
 /// evdev: major 13, minors from 64.
 pub const DEV_INPUT_EVENT0: u64 = (13 << 8) | 64;
+/// Serial devices: the hvc major (229), one minor each.
+pub const DEV_SERIAL0: u64 = 229 << 8;
+/// fbdev view of the display: major 29, minor 0.
+pub const DEV_FB0: u64 = 29 << 8;
 
 pub struct Node {
     pub ino: u64,
@@ -143,6 +147,18 @@ impl Vfs {
         if let Ok(dev) = self.lookup("/", "/dev", true) {
             dev.node.borrow_mut().children.insert(name.to_string(), n);
         }
+    }
+
+    /// A detached directory of empty regular files (for generated /proc
+    /// directories; their contents are produced when opened).
+    pub fn synthetic_dir(names: &[&str]) -> NodeRef {
+        let d = Rc::new(RefCell::new(Node::dir(0x4_0000_0000, 0o555)));
+        for n in names {
+            let mut f = Node::dir(0x4_0000_0001, 0o444);
+            f.mode = S_IFREG | 0o444;
+            d.borrow_mut().children.insert(n.to_string(), Rc::new(RefCell::new(f)));
+        }
+        d
     }
 
     /// Add a character device node `dir/name`, creating `dir`.

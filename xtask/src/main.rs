@@ -90,6 +90,9 @@ const BUSYBOX_APPLETS: &[&str] = &[
     "vi",
     "more",
     "tee",
+    "pidof",
+    "killall",
+    "pkill",
     "yes",
     "expr",
     "awk",
@@ -207,6 +210,8 @@ const EXPECTED: &[&str] = &[
     "flarehome: minimized Terminal (1 open)",
     "flarehome: launched Phone",
     "flarehome: minimized Phone (2 open)",
+    "virtio-console: port online (incarnation 0, user-space driver)",
+    "fdbd: serving fdb on /dev/fdb",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
@@ -525,11 +530,31 @@ fn build_apk(app: &Path, apk: &Path) {
 /// Linux personality; returns the directory to overlay on the rootfs.
 fn arcan_stage() -> PathBuf {
     let out = root().join("target").join("arcan");
-    if !out.join("stage/.stamp").exists() {
+    // Rebuild when anything the build depends on changes.
+    let inputs = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let dir = root().join("compat/arcan");
+        let mut files =
+            vec![dir.join("build.sh"), dir.join("alpine.lock"), dir.join("alpine.py"), dir.join("stage.py")];
+        files.push(dir.join("tests/kmstest.c"));
+        let mut patches: Vec<PathBuf> =
+            std::fs::read_dir(dir.join("patches")).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        patches.sort();
+        files.extend(patches);
+        for f in files {
+            f.file_name().hash(&mut h);
+            std::fs::read(&f).unwrap_or_default().hash(&mut h);
+        }
+        format!("{:016x}", h.finish())
+    };
+    let stamp = out.join("stage/.stamp");
+    if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) {
         println!("xtask: building Arcan and Mesa (once; takes a few minutes)");
         let mut c = Command::new(root().join("compat/arcan/build.sh"));
         c.arg(&out);
         run(c);
+        std::fs::write(&stamp, &inputs).unwrap();
     }
     let stage = out.join("stage");
     // The appls in the source tree are copied fresh on every build.
@@ -577,6 +602,11 @@ fn assemble_rootfs() -> PathBuf {
     let arcan = arcan_stage();
     copy_tree(&arcan, &rootfs);
     symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
+    // fdbd, the device end of the debug bridge.
+    let mut c = cargo();
+    c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);
+    run(c);
+    std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/fdbd"), rootfs.join("usr/bin/fdbd")).unwrap();
     // Android apps: the droid runtime and the APKs it runs.
     let mut c = cargo();
     c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "droid"]);
@@ -655,10 +685,17 @@ fn qemu_command(o: &Opts, kernel: &Path) -> Command {
     let disk = disk_image();
     if let Some(args) = p.emulation.get("qemu-args").and_then(|v| v.as_str_list()) {
         for a in args {
-            c.arg(a.replace("@disk", &disk.display().to_string()));
+            c.arg(a.replace("@disk", &disk.display().to_string()).replace("@fdb", &fdb_socket().display().to_string()));
         }
     }
     c
+}
+
+/// The host end of the debug bridge (the board's virtio console).
+fn fdb_socket() -> PathBuf {
+    let p = root().join("target/fdb.sock");
+    let _ = std::fs::remove_file(&p);
+    p
 }
 
 /// The userdata disk: sector 0 names it, sector n starts "FLARE-SECTOR-n".
@@ -820,6 +857,48 @@ fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
     let _ = std::fs::remove_file(dir.join("tmp.png"));
 }
 
+/// Exercise the debug bridge from the host, as a developer would; returns
+/// what failed.
+fn fdb_checks() -> Vec<String> {
+    let mut fails = Vec::new();
+    let sock = root().join("target/fdb.sock");
+    let stream = match std::os::unix::net::UnixStream::connect(&sock) {
+        Ok(s) => s,
+        Err(e) => return vec![format!("fdb: cannot connect to {}: {}", sock.display(), e)],
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut c = fdb::Client::new(stream);
+    let mut check = |what: &str, ok: bool| {
+        println!("xtask: fdb {}: {}", what, if ok { "ok" } else { "FAILED" });
+        if !ok {
+            fails.push(format!("fdb {}", what));
+        }
+    };
+    let hello = c.hello().unwrap_or_default();
+    check("hello", hello.contains("flare device"));
+    let out = c.exec("echo fdb-$((6 * 7))").ok();
+    check("shell", out.as_ref().is_some_and(|o| o.stdout == b"fdb-42\n" && o.status == 0));
+    check("exit status", c.exec("exit 3").map(|o| o.status == 3).unwrap_or(false));
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i * 7 + i / 251) as u8).collect();
+    let round = c.write_file("/tmp/fdb-check/blob", 0o600, &data).and_then(|_| c.read_file("/tmp/fdb-check/blob"));
+    check("push and pull", round.map(|d| d == data).unwrap_or(false));
+    let shot = c.screenshot();
+    check(
+        "screenshot",
+        shot.as_ref().map(|(w, h, px)| (*w, *h, px.len()) == (480, 854, 480 * 854 * 3)).unwrap_or(false),
+    );
+    if let Ok((w, h, px)) = shot {
+        let _ = std::fs::write(root().join("target/screenshots/fdb.png"), fdb::png(w, h, &px));
+    }
+    check(
+        "supervisor",
+        c.exec("echo list > /dev/flarectl && cat /dev/flarectl")
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("debug-bridge"))
+            .unwrap_or(false),
+    );
+    fails
+}
+
 /// Press the board's power key through QEMU's QMP socket.
 fn qmp_powerdown(sock: &Path) -> bool {
     use std::io::{BufRead, BufReader};
@@ -872,6 +951,7 @@ fn qemu_test(o: &Opts) -> bool {
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut timed_out = false;
     let mut ui_done = false;
+    let mut fdb_fails = Vec::new();
     loop {
         if child.try_wait().unwrap().is_some() {
             break;
@@ -884,6 +964,7 @@ fn qemu_test(o: &Opts) -> bool {
             if let Some(mut q) = Qmp::connect(&qmp) {
                 ui_script(&mut q, &output);
             }
+            fdb_fails = fdb_checks();
             ui_done = true;
         }
         if !pressed && ui_done && seen.contains("flare:~# ") {
@@ -915,6 +996,10 @@ fn qemu_test(o: &Opts) -> bool {
             println!("FAIL: missing output: {}", e);
             ok = false;
         }
+    }
+    for f in &fdb_fails {
+        println!("FAIL: {}", f);
+        ok = false;
     }
     for f in FORBIDDEN {
         if text.contains(f) {

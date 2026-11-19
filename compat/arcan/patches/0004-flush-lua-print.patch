@@ -1,0 +1,10 @@
+--- a/src/engine/alt/trace.c	2026-11-19 20:35:31.250701033 +0000
++++ b/src/engine/alt/trace.c	2026-11-19 20:35:31.274253122 +0000
+@@ -241,6 +241,7 @@
+ 	log_buffer[running_len] = '\0';
+ 
+ 	fprintf(stdout, "%s", log_buffer);
++	fflush(stdout); /* reach logs promptly when stdout is a pipe */
+ 	arcan_trace_log(log_buffer, total_len);
+ 
+ 	arcan_mem_free(log_buffer);

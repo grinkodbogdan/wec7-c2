@@ -116,6 +116,24 @@ pub fn input_report(input: Slot, op: u64, bytes: &[u8]) -> Result<(), Error> {
     status(raw(nr::INPUT_REPORT, [input, op, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0])[0])
 }
 
+/// Push bytes to the Linux side of a `Serial` capability; returns how many
+/// were accepted.
+pub fn serial_push(serial: Slot, bytes: &[u8]) -> Result<usize, Error> {
+    let r = raw(nr::SERIAL_IO, [serial, 0, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0]);
+    status(r[0]).map(|_| r[1] as usize)
+}
+
+/// Pull bytes Linux wrote to a `Serial` capability's device.
+pub fn serial_pull(serial: Slot, buf: &mut [u8]) -> Result<usize, Error> {
+    let r = raw(nr::SERIAL_IO, [serial, 1, buf.as_mut_ptr() as u64, buf.len() as u64, 0, 0, 0, 0]);
+    status(r[0]).map(|_| r[1] as usize)
+}
+
+/// Be notified (bit `bit` on endpoint `ep`) when Linux writes to the device.
+pub fn serial_bind(serial: Slot, ep: Slot, bit: u32) -> Result<(), Error> {
+    status(raw(nr::SERIAL_IO, [serial, 2, ep, bit as u64, 0, 0, 0, 0])[0])
+}
+
 pub fn exit(code: i32) -> ! {
     raw(nr::EXIT, [code as i64 as u64, 0, 0, 0, 0, 0, 0, 0]);
     loop {

@@ -89,6 +89,20 @@ grants = [
 ]
 restart = "on-failure"
 
+# The debug bridge: the board's virtio console carries /dev/fdb, which
+# fdbd serves to the host's `fdb` tool.
+[component.debug-bridge]
+manifest = "drivers/virtio/console"
+grants = [
+    "regs=mmio:virtio28",
+    "irq=irq:virtio28",
+    "dma=dma:16k",
+    "irq-ep=endpoint:fdb-irq:recv",
+    "serial=serial:fdb",
+    "console=endpoint:console:send:badge=11",
+]
+restart = "on-failure"
+
 [component.storage-test]
 manifest = "apps/storage-test"
 grants = [

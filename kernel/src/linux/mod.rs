@@ -18,8 +18,8 @@
 pub mod abi;
 pub mod binder;
 pub mod drm;
-pub mod input;
 pub mod fs;
+pub mod input;
 pub mod mm;
 pub mod net;
 pub mod signal;
@@ -77,6 +77,8 @@ pub struct Process {
     pub fds: Vec<Option<Fd>>,
     pub cwd: String,
     pub exe: String,
+    /// argv of the current image, NUL-separated (/proc/<pid>/cmdline).
+    pub cmdline: Vec<u8>,
     pub umask: u32,
     pub mm: Mm,
     pub sig: ProcSig,
@@ -193,6 +195,12 @@ impl Personality {
         if boot::LINUX_DISPLAY.is_some() {
             vfs.add_device_at("/dev/dri", "card0", vfs::DEV_DRI_CARD0, 0o666);
         }
+        for (i, name) in boot::SERIAL_DEVICES.iter().enumerate() {
+            vfs.add_device(name, vfs::DEV_SERIAL0 + i as u64, 0o600);
+        }
+        if boot::LINUX_DISPLAY.is_some() {
+            vfs.add_device("fb0", vfs::DEV_FB0, 0o660);
+        }
         for (i, _) in boot::INPUT_DEVICES.iter().enumerate() {
             vfs.add_device_at("/dev/input", &format!("event{}", i), vfs::DEV_INPUT_EVENT0 + i as u64, 0o660);
         }
@@ -256,6 +264,69 @@ impl Personality {
             _ => return None,
         };
         Some(s.into_bytes())
+    }
+}
+
+impl Kernel {
+    /// Live Linux processes: (pid, component of the leader).
+    pub(crate) fn linux_pids(&self) -> Vec<(u32, usize)> {
+        let mut v: Vec<(u32, usize)> = (0..self.comps.len())
+            .filter(|&i| !self.comps[i].free && self.comps[i].state != State::Dead)
+            .filter_map(|i| {
+                let t = self.comps[i].linux.as_ref()?;
+                let pid = t.p.borrow().pid;
+                (t.tid == pid && t.p.borrow().status.is_none()).then_some((pid, i))
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// /proc/<pid>/<name>, for ps, pidof and killall.
+    pub(crate) fn proc_pid_content(&self, pid: u32, name: &str) -> Option<Vec<u8>> {
+        let (_, c) = *self.linux_pids().iter().find(|(p, _)| *p == pid)?;
+        let t = self.comps[c].linux.as_ref()?;
+        let p = t.p.borrow();
+        let comm: String = p.exe.rsplit('/').next().unwrap_or("?").chars().take(15).collect();
+        let state = if self.comps[c].state == State::LinuxWait { 'S' } else { 'R' };
+        let pages = p.mm.vmas.iter().map(|v| (v.end - v.start) / PAGE_SIZE).sum::<u64>();
+        Some(match name {
+            "stat" => format!(
+                "{} ({}) {} {} {} {} 0 -1 0 0 0 0 0 0 0 0 0 20 0 {} 0 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+                pid,
+                comm,
+                state,
+                p.ppid,
+                p.pgid,
+                p.sid,
+                p.threads,
+                pages * PAGE_SIZE
+            )
+            .into_bytes(),
+            "cmdline" => p.cmdline.clone(),
+            "comm" => format!("{}\n", comm).into_bytes(),
+            "status" => format!(
+                "Name:\t{}\nState:\t{} ({})\nPid:\t{}\nPPid:\t{}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nThreads:\t{}\nVmSize:\t{} kB\n",
+                comm,
+                state,
+                if state == 'S' { "sleeping" } else { "running" },
+                pid,
+                p.ppid,
+                p.threads,
+                pages * 4
+            )
+            .into_bytes(),
+            _ => return None,
+        })
+    }
+
+    /// The pid a /proc path names (`/proc/<pid>/...` or `/proc/self/...`)
+    /// and the rest of the path.
+    pub(crate) fn proc_pid_path<'a>(&self, c: usize, abs: &'a str) -> Option<(u32, &'a str)> {
+        let rest = abs.strip_prefix("/proc/")?;
+        let (first, tail) = rest.split_once('/').unwrap_or((rest, ""));
+        let pid = if first == "self" { self.proc(c).pid } else { first.parse().ok()? };
+        self.linux_pids().iter().any(|(p, _)| *p == pid).then_some((pid, tail))
     }
 }
 
@@ -400,6 +471,7 @@ impl Kernel {
             fds,
             cwd: "/".to_string(),
             exe: String::new(),
+            cmdline: Vec::new(),
             umask: 0o022,
             mm: Mm::default(),
             sig: ProcSig::default(),
@@ -613,6 +685,7 @@ impl Kernel {
         let mut p = self.proc(c);
         p.mm = mm;
         p.exe = vfs::absolute(&cwd, &path);
+        p.cmdline = argv.iter().flat_map(|a| a.iter().copied().chain(core::iter::once(0))).collect();
         p.execed = true;
         p.threads = 1;
         for fd in p.fds.iter_mut() {
@@ -948,9 +1021,35 @@ impl Kernel {
             let tid = self.comps[c].linux.as_ref().map(|t| t.tid).unwrap_or(0);
             match &r {
                 Out::Ret(v) if f.x[8] == 222 && *v > 0 && f.x[4] as i64 == -1 => {}
-                Out::Ret(v) if f.x[8] == 222 => kprintln!("strace[{}] mmap(len {:#x}, prot {}, fd {}, off {:#x}) = {:#x}", tid, f.x[1], f.x[2], f.x[4] as i64, f.x[5], v),
-                Out::Ret(v) => kprintln!("{} strace[{}] {}({:#x}, {:#x} {}, {:#x}) = {}", crate::arch::timer::now_ns() / 1_000_000, tid, f.x[8], f.x[0], f.x[1], path, f.x[2], v),
-                Out::Block => kprintln!("{} strace[{}] {}({:#x}, {:#x}, {:#x}) blocks", crate::arch::timer::now_ns() / 1_000_000, tid, f.x[8], f.x[0], f.x[1], f.x[2]),
+                Out::Ret(v) if f.x[8] == 222 => kprintln!(
+                    "strace[{}] mmap(len {:#x}, prot {}, fd {}, off {:#x}) = {:#x}",
+                    tid,
+                    f.x[1],
+                    f.x[2],
+                    f.x[4] as i64,
+                    f.x[5],
+                    v
+                ),
+                Out::Ret(v) => kprintln!(
+                    "{} strace[{}] {}({:#x}, {:#x} {}, {:#x}) = {}",
+                    crate::arch::timer::now_ns() / 1_000_000,
+                    tid,
+                    f.x[8],
+                    f.x[0],
+                    f.x[1],
+                    path,
+                    f.x[2],
+                    v
+                ),
+                Out::Block => kprintln!(
+                    "{} strace[{}] {}({:#x}, {:#x}, {:#x}) blocks",
+                    crate::arch::timer::now_ns() / 1_000_000,
+                    tid,
+                    f.x[8],
+                    f.x[0],
+                    f.x[1],
+                    f.x[2]
+                ),
                 Out::Gone => {}
             }
         }
@@ -1320,6 +1419,7 @@ impl Kernel {
                     fds: p.fds.clone(),
                     cwd: p.cwd.clone(),
                     exe: p.exe.clone(),
+                    cmdline: p.cmdline.clone(),
                     umask: p.umask,
                     mm: p.mm.clone(),
                     sig: ProcSig { pending: 0, itimer: None, ..p.sig.clone() },

@@ -581,8 +581,14 @@ impl Kernel {
         // form, so feature probes fall back instead of dying.
         if ec == 0x18 && esr & 1 == 1 {
             let iss = esr & 0x1ff_ffff;
-            let (op0, op2, op1, crn, rt, crm) =
-                ((iss >> 20) & 3, (iss >> 17) & 7, (iss >> 14) & 7, (iss >> 10) & 0xf, (iss >> 5) & 0x1f, (iss >> 1) & 0xf);
+            let (op0, op2, op1, crn, rt, crm) = (
+                (iss >> 20) & 3,
+                (iss >> 17) & 7,
+                (iss >> 14) & 7,
+                (iss >> 10) & 0xf,
+                (iss >> 5) & 0x1f,
+                (iss >> 1) & 0xf,
+            );
             if op0 == 3 && op1 == 0 && crn == 0 {
                 let v = match (crm, op2) {
                     // SAFETY: reading an ID register at EL1 has no side effects.

@@ -13,6 +13,9 @@ members = [
     "drivers/common/gpio-keys-pl061",
     "drivers/virtio/blk",
     "drivers/virtio/input",
+    "drivers/virtio/console",
+    "compat/linux/fdbd",
+    "tools/fdb",
     "drivers/display/ramfb",
     "apps/storage-test",
     "apps/hello",
@@ -25,6 +28,7 @@ members = [
 # Crates that build and test on the host. The kernel and the components are
 # bare-metal arm64 crates; build them with `cargo xtask build`.
 default-members = [
+    "tools/fdb",
     "compat/android/droid",
     "interfaces/abi",
     "libs/config",

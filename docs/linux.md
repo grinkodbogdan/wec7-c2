@@ -63,6 +63,17 @@ Verified on every `cargo xtask test`:
 | `net.rs` | Unix-domain sockets |
 | `vfs.rs` | in-memory file system from the initramfs (copy-on-write over the kernel image) |
 | `tty.rs` | console line discipline |
+| `drm.rs` | `/dev/dri/card0` (KMS) and `/dev/fb0` over the display shared memory ([display.md](display.md)) |
+| `input.rs` | `/dev/input/eventN` (evdev) fed by user-space input drivers |
+
+Devices backed by Flare components:
+
+* `/dev/dri/card0` and `/dev/fb0`: the panel, through the display driver's shared memory.
+* `/dev/input/event*`: touch and keys, fed by input drivers.
+* `/dev/fdb`: a `serial:` byte stream carried by the virtio-console driver; `fdbd` serves the debug bridge on it ([fdb.md](fdb.md)).
+
+`/proc/<pid>` provides `stat`, `cmdline`, `comm`, `status` and `exe`, so
+`ps`, `pidof` and `killall` work.
 
 Blocking system calls are re-run when anything changes (the kernel never
 blocks); a deliverable signal interrupts them with `EINTR` or restarts them

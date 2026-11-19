@@ -175,7 +175,6 @@ impl Kernel {
         let d = self.drm();
         d.scanout = Some(fb_id);
         d.flips += 1;
-
     }
 
     fn vblank_now(&mut self) -> (u32, u64) {
@@ -365,7 +364,9 @@ impl Kernel {
                 self.put_ids(c, rd64(&b, 8), rd32(&b, 36), &[CRTC_ID])?;
                 self.put_ids(c, rd64(&b, 16), rd32(&b, 40), &[CONNECTOR_ID])?;
                 self.put_ids(c, rd64(&b, 24), rd32(&b, 44), &[ENCODER_ID])?;
-                for (o, v) in [(32, fbs.len() as u32), (36, 1), (40, 1), (44, 1), (48, 1), (52, 8192), (56, 1), (60, 8192)] {
+                for (o, v) in
+                    [(32, fbs.len() as u32), (36, 1), (40, 1), (44, 1), (48, 1), (52, 8192), (56, 1), (60, 8192)]
+                {
                     wr32(&mut b, o, v);
                 }
                 self.write_u(c, arg, &b)
@@ -576,6 +577,59 @@ impl Kernel {
                 wr32(&mut b, 16, 0);
                 self.write_u(c, arg, &b)
             }
+            _ => Err(EINVAL),
+        }
+    }
+
+    /// /dev/fb0: the panel's pixels, read and written directly.
+    fn fb_region(&self) -> Option<(u64, u64)> {
+        let p = self.panel()?;
+        let (pa, _) = *self.shm.get(crate::boot::LINUX_DISPLAY?)?;
+        Some((phys_to_virt(pa) + p.fb_offset as u64, p.stride as u64 * p.height as u64))
+    }
+
+    pub(crate) fn fb_read(&self, pos: u64, max: usize) -> Vec<u8> {
+        let Some((va, len)) = self.fb_region() else { return Vec::new() };
+        let n = (max as u64).min(len.saturating_sub(pos)) as usize;
+        // SAFETY: inside the display memory, through the direct map.
+        unsafe { core::slice::from_raw_parts((va + pos) as *const u8, n).to_vec() }
+    }
+
+    pub(crate) fn fb_write(&self, pos: u64, data: &[u8]) -> usize {
+        let Some((va, len)) = self.fb_region() else { return 0 };
+        let n = (data.len() as u64).min(len.saturating_sub(pos)) as usize;
+        // SAFETY: as above.
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), (va + pos) as *mut u8, n) };
+        n
+    }
+
+    /// FBIOGET_VSCREENINFO and FBIOGET_FSCREENINFO.
+    pub(crate) fn fb_ioctl(&mut self, c: usize, req: u64, arg: u64) -> Result<i64, i64> {
+        let p = self.panel().ok_or(ENODEV)?;
+        match req & 0xffff {
+            0x4600 => {
+                let mut v = [0u8; 160];
+                for (i, x) in [p.width, p.height, p.width, p.height, 0, 0, 32, 0].iter().enumerate() {
+                    wr32(&mut v, i * 4, *x);
+                }
+                // red, green, blue, transp bitfields: offset, length, msb_right
+                for (i, (off, len)) in [(16, 8), (8, 8), (0, 8), (24, 0)].iter().enumerate() {
+                    wr32(&mut v, 32 + i * 12, *off);
+                    wr32(&mut v, 36 + i * 12, *len);
+                }
+                wr32(&mut v, 88, p.height_mm);
+                wr32(&mut v, 92, p.width_mm);
+                self.uwrite(c, arg, &v).map(|_| 0)
+            }
+            0x4602 => {
+                let mut v = [0u8; 80];
+                v[..9].copy_from_slice(b"flare-shm");
+                wr32(&mut v, 24, p.stride * p.height);
+                wr32(&mut v, 36, 2); // FB_VISUAL_TRUECOLOR
+                wr32(&mut v, 48, p.stride);
+                self.uwrite(c, arg, &v).map(|_| 0)
+            }
+            0x4601 => Ok(0), // FBIOPUT_VSCREENINFO: the mode is fixed
             _ => Err(EINVAL),
         }
     }

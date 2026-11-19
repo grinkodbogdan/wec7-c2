@@ -46,6 +46,8 @@ enum Object {
     Shm(usize),
     /// Linux input device `boot::INPUT_DEVICES[n]`.
     Input(usize),
+    /// Linux serial device `boot::SERIAL_DEVICES[n]`.
+    Serial(usize),
 }
 
 impl Object {
@@ -57,6 +59,7 @@ impl Object {
             Object::Klog => CapKind::Klog,
             Object::Dma(..) | Object::Shm(_) => CapKind::Dma,
             Object::Input(_) => CapKind::Input,
+            Object::Serial(_) => CapKind::Serial,
         }
     }
 }
@@ -185,7 +188,21 @@ pub struct Kernel {
     pub(crate) ext_owner: [Option<usize>; MAX_CPUS],
     /// Shared-memory regions (physical base, length), as `boot::SHM_REGIONS`.
     pub(crate) shm: Vec<(u64, u64)>,
+    /// Byte streams between drivers and Linux devices, as `boot::SERIAL_DEVICES`.
+    pub(crate) serials: Vec<SerialPort>,
 }
+
+/// One serial device: bytes from the driver to Linux (`rx`) and back (`tx`).
+#[derive(Default)]
+pub(crate) struct SerialPort {
+    pub rx: VecDeque<u8>,
+    pub tx: VecDeque<u8>,
+    /// Endpoint and bit to raise when Linux writes.
+    notify: Option<(usize, u32)>,
+}
+
+/// Bytes a serial direction may hold before writers see backpressure.
+pub(crate) const SERIAL_BUF: usize = 1 << 20;
 
 static KERNEL: Global<Option<Kernel>> = Global::new(None);
 static BOOT_FRAMES: Global<[TrapFrame; MAX_CPUS]> = Global::new([TrapFrame::zeroed(); MAX_CPUS]);
@@ -216,6 +233,7 @@ pub fn start() -> ! {
         linux: None,
         ext_owner: [None; MAX_CPUS],
         shm: Vec::new(),
+        serials: boot::SERIAL_DEVICES.iter().map(|_| SerialPort::default()).collect(),
     };
     for (name, size) in boot::SHM_REGIONS {
         let len = page_ceil(*size);
@@ -574,6 +592,7 @@ impl Kernel {
                 GrantKind::Dma { .. } => (Object::Dma(i, slot), Rights::READ | Rights::WRITE | Rights::MAP, 0),
                 GrantKind::Shm { region } => (Object::Shm(region), Rights::READ | Rights::WRITE | Rights::MAP, 0),
                 GrantKind::Input { device } => (Object::Input(device), Rights::WRITE, 0),
+                GrantKind::Serial { device } => (Object::Serial(device), Rights::READ | Rights::WRITE, 0),
             };
             let mut desc =
                 CapDesc { slot: slot as u32, kind: obj.kind() as u32, vaddr: 0, size: 0, name: fixed_from_str(g.name) };
@@ -992,6 +1011,7 @@ impl Kernel {
             nr::TTY_INPUT => self.sys_tty_input(c, a[0], a[1], a[2]),
             nr::DMA_PADDR => self.sys_dma_paddr(c, a[0], a[1]),
             nr::INPUT_REPORT => self.sys_input_report(c, a[0], a[1], a[2], a[3]),
+            nr::SERIAL_IO => self.sys_serial_io(c, a[0], a[1], a[2], a[3]),
             nr::EXIT => {
                 self.exit(c, a[0] as i64);
                 return;
@@ -1032,6 +1052,46 @@ impl Kernel {
         }
         self.ret(c, &[]);
         Ok(())
+    }
+
+    fn sys_serial_io(&mut self, c: usize, slot: u64, op: u64, a: u64, b: u64) -> SysResult {
+        let (_, cap) = self.typed(c, slot, CapKind::Serial, Rights::NONE)?;
+        let Object::Serial(dev) = cap.obj else { return Err(Error::WrongType) };
+        match op {
+            0 => {
+                let room = SERIAL_BUF.saturating_sub(self.serials[dev].rx.len());
+                let bytes = self.copy_from_user(c, a, (b as usize).min(room).min(4096))?;
+                self.serials[dev].rx.extend(bytes.iter());
+                self.ret(c, &[bytes.len() as u64]);
+            }
+            1 => {
+                let port = &mut self.serials[dev];
+                let n = (b as usize).min(port.tx.len()).min(4096);
+                let bytes: Vec<u8> = port.tx.drain(..n).collect();
+                self.copy_to_user(c, a, &bytes)?;
+                self.ret(c, &[n as u64]);
+            }
+            2 => {
+                let (ep, _) = self.endpoint(c, a, Rights::RECV)?;
+                if b >= 64 {
+                    return Err(Error::InvalidArg);
+                }
+                self.serials[dev].notify = Some((ep, b as u32));
+                if !self.serials[dev].tx.is_empty() {
+                    self.notify(ep, b as u32);
+                }
+                self.ret(c, &[]);
+            }
+            _ => return Err(Error::InvalidArg),
+        }
+        Ok(())
+    }
+
+    /// Linux wrote to serial device `dev`: wake its driver.
+    pub(crate) fn serial_kick(&mut self, dev: usize) {
+        if let Some((ep, bit)) = self.serials[dev].notify {
+            self.notify(ep, bit);
+        }
     }
 
     fn sys_tty_input(&mut self, c: usize, slot: u64, ptr: u64, len: u64) -> SysResult {

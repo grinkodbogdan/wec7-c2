@@ -34,6 +34,7 @@ Requirements:
 ```sh
 cargo xtask test        # host unit tests + boot the system in QEMU and check its behaviour
 cargo xtask run         # boot interactively (type a line when asked; Ctrl-C quits)
+cargo fdb shell         # ... and in another terminal: a shell on the running device (docs/fdb.md)
 cargo xtask fhd qemu/virt-phone      # validate and show a board's hardware description
 cargo xtask cm resolve               # interface wiring and start order of the boot composition
 cargo xtask cm swap uart drivers/common/uart-pl011   # plan a hot-swap of a component
@@ -73,6 +74,9 @@ flare: system halted after 197 ticks (9 capabilities live, 38 frames in use)
   PL031 clock, PL061 power key, virtio-blk storage (with DMA). Drivers are
   **hot-restartable**: the boot test restarts the console and storage
   drivers while clients use them, and nothing is lost.
+* **fdb, the Flare Debug Bridge** (like adb): `cargo fdb shell`, `push`/`pull`,
+  `run app.apk`, `screenshot`, supervisor control, and `appl` to reload the
+  phone shell from an edited Lua file in a quarter of a second. See [docs/fdb.md](docs/fdb.md).
 * **A touch phone UI**: Arcan 0.6 with Mesa's software rasterizer runs
   `flarehome`, a Harmattan-style swipe shell, on `/dev/dri/card0` and
   `/dev/input`, which Flare implements over a user-space panel driver (ramfb
@@ -106,6 +110,7 @@ Follows the illustrative layout of the project specification (§7):
 | `libs/cap/` | `flare-cap`: capability derivation tree with revocation |
 | `libs/config/` | `flare-config`: the small TOML-like syntax shared by FHD files, manifests and compositions |
 | `libs/rt/` | `flare-rt`: runtime for native components (entry, syscalls, console client) |
+| `tools/fdb/` | `fdb`, the debug bridge: host CLI and protocol (device side: `compat/linux/fdbd`) |
 | `tools/fhd/` | `flare-fhd`: Flare Hardware Description loader, SoC/board layering, validation, code generation |
 | `hardware/soc/…/platform.fhd` | SoC-level hardware descriptions |
 | `hardware/boards/…/board.fhd` | Board (phone) descriptions layered over a SoC |
@@ -129,5 +134,6 @@ Follows the illustrative layout of the project specification (§7):
 * [Linux personality](docs/linux.md) — what runs, what is implemented, what is not
 * [Android apps](docs/android.md) — how APKs run without Android userspace
 * [Display and the phone shell](docs/display.md) — KMS, touch, Arcan and `flarehome`
+* [fdb](docs/fdb.md) — the debug bridge: shell, files, apps, screenshots, UI reload
 * [Decisions](docs/decisions.md) — positions taken on the spec's open questions
 * [Roadmap](docs/roadmap.md) — milestone status and next steps

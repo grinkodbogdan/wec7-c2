@@ -31,6 +31,10 @@ role = "touchscreen"       # virtio-tablet: absolute pointer over the panel
 status = "okay"
 role = "keyboard"          # virtio-keyboard: hardware keys
 
+[device.virtio28]
+status = "okay"
+role = "debug"             # virtio console: the fdb debug bridge (a USB port on a phone)
+
 [device.fwcfg0]
 status = "okay"
 role = "display"           # ramfb: 480x854 portrait panel
@@ -49,4 +53,7 @@ qemu-args = ["-global", "virtio-mmio.force-legacy=false",
              "-device", "virtio-blk-device,drive=userdata",
              "-device", "virtio-tablet-device",
              "-device", "virtio-keyboard-device",
+             "-device", "virtio-serial-device",
+             "-chardev", "socket,id=fdb,path=@fdb,server=on,wait=off",
+             "-device", "virtconsole,chardev=fdb",
              "-device", "ramfb"]

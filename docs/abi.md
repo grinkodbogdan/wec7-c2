@@ -15,6 +15,9 @@ most one capability: an object reference, a set of rights and a badge.
 | `irq` | An interrupt line | — |
 | `klog` | The kernel log | `write` (debug output, TTY input), `read` (become the log reader) |
 | `dma` | Memory a driver may hand to its device, mapped into the driver | — (`DMA_PADDR` gives physical addresses) |
+| `dma` (`shm:` grants) | Named shared memory: physically contiguous, the same pages for every holder, system lifetime | — |
+| `input` | The Linux evdev device (`/dev/input/eventN`) a driver feeds | `write` |
+| `serial` | The byte stream of a Linux character device (`/dev/<name>`) | `read`, `write` |
 
 Rules:
 
@@ -52,6 +55,8 @@ status (0 = success, else an error code).
 | 13 | `EXIT` | code | does not return |
 | 14 | `TTY_INPUT` | klog slot (write), ptr, len | |
 | 15 | `DMA_PADDR` | dma slot, offset | `x1` physical address |
+| 16 | `INPUT_REPORT` | input slot, op (0 describe, 1 events), ptr, len | |
+| 17 | `SERIAL_IO` | serial slot, op (0 push, 1 pull, 2 bind ep+bit), a, b | `x1` bytes moved |
 
 Errors: `E_NO_CAP` 1, `E_WRONG_TYPE` 2, `E_RIGHTS` 3, `E_INVALID_ARG` 4,
 `E_NO_MEMORY` 5, `E_NO_SLOT` 6, `E_PEER_DIED` 7, `E_BAD_ADDRESS` 8,
@@ -98,6 +103,12 @@ Everything outside this 1 GiB region belongs to the kernel and faults if
 touched from EL0.
 
 ## Service protocols
+
+`flare.display@1.0` (`flare_abi::proto::display`): a framebuffer in shared
+memory. The display driver owns a header at offset 0 (magic, state, size,
+stride, format, generation, physical size) and scans out the pixels at
+`fb_offset`. Linux sees it as `/dev/dri/card0` (KMS) and `/dev/fb0`.
+
 
 `flare.console@1.0` (`flare_abi::proto::console`): requests are `CALL`s;
 the label's low 32 bits are the operation, the high 32 bits a byte count;

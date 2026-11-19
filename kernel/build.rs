@@ -110,7 +110,10 @@ fn main() {
     let inputs = comp.input_devices();
     let _ = writeln!(g, "pub const SHM_REGIONS: &[(&str, u64)] = &{:?};", shm);
     let _ = writeln!(g, "pub const INPUT_DEVICES: &[&str] = &{:?};", inputs);
-    let display = comp.linux.as_ref().and_then(|l| l.display.as_ref()).and_then(|d| shm.iter().position(|(n, _)| n == d));
+    let serials = comp.serial_devices();
+    let _ = writeln!(g, "pub const SERIAL_DEVICES: &[&str] = &{:?};", serials);
+    let display =
+        comp.linux.as_ref().and_then(|l| l.display.as_ref()).and_then(|d| shm.iter().position(|(n, _)| n == d));
     let _ = writeln!(g, "pub const LINUX_DISPLAY: Option<usize> = {:?};", display);
     let halt: Vec<usize> = comp
         .halt_when_finished
@@ -194,6 +197,9 @@ fn main() {
                 }
                 GrantKind::Input { name } => {
                     format!("GrantKind::Input {{ device: {} }}", inputs.iter().position(|n| n == name).unwrap())
+                }
+                GrantKind::Serial { name } => {
+                    format!("GrantKind::Serial {{ device: {} }}", serials.iter().position(|n| n == name).unwrap())
                 }
             };
             let _ = writeln!(g, "            Grant {{ name: {:?}, kind: {} }},", gr.local, kind);

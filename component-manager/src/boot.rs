@@ -63,6 +63,10 @@ pub enum GrantKind {
     Input {
         name: String,
     },
+    /// Carry the byte stream of the Linux character device `/dev/<name>`.
+    Serial {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +147,21 @@ impl Composition {
         out
     }
 
+    /// Linux serial devices in first-mention order.
+    pub fn serial_devices(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in &self.components {
+            for g in &c.grants {
+                if let GrantKind::Serial { name } = &g.kind {
+                    if !out.contains(name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn endpoints(&self) -> Vec<String> {
         let mut eps: Vec<String> = Vec::new();
         for c in &self.components {
@@ -206,10 +225,11 @@ pub fn parse_grant(s: &str) -> Result<Grant, String> {
         ["dma", size] => GrantKind::Dma { size: size_of(size)? },
         ["shm", name, size] => GrantKind::Shm { name: name.to_string(), size: size_of(size)? },
         ["input", name] => GrantKind::Input { name: name.to_string() },
+        ["serial", name] => GrantKind::Serial { name: name.to_string() },
         ["klog", r] => GrantKind::Klog { rights: Rights::parse(r).ok_or_else(|| format!("grant '{}': bad rights '{}'", s, r))? },
         _ => {
             return Err(format!(
-                "grant '{}' not understood; expected mmio:<dev>[#n], irq:<dev>[#n], endpoint:<name>:<rights>[:badge=n], klog:<rights>, dma:<size>, shm:<name>:<size> or input:<name>",
+                "grant '{}' not understood; expected mmio:<dev>[#n], irq:<dev>[#n], endpoint:<name>:<rights>[:badge=n], klog:<rights>, dma:<size>, shm:<name>:<size>, input:<name> or serial:<name>",
                 s
             ))
         }
@@ -467,6 +487,20 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
                     }
                     if let Some(prev) = input_owner.insert(name.clone(), who.clone()) {
                         errs.push(format!("input device '{}' fed by both '{}' and '{}'", name, prev, who));
+                    }
+                }
+                GrantKind::Serial { name } => {
+                    if m.kind != Kind::Driver {
+                        errs.push(format!("'{}' is a {:?}, only drivers may carry serial devices", who, m.kind));
+                    }
+                    if comp.linux.is_none() {
+                        errs.push(format!("'{}': serial device '{}' needs the Linux personality", who, name));
+                    }
+                    if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+                        errs.push(format!("'{}': serial device name '{}' must be [A-Za-z0-9_-]", who, name));
+                    }
+                    if let Some(prev) = input_owner.insert(format!("serial:{}", name), who.clone()) {
+                        errs.push(format!("serial device '{}' carried by both '{}' and '{}'", name, prev, who));
                     }
                 }
                 GrantKind::Klog { rights } => {

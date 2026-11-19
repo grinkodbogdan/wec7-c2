@@ -1,5 +1,7 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+# The debug bridge to a running Flare device: `cargo fdb shell ls`.
+fdb = "run --quiet --package fdb --"
 
 # Linux test programs for the Linux personality: link with the bundled
 # rust-lld and Rust's self-contained musl.

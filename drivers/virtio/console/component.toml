@@ -1,0 +1,14 @@
+[component]
+name = "virtio-console"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # bytes in flight in the device are lost; the Linux device stays
+
+[binds]
+compatible = ["virtio,mmio"]
+
+[provides]
+interfaces = []
+
+[requires]
+interfaces = ["flare.console@1.0"]

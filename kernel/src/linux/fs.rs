@@ -83,6 +83,10 @@ pub enum FileKind {
     Drm(super::drm::DrmFileRef),
     /// /dev/input/eventN
     Evdev(super::input::EvdevRef),
+    /// A serial device (`boot::SERIAL_DEVICES`): raw bytes to its driver.
+    Serial(usize),
+    /// /dev/fb0: the display's pixels.
+    Fb,
 }
 
 pub struct OpenFile {
@@ -195,6 +199,11 @@ impl Kernel {
             FileKind::Epoll(_) => 0,
             FileKind::Drm(d) => self.drm_poll(d),
             FileKind::Evdev(e) => self.evdev_poll(e),
+            FileKind::Serial(d) => {
+                let p = &self.serials[*d];
+                (if p.rx.is_empty() { 0 } else { EPOLLIN })
+                    | (if p.tx.len() < crate::kernel::SERIAL_BUF { EPOLLOUT } else { 0 })
+            }
             _ => EPOLLIN | EPOLLOUT,
         }
     }
@@ -305,6 +314,22 @@ impl Kernel {
                 drop(f);
                 self.evdev_read(&e, max)
             }
+            FileKind::Serial(d) => {
+                let d = *d;
+                drop(f);
+                let rx = &mut self.serials[d].rx;
+                if rx.is_empty() {
+                    return Ok(None);
+                }
+                let n = max.min(rx.len());
+                Ok(Some(rx.drain(..n).collect()))
+            }
+            FileKind::Fb => {
+                drop(f);
+                let data = self.fb_read(pos as u64, max);
+                file.borrow_mut().pos += data.len() as u64;
+                Ok(Some(data))
+            }
             FileKind::FlareCtl => {
                 drop(f);
                 let resp = &mut self.lx().ctl_response;
@@ -331,6 +356,25 @@ impl Kernel {
                 drop(f);
                 self.lx().tty.write(data);
                 return Ok(data.len());
+            }
+            FileKind::Serial(d) => {
+                let d = *d;
+                drop(f);
+                let room = crate::kernel::SERIAL_BUF.saturating_sub(self.serials[d].tx.len());
+                if room == 0 {
+                    return Err(EAGAIN);
+                }
+                let n = data.len().min(room);
+                self.serials[d].tx.extend(data[..n].iter());
+                self.serial_kick(d);
+                return Ok(n);
+            }
+            FileKind::Fb => {
+                let pos = f.pos;
+                drop(f);
+                let n = self.fb_write(pos, data);
+                file.borrow_mut().pos += n as u64;
+                return Ok(n);
             }
             FileKind::Kmsg => {
                 crate::klog::write(data);
@@ -565,6 +609,19 @@ impl Kernel {
             let f = open_file(FileKind::Mem(data), flags, &abs);
             return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
         }
+        // /proc/<pid>: a directory of generated files
+        if let Some((pid, tail)) = self.proc_pid_path(c, &abs) {
+            // (/proc/self itself stays the static node holding the exe link)
+            if tail.is_empty() && !abs.starts_with("/proc/self") {
+                let node = super::vfs::Vfs::synthetic_dir(&["stat", "cmdline", "comm", "status"]);
+                let f = open_file(FileKind::Dir(node), flags, &abs);
+                return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+            }
+            if let Some(data) = self.proc_pid_content(pid, tail) {
+                let f = open_file(FileKind::Mem(data), flags, &abs);
+                return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+            }
+        }
         let lx = self.lx();
         if let Some(name) = abs.strip_prefix("/proc/") {
             if let Some(data) = lx.proc_content(name, procs) {
@@ -589,6 +646,10 @@ impl Kernel {
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
                 vfs::DEV_FLARECTL => FileKind::FlareCtl,
+                vfs::DEV_FB0 => FileKind::Fb,
+                d if (vfs::DEV_SERIAL0..vfs::DEV_SERIAL0 + 16).contains(&d) => {
+                    FileKind::Serial((d - vfs::DEV_SERIAL0) as usize)
+                }
                 vfs::DEV_DRI_CARD0 => {
                     drop(n);
                     let k = self.drm_open();
@@ -669,6 +730,11 @@ impl Kernel {
             let FileKind::Dir(node) = &f.kind else { return Err(ENOTDIR) };
             let dir = node.borrow();
             let mut entries: Vec<(String, u64, u8)> = vec![(".".into(), dir.ino, 4), ("..".into(), 1, 4)];
+            if f.path == "/proc" {
+                for (pid, _) in self.linux_pids() {
+                    entries.push((pid.to_string(), 0x1_0000_0000 + pid as u64, 4));
+                }
+            }
             for (name, child) in dir.children.iter() {
                 let ch = child.borrow();
                 let t = match ch.mode & S_IFMT {
@@ -723,6 +789,8 @@ impl Kernel {
             FileKind::MemFd(o) => stat_bytes(10, S_IFREG | 0o600, o.borrow().size, 0, 0),
             FileKind::Socket(_) => stat_bytes(11, S_IFSOCK | 0o777, 0, 0, 0),
             FileKind::Drm(_) => stat_bytes(13, S_IFCHR | 0o666, 0, vfs::DEV_DRI_CARD0, 0),
+            FileKind::Serial(d) => stat_bytes(15, S_IFCHR | 0o600, 0, vfs::DEV_SERIAL0 + *d as u64, 0),
+            FileKind::Fb => stat_bytes(16, S_IFCHR | 0o660, 0, vfs::DEV_FB0, 0),
             FileKind::Evdev(e) => {
                 stat_bytes(14, S_IFCHR | 0o660, 0, vfs::DEV_INPUT_EVENT0 + e.borrow().device as u64, 0)
             }
@@ -741,6 +809,20 @@ impl Kernel {
             return self.sys_fstat(c, dirfd, buf);
         }
         let base = self.base_dir(c, dirfd)?;
+        let abs = vfs::absolute(&base, &p);
+        if let Some((pid, tail)) = self.proc_pid_path(c, &abs) {
+            if !abs.starts_with("/proc/self") || !tail.is_empty() {
+                let st = if tail.is_empty() {
+                    stat_bytes(0x1_0000_0000 + pid as u64, S_IFDIR | 0o555, 0, 0, 0)
+                } else if tail == "exe" {
+                    stat_bytes(0x2_0000_0000 + pid as u64, S_IFLNK | 0o777, 0, 0, 0)
+                } else {
+                    let n = self.proc_pid_content(pid, tail).ok_or(ENOENT)?.len();
+                    stat_bytes(0x3_0000_0000 + pid as u64, S_IFREG | 0o444, n as u64, 0, 0)
+                };
+                return self.uwrite(c, buf, &st).map(|_| 0);
+            }
+        }
         let r = self.lx().vfs.lookup(&base, &p, flags & AT_SYMLINK_NOFOLLOW == 0)?;
         let st = node_stat(&r.node);
         self.uwrite(c, buf, &st).map(|_| 0)
@@ -761,6 +843,9 @@ impl Kernel {
         let abs = vfs::absolute(&base, &p);
         let target = if abs == "/proc/self/exe" {
             self.proc(c).exe.clone().into_bytes()
+        } else if let Some((pid, "exe")) = self.proc_pid_path(c, &abs) {
+            let (_, pc) = *self.linux_pids().iter().find(|(p, _)| *p == pid).ok_or(ENOENT)?;
+            self.comps[pc].linux.as_ref().unwrap().p.borrow().exe.clone().into_bytes()
         } else {
             let r = self.lx().vfs.lookup(&base, &p, false)?;
             let n = r.node.borrow();
@@ -875,6 +960,9 @@ impl Kernel {
                 _ => 0,
             };
             return self.uwrite(c, arg, &n.to_le_bytes()).map(|_| 0);
+        }
+        if matches!(file.borrow().kind, FileKind::Fb) {
+            return self.fb_ioctl(c, req, arg);
         }
         let dev = match &file.borrow().kind {
             FileKind::Drm(d) => Some(Ok(d.clone())),

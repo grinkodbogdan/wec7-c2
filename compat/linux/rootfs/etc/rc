@@ -29,9 +29,9 @@ done
 # the panel's shared memory), first a self-check, then the Arcan phone shell.
 export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DISABLE=true
 kmstest
-export ARCAN_VIDEO_DISPLAY_DEVICE=/dev/dri/card0 XDG_RUNTIME_DIR=/tmp
-arcan -d /tmp/arcan.sqlite -p /usr/share/arcan/resources -t /usr/share/arcan/appl \
-    -T /usr/share/arcan/scripts flarehome &
+# fdb, the debug bridge (host: `cargo fdb`), and the Arcan phone shell.
+fdbd > /dev/console 2>&1 &
+flare-ui flarehome
 echo "rc: starting an interactive shell (type 'exit' to power off)"
 cd /root
 exec /bin/sh

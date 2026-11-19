@@ -169,8 +169,8 @@ impl Kernel {
             0x07 => put(self, b"flare/input0\0"), // EVIOCGPHYS
             0x08 => put(self, b"\0"),             // EVIOCGUNIQ
             0x09 => put(self, &d.prop_bits),      // EVIOCGPROP
-            0x18 => put(self, &keys_down), // EVIOCGKEY
-            0x19..=0x1b => put(self, &[0u8; 8]), // LED, SND, SW state
+            0x18 => put(self, &keys_down),        // EVIOCGKEY
+            0x19..=0x1b => put(self, &[0u8; 8]),  // LED, SND, SW state
             0x20..=0x3f => {
                 // EVIOCGBIT(ev)
                 let bits: Vec<u8> = match nr - 0x20 {

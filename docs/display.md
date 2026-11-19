@@ -103,16 +103,18 @@ virtio keyboard for hardware keys.
 
 ## Building Arcan and Mesa
 
-`compat/arcan/build.sh` runs once, when `cargo xtask build` first needs it,
-and takes a few minutes. It cross-builds, with clang:
+`compat/arcan/build.sh` runs when `cargo xtask build` first needs it, and
+again whenever its inputs change (script, lock file, patches), and takes a
+few minutes. It cross-builds, with clang:
 
 * **Mesa 25.1.9** with only the softpipe rasterizer (no LLVM): EGL, GBM
   and GLES2;
 * **Arcan 0.6.3.4** with the egl-dri platform and the GLES2 backend, plus
-  three small patches in `compat/arcan/patches`:
+  four small patches in `compat/arcan/patches`:
   * a prototype mismatch;
   * X11-free EGL native types;
-  * a GLES fallback for `glDrawBuffer`.
+  * a GLES fallback for `glDrawBuffer`;
+  * flushing Lua `print` output, so it reaches logs through a pipe.
 
 Both are built against a sysroot of Alpine Linux aarch64 packages. Their
 exact versions and SHA-256 sums are in `compat/arcan/alpine.lock`. The

@@ -16,6 +16,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdb"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+]
+
+[[package]]
+name = "fdbd"
+version = "0.1.0"
+dependencies = [
+ "fdb",
+]
+
+[[package]]
 name = "flare-abi"
 version = "0.1.0"
 
@@ -136,6 +150,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-console"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
 name = "virtio-input"
 version = "0.1.0"
 dependencies = [
@@ -146,6 +167,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "fdb",
  "flare-cm",
  "flare-fhd",
 ]

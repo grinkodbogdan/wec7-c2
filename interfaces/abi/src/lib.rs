@@ -61,6 +61,12 @@ pub mod syscall {
     /// `Input` capability: op 0 describes it (`proto::input::Describe`),
     /// op 1 delivers events (`proto::input::Event` records).
     pub const INPUT_REPORT: u64 = 16;
+    /// `(serial_slot, op, a, b)` — the byte stream behind a `Serial`
+    /// capability (a Linux character device): op 0 pushes `b` bytes at `a`
+    /// to Linux (count accepted in `x1`); op 1 pulls up to `b` bytes Linux
+    /// wrote into `a` (count in `x1`); op 2 binds notification bit `b` on
+    /// receive endpoint slot `a`, raised when Linux writes.
+    pub const SERIAL_IO: u64 = 17;
 }
 
 /// Error codes returned in `x0`.
@@ -229,6 +235,8 @@ pub enum CapKind {
     Dma = 5,
     /// The Linux input device (`/dev/input/eventN`) a driver feeds.
     Input = 6,
+    /// A byte stream to a Linux character device (`/dev/<name>`).
+    Serial = 7,
 }
 
 impl CapKind {
@@ -240,6 +248,7 @@ impl CapKind {
             4 => CapKind::Klog,
             5 => CapKind::Dma,
             6 => CapKind::Input,
+            7 => CapKind::Serial,
             _ => CapKind::Null,
         }
     }
@@ -252,6 +261,7 @@ impl CapKind {
             CapKind::Klog => "klog",
             CapKind::Dma => "dma",
             CapKind::Input => "input",
+            CapKind::Serial => "serial",
         }
     }
 }
