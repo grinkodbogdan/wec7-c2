@@ -10,9 +10,9 @@
 name = "qemu-virt-phone-demo"
 board = "qemu/virt-phone"
 
-# Test policy: power off once these instances have finished (exited or been
-# retired after exhausting their restarts).
-halt-when-finished = ["hello", "intruder"]
+# Power off once these have finished: native instances (exited, or retired
+# after exhausting their restarts) and "linux" (the Linux init process).
+halt-when-finished = ["hello", "intruder", "linux"]
 
 [component.uart]
 manifest = "drivers/common/uart-pl011"
@@ -20,7 +20,7 @@ grants = [
     "uart=mmio:uart0",
     "uart-irq=irq:uart0",
     "console=endpoint:console:recv",
-    "klog=klog:read",
+    "klog=klog:read+write",
 ]
 restart = "on-failure"
 max-restarts = 3
@@ -38,3 +38,9 @@ manifest = "apps/intruder"
 grants = ["console=endpoint:console:send:badge=3"]
 restart = "on-failure"
 max-restarts = 1
+
+# The Linux personality: pid 1 runs from the root filesystem that
+# `cargo xtask build` assembles (compat/linux/rootfs + busybox + test programs).
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]

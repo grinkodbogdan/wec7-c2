@@ -1,30 +1,41 @@
-/* Flare framekernel link script. @KERNEL_BASE@ is substituted by build.rs
- * from the board's hardware description. */
-ENTRY(_start)
+/* Flare framekernel link script. The kernel runs in the upper half of the
+ * address space (TTBR1), at the direct-map alias of its physical load
+ * address. @KERNEL_BASE@ (physical) is substituted by build.rs from the
+ * board's hardware description. */
+KVA = 0xffffff8000000000;
+ENTRY(_start_phys)
 
 SECTIONS
 {
-    . = @KERNEL_BASE@;
+    . = KVA + @KERNEL_BASE@;
     __kernel_start = .;
 
-    .text : {
+    .text : AT(ADDR(.text) - KVA) {
         KEEP(*(.text.boot))
         *(.text .text.*)
     }
 
     . = ALIGN(4096);
-    .rodata : {
+    .rodata : AT(ADDR(.rodata) - KVA) {
         *(.rodata .rodata.*)
     }
 
     . = ALIGN(4096);
-    .data : {
+    .data : AT(ADDR(.data) - KVA) {
         *(.data .data.*)
         *(.got .got.*)
     }
 
+    . = ALIGN(4096);
+    .boot_tables (NOLOAD) : AT(ADDR(.boot_tables) - KVA) {
+        __boot_l1_lo = .;
+        . = . + 4096;
+        __boot_l1_hi = .;
+        . = . + 4096;
+    }
+
     . = ALIGN(16);
-    .bss (NOLOAD) : {
+    .bss (NOLOAD) : AT(ADDR(.bss) - KVA) {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
@@ -32,7 +43,7 @@ SECTIONS
         __bss_end = .;
     }
 
-    .stack (NOLOAD) : {
+    .stack (NOLOAD) : AT(ADDR(.stack) - KVA) {
         . = ALIGN(16);
         . = . + 0x10000;
         __stack_top = .;
@@ -40,6 +51,8 @@ SECTIONS
 
     . = ALIGN(4096);
     __kernel_end = .;
+
+    _start_phys = _start - KVA;
 
     /DISCARD/ : {
         *(.eh_frame*)

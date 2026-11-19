@@ -73,12 +73,22 @@ pub struct BootComponent {
     pub line: u32,
 }
 
+/// The Linux personality and its init process (`[linux]`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinuxConfig {
+    /// argv of pid 1; `init[0]` is a path in the root filesystem.
+    pub init: Vec<String>,
+    pub env: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Composition {
     pub name: String,
     pub board: String,
+    /// Instance names, or `linux` for the Linux init process.
     pub halt_when_finished: Vec<String>,
     pub components: Vec<BootComponent>,
+    pub linux: Option<LinuxConfig>,
 }
 
 impl Composition {
@@ -180,7 +190,23 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
         }),
     };
     let mut components = Vec::new();
+    let mut linux = None;
     for sec in doc.named_sections() {
+        if sec.name == "linux" {
+            for e in &sec.entries {
+                if !["init", "env"].contains(&e.key.as_str()) {
+                    err(e.line, format!("unknown key '{}' in [linux]", e.key));
+                }
+            }
+            let list = |k: &str| sec.get(k).and_then(|v| v.as_str_list());
+            match list("init") {
+                Some(init) if !init.is_empty() && init[0].starts_with('/') => {
+                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default() })
+                }
+                _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
+            }
+            continue;
+        }
         let Some(instance) = sec.name.strip_prefix("component.") else {
             err(sec.line, format!("unknown section [{}]; expected [component.<instance>]", sec.name));
             continue;
@@ -243,7 +269,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
         });
     }
     if errs.is_empty() {
-        Ok(Composition { name, board, halt_when_finished, components })
+        Ok(Composition { name, board, halt_when_finished, components, linux })
     } else {
         Err(errs)
     }
@@ -269,7 +295,7 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     let mut ep_send: BTreeMap<String, usize> = BTreeMap::new();
     let mut klog_readers = Vec::new();
 
-    if comp.components.is_empty() {
+    if comp.components.is_empty() && comp.linux.is_none() {
         errs.push("composition starts no components".to_string());
     }
     for (c, m) in comp.components.iter().zip(manifests) {
@@ -366,7 +392,7 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
         errs.push(format!("only one component may read the kernel log, found {:?}", klog_readers));
     }
     for h in &comp.halt_when_finished {
-        if !instances.contains_key(h) {
+        if !instances.contains_key(h) && !(h == "linux" && comp.linux.is_some()) {
             errs.push(format!("halt-when-finished names unknown instance '{}'", h));
         }
     }

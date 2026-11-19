@@ -28,7 +28,7 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let root = manifest_dir.parent().unwrap().to_path_buf();
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    for v in ["FLARE_SYSTEM", "FLARE_COMPONENTS_DIR"] {
+    for v in ["FLARE_SYSTEM", "FLARE_COMPONENTS_DIR", "FLARE_ROOTFS"] {
         println!("cargo:rerun-if-env-changed={}", v);
     }
     println!("cargo:rerun-if-changed=build.rs");
@@ -109,9 +109,42 @@ fn main() {
     let halt: Vec<usize> = comp
         .halt_when_finished
         .iter()
+        .filter(|h| *h != "linux")
         .map(|h| comp.components.iter().position(|c| &c.instance == h).unwrap())
         .collect();
     let _ = writeln!(g, "pub const HALT_WHEN_FINISHED: &[usize] = &{:?};", halt);
+    let _ =
+        writeln!(g, "pub const HALT_ON_LINUX_EXIT: bool = {};", comp.halt_when_finished.iter().any(|h| h == "linux"));
+    match &comp.linux {
+        Some(l) => {
+            let rootfs = match std::env::var("FLARE_ROOTFS") {
+                Ok(d) => PathBuf::from(d),
+                Err(_) => fail("the composition starts Linux but FLARE_ROOTFS is not set; use `cargo xtask build`"),
+            };
+            let mut archive = Vec::new();
+            let mut count = 0;
+            pack_dir(&rootfs, &rootfs, &mut archive, &mut count);
+            std::fs::write(out.join("initramfs.bin"), &archive).unwrap();
+            let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = Some(&{:?});", l.init);
+            let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &{:?};", l.env);
+            let _ = writeln!(
+                g,
+                "pub static INITRAMFS: &[u8] = include_bytes!({:?});",
+                out.join("initramfs.bin").display().to_string()
+            );
+            println!(
+                "cargo:warning=initramfs: {} entries, {} KiB from {}",
+                count,
+                archive.len() / 1024,
+                rootfs.display()
+            );
+        }
+        None => {
+            let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = None;");
+            let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &[];");
+            let _ = writeln!(g, "pub static INITRAMFS: &[u8] = &[];");
+        }
+    }
     let _ = writeln!(g, "pub static COMPONENTS: &[BootComponent] = &[");
     for (c, m) in comp.components.iter().zip(&manifests) {
         let image = images.join(&m.name);
@@ -157,16 +190,47 @@ fn main() {
     std::fs::write(out.join("boot_gen.rs"), g).unwrap();
 }
 
-/// Constraints of the M1 kernel's memory map (1 GiB identity blocks).
+/// Append a directory tree to an initramfs archive (format in
+/// `kernel/src/linux/vfs.rs`).
+fn pack_dir(root: &Path, dir: &Path, out: &mut Vec<u8>, count: &mut usize) {
+    use std::os::unix::fs::PermissionsExt;
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| fail(&format!("cannot read {}: {}", dir.display(), e)))
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for p in entries {
+        let rel = format!("/{}", p.strip_prefix(root).unwrap().display());
+        let meta = std::fs::symlink_metadata(&p).unwrap();
+        let (kind, data): (u8, Vec<u8>) = if meta.file_type().is_symlink() {
+            (3, std::fs::read_link(&p).unwrap().to_string_lossy().into_owned().into_bytes())
+        } else if meta.is_dir() {
+            (2, Vec::new())
+        } else {
+            println!("cargo:rerun-if-changed={}", p.display());
+            (1, std::fs::read(&p).unwrap())
+        };
+        out.push(kind);
+        out.extend_from_slice(&(meta.permissions().mode() & 0o7777).to_le_bytes());
+        out.extend_from_slice(&(rel.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(rel.as_bytes());
+        out.extend_from_slice(&data);
+        *count += 1;
+        if kind == 2 {
+            pack_dir(root, &p, out, count);
+        }
+    }
+}
+
+/// Constraints of the kernel's direct map (1 GiB blocks, 39-bit window).
 fn check_kernel_constraints(p: &Platform) {
-    let user = flare_abi::layout::USER_REGION_BASE;
+    let user: u64 = 1 << 39;
     let mut ram_blocks = Vec::new();
     for m in p.ram() {
         if m.base + m.size > user {
-            fail(&format!(
-                "memory.{} extends above {:#x}, which the M1 kernel reserves for component address spaces",
-                m.name, user
-            ));
+            fail(&format!("memory.{} extends above {:#x}, beyond the kernel's direct map", m.name, user));
         }
         ram_blocks.extend((m.base / GIB)..=((m.base + m.size - 1) / GIB));
     }

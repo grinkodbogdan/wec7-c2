@@ -5,6 +5,7 @@
 //! stored in the frames themselves (RAM is identity-mapped for the kernel).
 
 use super::{page_ceil, page_floor, PAGE_SIZE};
+use crate::arch::mmu::{phys_to_virt, virt_to_phys};
 use crate::global::Global;
 use crate::platform;
 
@@ -55,7 +56,8 @@ pub fn init() {
         static __kernel_end: u8;
     }
     // SAFETY: linker-provided symbols; only their addresses are used.
-    let (ks, ke) = unsafe { (&__kernel_start as *const u8 as u64, &__kernel_end as *const u8 as u64) };
+    let (ks, ke) =
+        unsafe { (virt_to_phys(&__kernel_start as *const u8 as u64), virt_to_phys(&__kernel_end as *const u8 as u64)) };
     let f = frames();
     let mut excluded = [(0u64, 0u64); 9];
     excluded[0] = (0, ke); // everything below the kernel end: firmware/DTB area + image
@@ -80,7 +82,7 @@ pub fn alloc() -> Option<u64> {
     let pa = if f.free_list != 0 {
         let pa = f.free_list;
         // SAFETY: free frames hold the next pointer in their first word.
-        f.free_list = unsafe { *(pa as *const u64) };
+        f.free_list = unsafe { *(phys_to_virt(pa) as *const u64) };
         pa
     } else {
         let r = f.ranges[..f.count].iter_mut().find(|(next, end)| next < end)?;
@@ -90,16 +92,20 @@ pub fn alloc() -> Option<u64> {
     };
     f.in_use += 1;
     // SAFETY: the frame is RAM owned by nobody else, identity-mapped.
-    unsafe { core::ptr::write_bytes(pa as *mut u8, 0, PAGE_SIZE as usize) };
+    unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, PAGE_SIZE as usize) };
     Some(pa)
 }
 
 pub fn free(pa: u64) {
     let f = frames();
     // SAFETY: the caller owned this frame; it now becomes a free-list node.
-    unsafe { *(pa as *mut u64) = f.free_list };
+    unsafe { *(phys_to_virt(pa) as *mut u64) = f.free_list };
     f.free_list = pa;
     f.in_use -= 1;
+}
+
+pub fn total() -> u64 {
+    frames().total
 }
 
 pub fn in_use() -> u64 {

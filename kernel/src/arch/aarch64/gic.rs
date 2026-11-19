@@ -47,8 +47,8 @@ pub fn init() {
         platform::find("intc", &["arm,gic-v2", "arm,cortex-a15-gic"]).expect("no GICv2 in the hardware description");
     // SAFETY: boot-time, single reference.
     let g = unsafe { GIC.get() };
-    g.dist = dev.regs[0].base as usize;
-    g.cpu = dev.regs[1].base as usize;
+    g.dist = super::mmu::phys_to_virt(dev.regs[0].base) as usize;
+    g.cpu = super::mmu::phys_to_virt(dev.regs[1].base) as usize;
     let lines = ((r32(g.dist + GICD_TYPER) & 0x1f) as usize + 1) * 32;
     w32(g.dist + GICD_CTLR, 0);
     for i in (0..lines).step_by(32) {
@@ -65,7 +65,7 @@ pub fn init() {
     w32(g.cpu + GICC_PMR, 0xf0);
     w32(g.cpu + GICC_BPR, 0);
     w32(g.cpu + GICC_CTLR, 1);
-    kprintln!("gic: GICv2 at {:#x}/{:#x}, {} interrupt lines", g.dist, g.cpu, lines);
+    kprintln!("gic: GICv2 at {:#x}/{:#x}, {} interrupt lines", dev.regs[0].base, dev.regs[1].base, lines);
 }
 
 pub fn enable(intid: u32) {

@@ -54,3 +54,104 @@ pub fn enter_first(frame: &'static TrapFrame) -> ! {
     // kernel stack, which the trampoline overwrites).
     unsafe { __enter_first(frame) }
 }
+
+/// User state the kernel never touches itself (it is built soft-float):
+/// FP/SIMD registers, their control/status registers and the TLS register.
+/// Switched lazily, only when a different component runs.
+#[repr(C, align(16))]
+#[derive(Clone, Default)]
+pub struct ExtState {
+    pub v: [u128; 32],
+    pub fpcr: u64,
+    pub fpsr: u64,
+    pub tpidr: u64,
+    _pad: u64,
+}
+
+core::arch::global_asm!(
+    r#"
+.arch_extension fp
+.arch_extension simd
+.global __ext_save
+__ext_save:
+    stp q0, q1, [x0, #0]
+    stp q2, q3, [x0, #32]
+    stp q4, q5, [x0, #64]
+    stp q6, q7, [x0, #96]
+    stp q8, q9, [x0, #128]
+    stp q10, q11, [x0, #160]
+    stp q12, q13, [x0, #192]
+    stp q14, q15, [x0, #224]
+    stp q16, q17, [x0, #256]
+    stp q18, q19, [x0, #288]
+    stp q20, q21, [x0, #320]
+    stp q22, q23, [x0, #352]
+    stp q24, q25, [x0, #384]
+    stp q26, q27, [x0, #416]
+    stp q28, q29, [x0, #448]
+    stp q30, q31, [x0, #480]
+    add x3, x0, #512
+    mrs x1, fpcr
+    mrs x2, fpsr
+    stp x1, x2, [x3]
+    mrs x1, tpidr_el0
+    str x1, [x3, #16]
+    ret
+.global __ext_restore
+__ext_restore:
+    ldp q0, q1, [x0, #0]
+    ldp q2, q3, [x0, #32]
+    ldp q4, q5, [x0, #64]
+    ldp q6, q7, [x0, #96]
+    ldp q8, q9, [x0, #128]
+    ldp q10, q11, [x0, #160]
+    ldp q12, q13, [x0, #192]
+    ldp q14, q15, [x0, #224]
+    ldp q16, q17, [x0, #256]
+    ldp q18, q19, [x0, #288]
+    ldp q20, q21, [x0, #320]
+    ldp q22, q23, [x0, #352]
+    ldp q24, q25, [x0, #384]
+    ldp q26, q27, [x0, #416]
+    ldp q28, q29, [x0, #448]
+    ldp q30, q31, [x0, #480]
+    add x3, x0, #512
+    ldp x1, x2, [x3]
+    msr fpcr, x1
+    msr fpsr, x2
+    ldr x1, [x3, #16]
+    msr tpidr_el0, x1
+    ret
+"#
+);
+
+pub fn ext_save(s: &mut ExtState) {
+    extern "C" {
+        fn __ext_save(s: *mut ExtState);
+    }
+    // SAFETY: writes exactly one ExtState.
+    unsafe { __ext_save(s) }
+}
+
+pub fn ext_restore(s: &ExtState) {
+    extern "C" {
+        fn __ext_restore(s: *const ExtState);
+    }
+    // SAFETY: reads exactly one ExtState.
+    unsafe { __ext_restore(s) }
+}
+
+/// Let EL0 (and the context-switch code) use FP/SIMD.
+pub fn enable_fp() {
+    // SAFETY: CPACR_EL1.FPEN = 0b11.
+    unsafe {
+        core::arch::asm!(
+            "mrs {t}, cpacr_el1",
+            "orr {t}, {t}, #(3 << 20)",
+            "msr cpacr_el1, {t}",
+            "isb",
+            t = out(reg) _,
+            options(nostack)
+        )
+    };
+}

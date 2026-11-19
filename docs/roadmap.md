@@ -9,8 +9,8 @@ Milestones from the project specification (§11), with status.
 | M2 — Component manager | Next | See below |
 | M3 — First hardware services | | Serial (done early), storage (virtio-blk), display, input |
 | M4 — First phone port | | One well-understood phone/SoC |
-| M5 — Linux ABI baseline | | |
-| M6 — Android baseline | | |
+| **M5 — Linux ABI baseline** | **Running** | Static busybox (shell, coreutils applets) and Rust `std` binaries run unmodified; checked by `cargo xtask test`. Gaps: threads, signal handlers, dynamic linking, sockets ([linux.md](linux.md)) |
+| M6 — Android baseline | Next | Bionic static binaries, then Binder; see [linux.md](linux.md#towards-android) |
 | M7 — Portability validation | | Second, materially different phone |
 
 ## Next steps (M2)

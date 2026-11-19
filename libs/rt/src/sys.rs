@@ -85,6 +85,10 @@ pub fn klog_read(klog: Slot, buf: &mut [u8]) -> Result<usize, Error> {
     status(r[0]).map(|_| r[1] as usize)
 }
 
+pub fn tty_input(klog: Slot, bytes: &[u8]) -> Result<(), Error> {
+    status(raw(nr::TTY_INPUT, [klog, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0, 0])[0])
+}
+
 pub fn exit(code: i32) -> ! {
     raw(nr::EXIT, [code as i64 as u64, 0, 0, 0, 0, 0, 0, 0]);
     loop {

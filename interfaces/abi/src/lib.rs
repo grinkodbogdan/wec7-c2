@@ -51,6 +51,9 @@ pub mod syscall {
     pub const KLOG_READ: u64 = 12;
     /// `(code)` — terminate the calling component. Never returns.
     pub const EXIT: u64 = 13;
+    /// `(klog_slot, ptr, len)` — deliver console input to the kernel's
+    /// Linux TTY. Needs `Klog` + WRITE (held by the console driver).
+    pub const TTY_INPUT: u64 = 14;
 }
 
 /// Error codes returned in `x0`.

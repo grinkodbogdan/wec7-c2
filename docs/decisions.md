@@ -12,7 +12,7 @@ Each is a working decision for the prototype, to be revisited with evidence.
 | D5 | Driver ABI stability and versioning | Services are **versioned interfaces** (`name@MAJOR.MINOR`); minor versions only add; resolution and swap planning enforce compatibility | Lets drivers be replaced independently of their clients. |
 | D6 | FHD syntax and relation to device tree | Own small, strict, **layered (SoC/board)** TOML-like syntax, validated at build time; DT-like vocabulary (compatible, reg, interrupts) so DTS can be imported later | Readable diffs for ports, precise errors, no silent defaults. |
 | D7 | Graphics stack and buffer sharing | Open | Needs shared-memory capabilities first (M3). |
-| D8 | Linux ABI placement | Leaning **split design**: a Linux personality component implementing syscalls over Flare IPC, with a minimal kernel fast path for hot syscalls if profiling demands | Keeps the framekernel small (spec invariant); decide with M5 measurements. |
+| D8 | Linux ABI placement | **In the framekernel for now** (`kernel/src/linux`, Asterinas-style), isolated in its own module with no Flare capabilities granted to Linux processes; console I/O goes through the user-space console driver | Fastest route to running real binaries. Moving it to a privileged personality component (split design) stays on the table once the ABI surface is known. |
 | D9 | Android strategy | Open; native ABI + selected AOSP components preferred, guest kernel only as an explicit fallback | Per spec invariant "fallbacks are explicit". |
 | D10 | Boot chain, verified boot, updates | Open | |
 

@@ -10,6 +10,7 @@ global_asm!(
 .section .text.boot, "ax"
 .global _start
 _start:
+    // Runs at the physical load address with the MMU off: PC-relative code only.
     // Park secondary CPUs (SMP comes later).
     mrs     x1, mpidr_el1
     and     x1, x1, #0xff
@@ -34,18 +35,58 @@ _start:
     eret
 3:
     msr     daifset, #0xf
+    // Boot translation tables: map the 1 GiB holding the kernel both at its
+    // physical address (TTBR0, to survive turning the MMU on) and at its
+    // upper-half alias (TTBR1). kmain replaces both.
+    adrp    x0, __boot_l1_lo
+    adrp    x1, __boot_l1_hi
+    mov     x2, #512
+4:  str     xzr, [x0], #8
+    str     xzr, [x1], #8
+    subs    x2, x2, #1
+    b.ne    4b
+    adrp    x0, __boot_l1_lo
+    adrp    x1, __boot_l1_hi
+    adrp    x2, _start
+    lsr     x3, x2, #30             // L1 index of the kernel's gigabyte
+    lsl     x4, x3, #30
+    mov     x5, #0x705              // block | Normal (attr 1) | inner shareable | AF
+    orr     x4, x4, x5
+    str     x4, [x0, x3, lsl #3]
+    str     x4, [x1, x3, lsl #3]
+    ldr     x2, =0xff00             // MAIR: attr0 Device-nGnRnE, attr1 Normal WB
+    msr     mair_el1, x2
+    ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
+    msr     tcr_el1, x2
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x1
+    dsb     ish
+    tlbi    vmalle1
+    dsb     ish
+    isb
+    mrs     x2, sctlr_el1
+    orr     x2, x2, #(1 << 0)       // M
+    orr     x2, x2, #(1 << 2)       // C
+    orr     x2, x2, #(1 << 12)      // I
+    bic     x2, x2, #(1 << 1)       // A
+    bic     x2, x2, #(1 << 19)      // WXN
+    msr     sctlr_el1, x2
+    isb
+    ldr     x0, =__high_entry
+    br      x0
+__high_entry:
     ldr     x0, =__stack_top
     mov     sp, x0
     ldr     x0, =__bss_start
     ldr     x1, =__bss_end
-4:  cmp     x0, x1
-    b.hs    5f
+5:  cmp     x0, x1
+    b.hs    6f
     str     xzr, [x0], #8
-    b       4b
-5:
+    b       5b
+6:
     bl      kmain
-6:  wfe
-    b       6b
+7:  wfe
+    b       7b
 
 .section .text.vectors, "ax"
 .macro VECTOR kind
@@ -131,10 +172,10 @@ __enter_first:
     ldr     x1, =__stack_top
     sub     x1, x1, #272
     mov     x2, #34
-7:  ldr     x3, [x0], #8
+8:  ldr     x3, [x0], #8
     str     x3, [x1], #8
     subs    x2, x2, #1
-    b.ne    7b
+    b.ne    8b
     ldr     x1, =__stack_top
     sub     sp, x1, #272
     b       __exception_restore

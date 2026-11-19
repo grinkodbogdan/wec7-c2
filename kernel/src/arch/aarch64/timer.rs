@@ -29,6 +29,17 @@ pub fn init() {
     kprintln!("timer: {} Hz counter, {} Hz preemption tick on interrupt {}", freq, HZ, t.irq);
 }
 
+/// Nanoseconds since boot, from the virtual counter.
+pub fn now_ns() -> u64 {
+    let (cnt, freq): (u64, u64);
+    // SAFETY: reading the counter and its frequency.
+    unsafe {
+        core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) cnt, options(nomem, nostack));
+        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+    }
+    ((cnt as u128 * 1_000_000_000) / freq.max(1) as u128) as u64
+}
+
 pub fn irq() -> u32 {
     // SAFETY: read-only after init.
     unsafe { TIMER.get().irq }

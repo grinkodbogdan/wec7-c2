@@ -6,17 +6,21 @@
 //! every system call names the slot it acts through and is checked against
 //! the capability's object type and rights.
 
-use crate::arch::{self, gic, mmu, timer, TrapFrame};
+use crate::arch::mmu::phys_to_virt;
+use crate::arch::{self, gic, mmu, timer, ExtState, TrapFrame};
 use crate::boot::{self, GrantKind, Restart};
 use crate::global::Global;
-use crate::mm::vspace::{AddressSpace, MapKind};
+use crate::mm::vspace::{AddressSpace, Prot};
 use crate::mm::{frame, page_ceil, page_floor, PAGE_SIZE};
-use crate::{elf, klog, platform};
+use crate::{elf, klog, linux, platform};
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use flare_abi::layout::{USER_BOOTINFO, USER_MMIO_BASE, USER_MMIO_END, USER_STACK_SIZE, USER_STACK_TOP};
+use flare_abi::layout::{
+    USER_BOOTINFO, USER_IMAGE_BASE, USER_IMAGE_END, USER_MMIO_BASE, USER_MMIO_END, USER_STACK_SIZE, USER_STACK_TOP,
+};
 use flare_abi::{
     fixed_from_str, syscall as nr, BootInfo, CapDesc, CapKind, Error, Message, Rights, ABI_VERSION, BOOTINFO_MAGIC,
     LABEL_NOTIFY, MAX_CAPS,
@@ -55,29 +59,66 @@ struct KCap {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum State {
+pub(crate) enum State {
     Ready,
     Running,
-    Sending { ep: usize, call: bool },
-    Receiving { ep: usize },
-    AwaitingReply { server: usize },
+    Sending {
+        ep: usize,
+        call: bool,
+    },
+    Receiving {
+        ep: usize,
+    },
+    AwaitingReply {
+        server: usize,
+    },
+    /// A Linux process waiting inside a system call (re-run on events).
+    LinuxWait,
     Dead,
 }
 
-struct Component {
-    name: &'static str,
-    state: State,
-    frame: TrapFrame,
+pub(crate) struct Component {
+    pub(crate) name: String,
+    pub(crate) state: State,
+    pub(crate) frame: TrapFrame,
+    pub(crate) ext: Box<ExtState>,
     outgoing: Message,
     /// The caller whose CALL we received and owe a reply.
     reply_to: Option<usize>,
     cspace: CSpace<MAX_CAPS>,
-    vspace: Option<AddressSpace>,
-    frames: Vec<u64>,
+    pub(crate) vspace: Option<AddressSpace>,
+    /// Index into `boot::COMPONENTS` for boot components.
+    boot: Option<usize>,
+    /// Linux personality state, for Linux processes.
+    pub(crate) linux: Option<Box<linux::Process>>,
+    /// Slot available for reuse (dynamic components only).
+    pub(crate) free: bool,
     incarnation: u32,
     started: bool,
     restarts: u32,
     finished: bool,
+}
+
+impl Component {
+    fn new(name: &str, boot: Option<usize>) -> Component {
+        Component {
+            name: String::from(name),
+            state: State::Dead,
+            frame: TrapFrame::zeroed(),
+            ext: Box::default(),
+            outgoing: Message::default(),
+            reply_to: None,
+            cspace: CSpace::new(),
+            vspace: None,
+            boot,
+            linux: None,
+            free: false,
+            incarnation: 0,
+            started: false,
+            restarts: 0,
+            finished: false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -103,7 +144,7 @@ struct KlogReader {
 }
 
 pub struct Kernel {
-    comps: Vec<Component>,
+    pub(crate) comps: Vec<Component>,
     eps: Vec<Endpoint>,
     cdt: Cdt<KCap>,
     roots: BTreeMap<Object, CapId>,
@@ -111,10 +152,14 @@ pub struct Kernel {
     klog_reader: Option<KlogReader>,
     ready: VecDeque<usize>,
     current: Option<usize>,
-    need_resched: bool,
-    free_asids: Vec<u16>,
-    halting: bool,
+    pub(crate) need_resched: bool,
+    pub(crate) free_asids: Vec<u16>,
+    pub(crate) halting: bool,
     ticks: u64,
+    /// The Linux personality, if the composition starts one.
+    pub(crate) linux: Option<linux::Personality>,
+    /// Whose FP/SIMD/TLS state is live in the CPU.
+    pub(crate) ext_owner: Option<usize>,
 }
 
 static KERNEL: Global<Option<Kernel>> = Global::new(None);
@@ -131,23 +176,7 @@ type SysResult = Result<(), Error>;
 /// Start the boot components and enter user space.
 pub fn start() -> ! {
     let mut k = Kernel {
-        comps: boot::COMPONENTS
-            .iter()
-            .map(|bc| Component {
-                name: bc.name,
-                state: State::Dead,
-                frame: TrapFrame::zeroed(),
-                outgoing: Message::default(),
-                reply_to: None,
-                cspace: CSpace::new(),
-                vspace: None,
-                frames: Vec::new(),
-                incarnation: 0,
-                started: false,
-                restarts: 0,
-                finished: false,
-            })
-            .collect(),
+        comps: boot::COMPONENTS.iter().enumerate().map(|(i, bc)| Component::new(bc.name, Some(i))).collect(),
         eps: boot::ENDPOINTS.iter().map(|_| Endpoint::default()).collect(),
         cdt: Cdt::new(),
         roots: BTreeMap::new(),
@@ -159,6 +188,8 @@ pub fn start() -> ! {
         free_asids: (1..=255).rev().collect(),
         halting: false,
         ticks: 0,
+        linux: None,
+        ext_owner: None,
     };
     kprintln!(
         "boot: system '{}': {} component(s), endpoints {:?}",
@@ -172,6 +203,7 @@ pub fn start() -> ! {
             k.comps[i].finished = true;
         }
     }
+    k.linux_start();
     // SAFETY: the one and only initialization of the kernel state.
     unsafe { *KERNEL.get() = Some(k) };
     // SAFETY: BOOT_FRAME is only used here.
@@ -186,6 +218,14 @@ pub fn on_user_sync(frame: &mut TrapFrame) {
     let cur = k.current.expect("user exception without a current component");
     k.comps[cur].frame = *frame;
     let esr = arch::read_esr();
+    if k.comps[cur].linux.is_some() {
+        match esr >> 26 {
+            0x15 => k.linux_syscall(cur),
+            _ => k.linux_fault(cur, arch::read_far(), esr, frame.elr),
+        }
+        k.leave(frame);
+        return;
+    }
     match esr >> 26 {
         0x15 => k.syscall(cur),
         ec @ (0x20 | 0x24) => {
@@ -221,6 +261,7 @@ impl Kernel {
     /// Pick the component to run next and load its state into `frame`.
     fn leave(&mut self, frame: &mut TrapFrame) {
         loop {
+            self.linux_poll();
             self.flush_klog();
             if self.halting && self.console_drained() {
                 self.halt();
@@ -255,11 +296,42 @@ impl Kernel {
         }
         self.need_resched = false;
         let c = self.current.expect("scheduler picked nothing");
+        if self.ext_owner != Some(c) {
+            if let Some(o) = self.ext_owner {
+                if self.comps[o].state != State::Dead {
+                    arch::ext_save(&mut self.comps[o].ext);
+                }
+            }
+            arch::ext_restore(&self.comps[c].ext);
+            self.ext_owner = Some(c);
+        }
         *frame = self.comps[c].frame;
         mmu::switch_to(self.comps[c].vspace.as_ref().expect("running component without address space").ttbr());
     }
 
-    fn make_ready(&mut self, c: usize) {
+    /// Save `c`'s FP/SIMD/TLS state if it is live in the CPU.
+    pub(crate) fn save_ext(&mut self, c: usize) {
+        if self.ext_owner == Some(c) {
+            arch::ext_save(&mut self.comps[c].ext);
+        }
+    }
+
+    /// A slot for a new dynamic component (Linux process).
+    pub(crate) fn alloc_comp(&mut self, name: &str) -> usize {
+        let c = Component::new(name, None);
+        match self.comps.iter().position(|x| x.free) {
+            Some(i) => {
+                self.comps[i] = c;
+                i
+            }
+            None => {
+                self.comps.push(c);
+                self.comps.len() - 1
+            }
+        }
+    }
+
+    pub(crate) fn make_ready(&mut self, c: usize) {
         self.comps[c].state = State::Ready;
         self.ready.push_back(c);
     }
@@ -299,11 +371,10 @@ impl Kernel {
         }
     }
 
-    fn check_halt(&mut self) {
-        if !self.halting
-            && !boot::HALT_WHEN_FINISHED.is_empty()
-            && boot::HALT_WHEN_FINISHED.iter().all(|&i| self.comps[i].finished)
-        {
+    pub(crate) fn check_halt(&mut self) {
+        let linux_done = !boot::HALT_ON_LINUX_EXIT || self.linux.as_ref().is_none_or(|l| l.init_finished);
+        let watched = !boot::HALT_WHEN_FINISHED.is_empty() || boot::HALT_ON_LINUX_EXIT;
+        if !self.halting && watched && linux_done && boot::HALT_WHEN_FINISHED.iter().all(|&i| self.comps[i].finished) {
             self.halting = true;
             kprintln!("kernel: all watched components finished; halting once the console drains");
         }
@@ -335,22 +406,14 @@ impl Kernel {
         id
     }
 
-    fn load_memory(
-        bc: &boot::BootComponent,
-        vs: &mut AddressSpace,
-        frames: &mut Vec<u64>,
-    ) -> Result<(u64, u64), &'static str> {
-        let entry = elf::load(bc.image, vs, frames)?;
+    fn load_memory(bc: &boot::BootComponent, vs: &mut AddressSpace) -> Result<(u64, u64), &'static str> {
+        let entry = elf::load(bc.image, vs, USER_IMAGE_BASE..USER_IMAGE_END, USER_IMAGE_BASE)?.entry;
         let mut va = USER_STACK_TOP - USER_STACK_SIZE;
         while va < USER_STACK_TOP {
-            let pa = frame::alloc().ok_or("out of memory")?;
-            frames.push(pa);
-            vs.map(va, pa, MapKind::Data).map_err(|_| "cannot map stack")?;
+            vs.map_new(va, Prot::RW).map_err(|_| "cannot map stack")?;
             va += PAGE_SIZE;
         }
-        let bi = frame::alloc().ok_or("out of memory")?;
-        frames.push(bi);
-        vs.map(USER_BOOTINFO, bi, MapKind::ReadOnly).map_err(|_| "cannot map boot info")?;
+        let bi = vs.map_new(USER_BOOTINFO, Prot::R).map_err(|_| "cannot map boot info")?;
         Ok((entry, bi))
     }
 
@@ -362,17 +425,14 @@ impl Kernel {
             self.free_asids.push(asid);
             return Err("out of memory");
         };
-        let mut frames = Vec::new();
-        let (entry, bi_pa) = match Self::load_memory(bc, &mut vs, &mut frames) {
+        let (entry, bi_pa) = match Self::load_memory(bc, &mut vs) {
             Ok(v) => v,
             Err(e) => {
-                frames.into_iter().for_each(frame::free);
                 vs.destroy();
                 self.free_asids.push(asid);
                 return Err(e);
             }
         };
-        let page_count = frames.len();
         {
             let c = &mut self.comps[i];
             if c.started {
@@ -380,7 +440,7 @@ impl Kernel {
             }
             c.started = true;
             c.vspace = Some(vs);
-            c.frames = frames;
+            *c.ext = Default::default();
             c.reply_to = None;
             c.cspace = CSpace::new();
             c.finished = false;
@@ -391,7 +451,7 @@ impl Kernel {
             c.frame.spsr = 0; // EL0t, interrupts unmasked
         }
         // SAFETY: freshly allocated, zeroed frame owned by this component.
-        let bi = unsafe { &mut *(bi_pa as *mut BootInfo) };
+        let bi = unsafe { &mut *(phys_to_virt(bi_pa) as *mut BootInfo) };
         bi.magic = BOOTINFO_MAGIC;
         bi.abi_version = ABI_VERSION;
         bi.name = fixed_from_str(bc.name);
@@ -420,7 +480,7 @@ impl Kernel {
                 }
                 let vs = self.comps[i].vspace.as_mut().unwrap();
                 for off in (0..pend - pstart).step_by(PAGE_SIZE as usize) {
-                    if vs.map(mmio_va + off, pstart + off, MapKind::Device).is_err() {
+                    if vs.map_page(mmio_va + off, pstart + off, Prot::RW, true, false).is_err() {
                         self.teardown(i);
                         return Err("cannot map device registers");
                     }
@@ -437,11 +497,10 @@ impl Kernel {
         }
         self.make_ready(i);
         kprintln!(
-            "kernel: started '{}' (incarnation {}, asid {}, {} pages, {} capabilities)",
+            "kernel: started '{}' (incarnation {}, asid {}, {} capabilities)",
             bc.name,
             self.comps[i].incarnation,
             asid,
-            page_count,
             bc.grants.len()
         );
         Ok(())
@@ -454,7 +513,7 @@ impl Kernel {
     }
 
     /// Release everything component `c` holds.
-    fn teardown(&mut self, c: usize) {
+    pub(crate) fn teardown(&mut self, c: usize) {
         for ep in &mut self.eps {
             ep.senders.retain(|&s| s != c);
             ep.receivers.retain(|&r| r != c);
@@ -489,8 +548,8 @@ impl Kernel {
             self.free_asids.push(vs.asid());
             vs.destroy();
         }
-        for f in comp.frames.drain(..) {
-            frame::free(f);
+        if self.ext_owner == Some(c) {
+            self.ext_owner = None;
         }
         comp.state = State::Dead;
     }
@@ -535,7 +594,8 @@ impl Kernel {
 
     fn finish(&mut self, c: usize, failed: bool) {
         self.teardown(c);
-        let bc = &boot::COMPONENTS[c];
+        let Some(b) = self.comps[c].boot else { return };
+        let bc = &boot::COMPONENTS[b];
         let name = bc.name;
         if failed && bc.restart == Restart::OnFailure && self.comps[c].restarts < bc.max_restarts {
             self.comps[c].restarts += 1;
@@ -623,20 +683,20 @@ impl Kernel {
         Ok((id, cap))
     }
 
-    fn copy_from_user(&self, c: usize, mut va: u64, len: usize) -> Result<Vec<u8>, Error> {
+    pub(crate) fn copy_from_user(&self, c: usize, mut va: u64, len: usize) -> Result<Vec<u8>, Error> {
         let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?;
         let mut out = Vec::with_capacity(len);
         while out.len() < len {
             let pa = vs.translate_user(va, false).ok_or(Error::BadAddress)?;
             let n = ((PAGE_SIZE - va % PAGE_SIZE) as usize).min(len - out.len());
             // SAFETY: `pa..pa+n` lies in one user-readable RAM page.
-            out.extend_from_slice(unsafe { core::slice::from_raw_parts(pa as *const u8, n) });
+            out.extend_from_slice(unsafe { core::slice::from_raw_parts(phys_to_virt(pa) as *const u8, n) });
             va = va.checked_add(n as u64).ok_or(Error::BadAddress)?;
         }
         Ok(out)
     }
 
-    fn copy_to_user(&self, c: usize, mut va: u64, data: &[u8]) -> SysResult {
+    pub(crate) fn copy_to_user(&self, c: usize, mut va: u64, data: &[u8]) -> SysResult {
         let vs = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?;
         // Validate the whole range first so a failure writes nothing.
         let mut check = va;
@@ -650,7 +710,7 @@ impl Kernel {
             let pa = vs.translate_user(va, true).ok_or(Error::BadAddress)?;
             let n = ((PAGE_SIZE - va % PAGE_SIZE) as usize).min(data.len() - done);
             // SAFETY: `pa..pa+n` lies in one user-writable RAM page.
-            unsafe { core::ptr::copy_nonoverlapping(data[done..].as_ptr(), pa as *mut u8, n) };
+            unsafe { core::ptr::copy_nonoverlapping(data[done..].as_ptr(), phys_to_virt(pa) as *mut u8, n) };
             done += n;
             va += n as u64;
         }
@@ -678,6 +738,7 @@ impl Kernel {
             nr::IRQ_ACK => self.sys_irq_ack(c, a[0]),
             nr::KLOG_BIND => self.sys_klog_bind(c, a[0], a[1], a[2]),
             nr::KLOG_READ => self.sys_klog_read(c, a[0], a[1], a[2]),
+            nr::TTY_INPUT => self.sys_tty_input(c, a[0], a[1], a[2]),
             nr::EXIT => {
                 self.exit(c, a[0] as i64);
                 return;
@@ -693,6 +754,14 @@ impl Kernel {
         self.typed(c, slot, CapKind::Klog, Rights::WRITE)?;
         let bytes = self.copy_from_user(c, ptr, len.min(512) as usize)?;
         klog::write(&bytes);
+        self.ret(c, &[]);
+        Ok(())
+    }
+
+    fn sys_tty_input(&mut self, c: usize, slot: u64, ptr: u64, len: u64) -> SysResult {
+        self.typed(c, slot, CapKind::Klog, Rights::WRITE)?;
+        let bytes = self.copy_from_user(c, ptr, len.min(512) as usize)?;
+        self.linux_tty_input(&bytes);
         self.ret(c, &[]);
         Ok(())
     }

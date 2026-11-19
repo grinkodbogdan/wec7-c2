@@ -24,6 +24,7 @@ mod elf;
 mod global;
 mod heap;
 mod kernel;
+mod linux;
 mod mm;
 mod platform;
 
@@ -46,6 +47,7 @@ pub extern "C" fn kmain() -> ! {
     );
     mm::frame::init();
     arch::exceptions::init();
+    arch::enable_fp();
     arch::gic::init();
     arch::timer::init();
     kernel::start()

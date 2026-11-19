@@ -4,7 +4,8 @@
 //! * `uart`     — the PL011 register window (MMIO capability, already mapped),
 //! * `uart-irq` — the UART interrupt line,
 //! * `console`  — the receive side of the console endpoint it serves,
-//! * `klog`     — read access to the kernel log, which it prints.
+//! * `klog`     — the kernel log: it prints it (read) and feeds console
+//!   input to the kernel's Linux TTY (write).
 //!
 //! It is the only writer to the UART once it is running, so console output
 //! from the kernel and from all clients is serialized here.
@@ -111,17 +112,23 @@ impl Lines {
     }
 }
 
-/// Move received characters into the input buffer, echoing them so an
-/// interactive user sees what they type.
-fn drain_rx(uart: &Pl011, input: &mut Input) {
+/// Move received characters into the input buffer for `POLL_INPUT`
+/// clients and hand them to the kernel's Linux TTY, which does echo and
+/// line editing.
+fn drain_rx(uart: &Pl011, input: &mut Input, klog: u64) {
+    let mut chunk = [0u8; 64];
+    let mut n = 0;
     while let Some(c) = uart.getc() {
-        if c == b'\r' {
-            uart.write_bytes(b"\n");
-            input.push(b'\n');
-        } else {
-            uart.putc(c);
-            input.push(c);
+        input.push(c);
+        chunk[n] = c;
+        n += 1;
+        if n == chunk.len() {
+            let _ = sys::tty_input(klog, &chunk[..n]);
+            n = 0;
         }
+    }
+    if n > 0 {
+        let _ = sys::tty_input(klog, &chunk[..n]);
     }
 }
 
@@ -159,7 +166,7 @@ fn main(bi: &'static BootInfo) -> i32 {
     uart.write_bytes(b", user-space driver)\n");
 
     let mut input = Input { buf: [0; 256], head: 0, len: 0 };
-    drain_rx(&uart, &mut input);
+    drain_rx(&uart, &mut input, klog);
     let mut klog_buf = [0u8; 256];
     let mut lines = Lines { buf: [[0; 160]; 8], len: [0; 8] };
     loop {
@@ -178,7 +185,7 @@ fn main(bi: &'static BootInfo) -> i32 {
                 }
             }
             if bits & (1 << IRQ_BIT) != 0 {
-                drain_rx(&uart, &mut input);
+                drain_rx(&uart, &mut input, klog);
                 // Reading DR clears the receive interrupt. Do not write ICR
                 // here: that would also clear the status of a character that
                 // arrived after the loop, and the level-triggered line would

@@ -18,7 +18,7 @@ pub fn init() {
     if let Some(dev) = platform::CONSOLE.map(|i| &platform::DEVICES[i]) {
         if dev.is_compatible("arm,pl011") {
             // SAFETY: single-threaded boot.
-            unsafe { *BASE.get() = dev.regs[0].base as usize };
+            unsafe { *BASE.get() = crate::arch::mmu::phys_to_virt(dev.regs[0].base) as usize };
         }
     }
 }

@@ -68,6 +68,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "std-test"
+version = "0.1.0"
+
+[[package]]
 name = "uart-pl011"
 version = "0.1.0"
 dependencies = [

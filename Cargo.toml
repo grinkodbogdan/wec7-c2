@@ -12,6 +12,7 @@ members = [
     "apps/hello",
     "apps/spinner",
     "apps/intruder",
+    "compat/linux/std-test",
     "xtask",
 ]
 # Crates that build and test on the host. The kernel and the components are

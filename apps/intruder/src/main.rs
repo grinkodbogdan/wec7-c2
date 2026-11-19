@@ -10,9 +10,9 @@ use flare_rt::{console, println, sys};
 
 flare_rt::entry!(main);
 
-/// An address inside the kernel image on the QEMU virt reference board.
-/// The page is mapped, but only for the kernel (EL1).
-const KERNEL_TEXT: usize = 0x4008_0000;
+/// The kernel image on the QEMU virt reference board, in the upper half
+/// (TTBR1). The page is mapped, but only for the kernel (EL1).
+const KERNEL_TEXT: usize = 0xffff_ff80_4008_0000;
 
 fn report<T: core::fmt::Debug>(what: &str, r: Result<T, Error>) {
     match r {

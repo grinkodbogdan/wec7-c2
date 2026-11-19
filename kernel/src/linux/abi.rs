@@ -1,0 +1,274 @@
+//! Linux (asm-generic, arm64) ABI constants.
+#![allow(dead_code)]
+
+// errno (returned negated)
+pub const EPERM: i64 = 1;
+pub const ENOENT: i64 = 2;
+pub const ESRCH: i64 = 3;
+pub const EINTR: i64 = 4;
+pub const EIO: i64 = 5;
+pub const ENOEXEC: i64 = 8;
+pub const EBADF: i64 = 9;
+pub const ECHILD: i64 = 10;
+pub const EAGAIN: i64 = 11;
+pub const ENOMEM: i64 = 12;
+pub const EACCES: i64 = 13;
+pub const EFAULT: i64 = 14;
+pub const EEXIST: i64 = 17;
+pub const ENOTDIR: i64 = 20;
+pub const EISDIR: i64 = 21;
+pub const EINVAL: i64 = 22;
+pub const EMFILE: i64 = 24;
+pub const ENOTTY: i64 = 25;
+pub const ESPIPE: i64 = 29;
+pub const EPIPE: i64 = 32;
+pub const ERANGE: i64 = 34;
+pub const ENAMETOOLONG: i64 = 36;
+pub const ENOSYS: i64 = 38;
+pub const ENOTEMPTY: i64 = 39;
+pub const ELOOP: i64 = 40;
+pub const EAFNOSUPPORT: i64 = 97;
+
+// file types and modes
+pub const S_IFMT: u32 = 0o170000;
+pub const S_IFSOCK: u32 = 0o140000;
+pub const S_IFLNK: u32 = 0o120000;
+pub const S_IFREG: u32 = 0o100000;
+pub const S_IFDIR: u32 = 0o040000;
+pub const S_IFCHR: u32 = 0o020000;
+pub const S_IFIFO: u32 = 0o010000;
+
+// open flags
+pub const O_ACCMODE: u32 = 3;
+pub const O_WRONLY: u32 = 1;
+pub const O_RDWR: u32 = 2;
+pub const O_CREAT: u32 = 0o100;
+pub const O_EXCL: u32 = 0o200;
+pub const O_NOCTTY: u32 = 0o400;
+pub const O_TRUNC: u32 = 0o1000;
+pub const O_APPEND: u32 = 0o2000;
+pub const O_NONBLOCK: u32 = 0o4000;
+pub const O_DIRECTORY: u32 = 0o40000;
+pub const O_NOFOLLOW: u32 = 0o100000;
+pub const O_CLOEXEC: u32 = 0o2000000;
+pub const AT_FDCWD: i64 = -100;
+pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
+pub const AT_REMOVEDIR: u64 = 0x200;
+pub const AT_EMPTY_PATH: u64 = 0x1000;
+
+// mmap
+pub const PROT_READ: u64 = 1;
+pub const PROT_WRITE: u64 = 2;
+pub const PROT_EXEC: u64 = 4;
+pub const MAP_SHARED: u64 = 1;
+pub const MAP_PRIVATE: u64 = 2;
+pub const MAP_FIXED: u64 = 0x10;
+pub const MAP_ANONYMOUS: u64 = 0x20;
+pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+
+// clone
+pub const CLONE_VM: u64 = 0x100;
+pub const CLONE_VFORK: u64 = 0x4000;
+pub const CLONE_THREAD: u64 = 0x10000;
+pub const CLONE_SETTLS: u64 = 0x80000;
+pub const CLONE_PARENT_SETTID: u64 = 0x100000;
+pub const CLONE_CHILD_CLEARTID: u64 = 0x200000;
+pub const CLONE_CHILD_SETTID: u64 = 0x1000000;
+
+// wait
+pub const WNOHANG: u64 = 1;
+
+// signals
+pub const SIGHUP: u64 = 1;
+pub const SIGINT: u64 = 2;
+pub const SIGQUIT: u64 = 3;
+pub const SIGKILL: u64 = 9;
+pub const SIGSEGV: u64 = 11;
+pub const SIGPIPE: u64 = 13;
+pub const SIGTERM: u64 = 15;
+pub const SIGCHLD: u64 = 17;
+pub const SIGCONT: u64 = 18;
+pub const SIGSTOP: u64 = 19;
+pub const SIGTSTP: u64 = 20;
+pub const SIGTTIN: u64 = 21;
+pub const SIGTTOU: u64 = 22;
+pub const SIGURG: u64 = 23;
+pub const SIGWINCH: u64 = 28;
+pub const SIG_DFL: u64 = 0;
+pub const SIG_IGN: u64 = 1;
+
+// tty ioctls
+pub const TCGETS: u64 = 0x5401;
+pub const TCSETS: u64 = 0x5402;
+pub const TCSETSW: u64 = 0x5403;
+pub const TCSETSF: u64 = 0x5404;
+pub const TIOCSCTTY: u64 = 0x540e;
+pub const TIOCGPGRP: u64 = 0x540f;
+pub const TIOCSPGRP: u64 = 0x5410;
+pub const TIOCGWINSZ: u64 = 0x5413;
+pub const TIOCSWINSZ: u64 = 0x5414;
+pub const FIONREAD: u64 = 0x541b;
+pub const TIOCNOTTY: u64 = 0x5422;
+pub const FIONBIO: u64 = 0x5421;
+
+// termios flags
+pub const ICRNL: u32 = 0o400;
+pub const OPOST: u32 = 0o1;
+pub const ONLCR: u32 = 0o4;
+pub const ISIG: u32 = 0o1;
+pub const ICANON: u32 = 0o2;
+pub const ECHO: u32 = 0o10;
+pub const ECHOE: u32 = 0o20;
+pub const ECHOK: u32 = 0o40;
+pub const ECHOCTL: u32 = 0o1000;
+pub const ECHOKE: u32 = 0o4000;
+pub const IEXTEN: u32 = 0o100000;
+
+// poll
+pub const POLLIN: u16 = 1;
+pub const POLLOUT: u16 = 4;
+pub const POLLHUP: u16 = 0x10;
+pub const POLLNVAL: u16 = 0x20;
+
+// auxv
+pub const AT_NULL: u64 = 0;
+pub const AT_PHDR: u64 = 3;
+pub const AT_PHENT: u64 = 4;
+pub const AT_PHNUM: u64 = 5;
+pub const AT_PAGESZ: u64 = 6;
+pub const AT_BASE: u64 = 7;
+pub const AT_FLAGS: u64 = 8;
+pub const AT_ENTRY: u64 = 9;
+pub const AT_UID: u64 = 11;
+pub const AT_EUID: u64 = 12;
+pub const AT_GID: u64 = 13;
+pub const AT_EGID: u64 = 14;
+pub const AT_PLATFORM: u64 = 15;
+pub const AT_HWCAP: u64 = 16;
+pub const AT_CLKTCK: u64 = 17;
+pub const AT_SECURE: u64 = 23;
+pub const AT_RANDOM: u64 = 25;
+pub const AT_HWCAP2: u64 = 26;
+pub const AT_EXECFN: u64 = 31;
+
+// reboot
+pub const LINUX_REBOOT_CMD_POWER_OFF: u64 = 0x4321_fedc;
+pub const LINUX_REBOOT_CMD_RESTART: u64 = 0x0123_4567;
+pub const LINUX_REBOOT_CMD_HALT: u64 = 0xcdef_0123;
+
+// system call numbers (asm-generic)
+pub mod nr {
+    pub const GETCWD: u64 = 17;
+    pub const DUP: u64 = 23;
+    pub const DUP3: u64 = 24;
+    pub const FCNTL: u64 = 25;
+    pub const IOCTL: u64 = 29;
+    pub const MKDIRAT: u64 = 34;
+    pub const UNLINKAT: u64 = 35;
+    pub const SYMLINKAT: u64 = 36;
+    pub const RENAMEAT: u64 = 38;
+    pub const FTRUNCATE: u64 = 46;
+    pub const FACCESSAT: u64 = 48;
+    pub const CHDIR: u64 = 49;
+    pub const FCHDIR: u64 = 50;
+    pub const FCHMOD: u64 = 52;
+    pub const FCHMODAT: u64 = 53;
+    pub const FCHOWNAT: u64 = 54;
+    pub const FCHOWN: u64 = 55;
+    pub const OPENAT: u64 = 56;
+    pub const CLOSE: u64 = 57;
+    pub const PIPE2: u64 = 59;
+    pub const GETDENTS64: u64 = 61;
+    pub const LSEEK: u64 = 62;
+    pub const READ: u64 = 63;
+    pub const WRITE: u64 = 64;
+    pub const READV: u64 = 65;
+    pub const WRITEV: u64 = 66;
+    pub const PREAD64: u64 = 67;
+    pub const PWRITE64: u64 = 68;
+    pub const SENDFILE: u64 = 71;
+    pub const PSELECT6: u64 = 72;
+    pub const PPOLL: u64 = 73;
+    pub const READLINKAT: u64 = 78;
+    pub const NEWFSTATAT: u64 = 79;
+    pub const FSTAT: u64 = 80;
+    pub const SYNC: u64 = 81;
+    pub const FSYNC: u64 = 82;
+    pub const UTIMENSAT: u64 = 88;
+    pub const EXIT: u64 = 93;
+    pub const EXIT_GROUP: u64 = 94;
+    pub const SET_TID_ADDRESS: u64 = 96;
+    pub const FUTEX: u64 = 98;
+    pub const SET_ROBUST_LIST: u64 = 99;
+    pub const NANOSLEEP: u64 = 101;
+    pub const GETITIMER: u64 = 102;
+    pub const SETITIMER: u64 = 103;
+    pub const CLOCK_GETTIME: u64 = 113;
+    pub const CLOCK_GETRES: u64 = 114;
+    pub const CLOCK_NANOSLEEP: u64 = 115;
+    pub const SCHED_GETAFFINITY: u64 = 123;
+    pub const SCHED_YIELD: u64 = 124;
+    pub const KILL: u64 = 129;
+    pub const TKILL: u64 = 130;
+    pub const TGKILL: u64 = 131;
+    pub const SIGALTSTACK: u64 = 132;
+    pub const RT_SIGSUSPEND: u64 = 133;
+    pub const RT_SIGACTION: u64 = 134;
+    pub const RT_SIGPROCMASK: u64 = 135;
+    pub const RT_SIGRETURN: u64 = 139;
+    pub const SETPRIORITY: u64 = 140;
+    pub const GETPRIORITY: u64 = 141;
+    pub const REBOOT: u64 = 142;
+    pub const SETREGID: u64 = 143;
+    pub const SETGID: u64 = 144;
+    pub const SETREUID: u64 = 145;
+    pub const SETUID: u64 = 146;
+    pub const SETRESUID: u64 = 147;
+    pub const GETRESUID: u64 = 148;
+    pub const SETRESGID: u64 = 149;
+    pub const GETRESGID: u64 = 150;
+    pub const TIMES: u64 = 153;
+    pub const SETPGID: u64 = 154;
+    pub const GETPGID: u64 = 155;
+    pub const GETSID: u64 = 156;
+    pub const SETSID: u64 = 157;
+    pub const GETGROUPS: u64 = 158;
+    pub const SETGROUPS: u64 = 159;
+    pub const UNAME: u64 = 160;
+    pub const SETHOSTNAME: u64 = 161;
+    pub const GETRLIMIT: u64 = 163;
+    pub const SETRLIMIT: u64 = 164;
+    pub const GETRUSAGE: u64 = 165;
+    pub const UMASK: u64 = 166;
+    pub const PRCTL: u64 = 167;
+    pub const GETTIMEOFDAY: u64 = 169;
+    pub const GETPID: u64 = 172;
+    pub const GETPPID: u64 = 173;
+    pub const GETUID: u64 = 174;
+    pub const GETEUID: u64 = 175;
+    pub const GETGID: u64 = 176;
+    pub const GETEGID: u64 = 177;
+    pub const GETTID: u64 = 178;
+    pub const SYSINFO: u64 = 179;
+    pub const SOCKET: u64 = 198;
+    pub const BRK: u64 = 214;
+    pub const MUNMAP: u64 = 215;
+    pub const MREMAP: u64 = 216;
+    pub const CLONE: u64 = 220;
+    pub const EXECVE: u64 = 221;
+    pub const MMAP: u64 = 222;
+    pub const FADVISE64: u64 = 223;
+    pub const MPROTECT: u64 = 226;
+    pub const MSYNC: u64 = 227;
+    pub const MLOCK: u64 = 228;
+    pub const MADVISE: u64 = 233;
+    pub const WAIT4: u64 = 260;
+    pub const PRLIMIT64: u64 = 261;
+    pub const RENAMEAT2: u64 = 276;
+    pub const GETRANDOM: u64 = 278;
+    pub const MEMBARRIER: u64 = 283;
+    pub const STATX: u64 = 291;
+    pub const RSEQ: u64 = 293;
+    pub const CLONE3: u64 = 435;
+    pub const FACCESSAT2: u64 = 439;
+}

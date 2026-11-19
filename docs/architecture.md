@@ -8,7 +8,7 @@ code, and records where the kernel boundary sits today.
 | Spec layer | Today | Code |
 | --- | --- | --- |
 | Applications and shell | Native demo components | `apps/`, `libs/rt` |
-| Compatibility environments | Not started (M5, M6) | `compatibility/` (future) |
+| Compatibility environments | Linux ABI personality (busybox, Rust std run unmodified) | `kernel/src/linux`, `compat/linux` |
 | Shared system services | `flare.console@1.0`, served by the UART driver | `interfaces/abi` (`proto`) |
 | Component manager | Policy core as a library; the kernel applies the boot composition (M1 stand-in) | `component-manager/`, `kernel/src/kernel.rs` |
 | Driver components | PL011 UART, unprivileged | `drivers/common/uart-pl011` |
@@ -49,12 +49,15 @@ per-CPU state and locking around shared objects.
 
 ## Memory layout
 
-* The kernel identity-maps RAM and device windows in 1 GiB blocks that only
-  EL1 can access (`kernel/src/arch/aarch64/mmu.rs`).
-* Each component address space copies those (inaccessible to EL0) entries
-  and adds the user region at `0x2_0000_0000` with 4 KiB pages tagged with
-  its ASID: image (W^X: code R-X, rodata R--, data RW-), MMIO window, boot
-  info page (R--), stack. See [abi.md](abi.md#address-space-layout).
+* The kernel runs in the **upper half** (TTBR1) inside a direct map of RAM
+  and device windows (`KVA + physical`, 1 GiB blocks, EL1 only;
+  `kernel/src/arch/aarch64/mmu.rs`).
+* The **lower half** (TTBR0, 39 bits) belongs entirely to the running
+  component or Linux process, with 4 KiB pages tagged by its ASID. Native
+  components use the layout in [abi.md](abi.md#address-space-layout); Linux
+  processes use conventional Linux addresses.
+* FP/SIMD registers and `TPIDR_EL0` are switched lazily per component (the
+  kernel itself is built soft-float and never touches them).
 
 ## Boot flow
 

@@ -18,6 +18,82 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const TARGET: &str = "aarch64-unknown-none-softfloat";
+const LINUX_TARGET: &str = "aarch64-unknown-linux-musl";
+/// Static busybox for arm64 from Alpine Linux, pinned by checksum.
+const BUSYBOX_URL: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/aarch64/busybox-static-1.36.1-r31.apk";
+const BUSYBOX_SHA256: &str = "1d8e7a7fc2ed69bdb8eb7be9d962489c21a0f75b72d8a325437c8a09d4cfac70";
+const BUSYBOX_APPLETS: &[&str] = &[
+    "sh",
+    "ash",
+    "ls",
+    "cat",
+    "echo",
+    "mkdir",
+    "rmdir",
+    "rm",
+    "cp",
+    "mv",
+    "ln",
+    "touch",
+    "chmod",
+    "pwd",
+    "uname",
+    "wc",
+    "grep",
+    "head",
+    "tail",
+    "sleep",
+    "true",
+    "false",
+    "env",
+    "date",
+    "sort",
+    "uniq",
+    "find",
+    "seq",
+    "test",
+    "[",
+    "printf",
+    "hostname",
+    "id",
+    "whoami",
+    "dmesg",
+    "free",
+    "uptime",
+    "clear",
+    "cut",
+    "tr",
+    "od",
+    "hexdump",
+    "xargs",
+    "which",
+    "basename",
+    "dirname",
+    "stat",
+    "df",
+    "du",
+    "vi",
+    "more",
+    "tee",
+    "yes",
+    "expr",
+    "awk",
+    "sed",
+    "kill",
+    "ps",
+    "md5sum",
+    "sha256sum",
+    "base64",
+    "nproc",
+    "tty",
+    "stty",
+    "reset",
+    "cal",
+    "factor",
+    "time",
+    "watch",
+];
+const BUSYBOX_SBIN: &[&str] = &["init", "poweroff", "reboot", "halt"];
 const DEFAULT_SYSTEM: &str = "system/qemu-virt-phone.boot.toml";
 
 /// Lines the reference system must print during `qemu-test`.
@@ -35,15 +111,35 @@ const EXPECTED: &[&str] = &[
     "intruder: derive RECV from SEND-only console cap -> denied (E_RIGHTS)",
     "intruder: bind an interrupt without an irq cap -> denied (E_NO_CAP)",
     "intruder: reply without a pending call -> denied (E_NO_REPLY)",
-    "kernel: component 'intruder' faulted: data abort (permission fault) at 0x40080000",
+    "kernel: component 'intruder' faulted: data abort (permission fault) at 0xffffff8040080000",
     "kernel: restarting 'intruder' (1/1)",
     "intruder: incarnation 1 probing authority boundaries",
     "kernel: component 'intruder' retired",
-    "hello: received input: flare",
     "kernel: component 'hello' exited",
+    "linux: started init (pid 1): /bin/sh /etc/rc",
+    "Flare OS — Linux personality",
+    "rc: uname -a: Linux flare 6.6.0-flare",
+    "rc: arithmetic: 6 * 7 = 42",
+    "rc: file round-trip: written by sh",
+    "rc: pipeline: 3 words",
+    "rc: memory: MemTotal:",
+    "std-test: args = [\"hello\", \"from\", \"rc\"]",
+    "std-test: HashMap with 1000 entries, 999^2 = 998001",
+    "std-test: file round-trip: rust std on flare",
+    "std-test: sqrt(2) = 1.414214",
+    "std-test: slept >= 50 ms: true",
+    "std-test: child said 'spawned through fork/exec' (status 0)",
+    "std-test: ok",
+    "rc: std-test exit status 0",
+    "rc: slept 1 second",
+    "shell-42",
+    "linux: init exited (status 0)",
     "flare: system halted",
 ];
-const FORBIDDEN: &[&str] = &["KERNEL PANIC", "UNEXPECTED", "must never print", "panic:"];
+/// Typed into the console during `qemu-test` (read by the interactive shell).
+const TEST_INPUT: &[u8] = b"echo shell-$((40 + 2))\rexit\r";
+const FORBIDDEN: &[&str] =
+    &["KERNEL PANIC", "UNEXPECTED", "must never print", "panic:", "killed by SIG", "unimplemented system call"];
 
 struct Opts {
     system: String,
@@ -126,14 +222,84 @@ fn build(o: &Opts) -> PathBuf {
     }
     run(c);
     let out = root().join("target").join(TARGET).join(profile);
+    let rootfs = assemble_rootfs();
     let mut k = cargo();
     k.args(["build", "--target", TARGET, "-p", "flare-kernel"]);
     if o.release {
         k.arg("--release");
     }
-    k.env("FLARE_SYSTEM", root().join(&o.system)).env("FLARE_COMPONENTS_DIR", &out);
+    k.env("FLARE_SYSTEM", root().join(&o.system)).env("FLARE_COMPONENTS_DIR", &out).env("FLARE_ROOTFS", &rootfs);
     run(k);
     out.join("flare-kernel")
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        if e.file_type().unwrap().is_dir() {
+            copy_tree(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// Download (once) and verify the static busybox binary.
+fn busybox() -> PathBuf {
+    let dir = root().join("target").join("downloads");
+    let bin = dir.join("busybox.static");
+    if bin.exists() {
+        return bin;
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    let apk = dir.join("busybox-static.apk");
+    println!("xtask: downloading busybox from {}", BUSYBOX_URL);
+    let mut c = Command::new("curl");
+    c.args(["-fsSL", "--retry", "3", "-o"]).arg(&apk).arg(BUSYBOX_URL);
+    run(c);
+    let out = Command::new("sha256sum").arg(&apk).output().unwrap_or_else(|e| die(&format!("sha256sum: {}", e)));
+    let sum = String::from_utf8_lossy(&out.stdout);
+    if !sum.starts_with(BUSYBOX_SHA256) {
+        let _ = std::fs::remove_file(&apk);
+        die(&format!("busybox checksum mismatch: {}", sum.trim()));
+    }
+    let extract = dir.join("busybox-extract");
+    std::fs::create_dir_all(&extract).unwrap();
+    let mut t = Command::new("tar");
+    t.arg("xzf").arg(&apk).arg("-C").arg(&extract).arg("bin/busybox.static");
+    let _ = t.status();
+    std::fs::rename(extract.join("bin/busybox.static"), &bin)
+        .unwrap_or_else(|e| die(&format!("busybox.static not found in package: {}", e)));
+    bin
+}
+
+/// Assemble the Linux root filesystem: compat/linux/rootfs, busybox with
+/// applet links, and the Linux test programs.
+fn assemble_rootfs() -> PathBuf {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let rootfs = root().join("target").join("flare-rootfs");
+    let _ = std::fs::remove_dir_all(&rootfs);
+    copy_tree(&root().join("compat/linux/rootfs"), &rootfs);
+    for d in ["bin", "sbin", "usr/bin", "root", "tmp", "dev", "proc"] {
+        std::fs::create_dir_all(rootfs.join(d)).unwrap();
+    }
+    let bb = rootfs.join("bin/busybox");
+    std::fs::copy(busybox(), &bb).unwrap();
+    std::fs::set_permissions(&bb, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for a in BUSYBOX_APPLETS {
+        symlink("busybox", rootfs.join("bin").join(a)).unwrap();
+    }
+    for a in BUSYBOX_SBIN {
+        symlink("../bin/busybox", rootfs.join("sbin").join(a)).unwrap();
+    }
+    let mut c = cargo();
+    c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "std-test"]);
+    run(c);
+    let dst = rootfs.join("usr/bin/std-test");
+    std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/std-test"), &dst).unwrap();
+    rootfs
 }
 
 fn qemu_command(o: &Opts, kernel: &Path) -> Command {
@@ -169,10 +335,8 @@ fn qemu_test(o: &Opts) -> bool {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap_or_else(|e| die(&format!("cannot start qemu-system-aarch64: {}", e)));
-    // Typed input for the hello app; the UART applies back-pressure until
-    // the driver has enabled reception.
     let mut stdin = child.stdin.take().unwrap();
-    let _ = stdin.write_all(b"flare\r");
+    let mut typed = false;
     let output = Arc::new(Mutex::new(Vec::new()));
     let mut stdout = child.stdout.take().unwrap();
     let sink = output.clone();
@@ -192,6 +356,12 @@ fn qemu_test(o: &Opts) -> bool {
     loop {
         if child.try_wait().unwrap().is_some() {
             break;
+        }
+        // Type into the interactive shell once it is up.
+        if !typed && String::from_utf8_lossy(&output.lock().unwrap()).contains("flare:~# ") {
+            let _ = stdin.write_all(TEST_INPUT);
+            let _ = stdin.flush();
+            typed = true;
         }
         if Instant::now() > deadline {
             timed_out = true;
