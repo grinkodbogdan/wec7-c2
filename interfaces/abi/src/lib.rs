@@ -57,6 +57,10 @@ pub mod syscall {
     /// `(dma_slot, offset)` — physical address of a byte of a DMA region
     /// (for programming a device); returned in `x1`.
     pub const DMA_PADDR: u64 = 15;
+    /// `(input_slot, op, ptr, len)` — feed the Linux input device behind an
+    /// `Input` capability: op 0 describes it (`proto::input::Describe`),
+    /// op 1 delivers events (`proto::input::Event` records).
+    pub const INPUT_REPORT: u64 = 16;
 }
 
 /// Error codes returned in `x0`.
@@ -220,7 +224,11 @@ pub enum CapKind {
     /// The kernel log.
     Klog = 4,
     /// Memory a driver may hand to its device for DMA, mapped into it.
+    /// Shared memory (`shm:` grants) is this kind too: physically
+    /// contiguous, shared by every holder, never freed.
     Dma = 5,
+    /// The Linux input device (`/dev/input/eventN`) a driver feeds.
+    Input = 6,
 }
 
 impl CapKind {
@@ -231,6 +239,7 @@ impl CapKind {
             3 => CapKind::Irq,
             4 => CapKind::Klog,
             5 => CapKind::Dma,
+            6 => CapKind::Input,
             _ => CapKind::Null,
         }
     }
@@ -242,6 +251,7 @@ impl CapKind {
             CapKind::Irq => "irq",
             CapKind::Klog => "klog",
             CapKind::Dma => "dma",
+            CapKind::Input => "input",
         }
     }
 }
@@ -351,6 +361,77 @@ pub fn fixed_from_str<const N: usize>(s: &str) -> [u8; N] {
 
 /// IPC protocols of shared system services.
 pub mod proto {
+    /// `flare.display@1.0`: a framebuffer in shared memory. The display
+    /// driver owns the header at offset 0 and scans out the pixels at
+    /// `fb_offset`; whoever renders writes the pixels. `state` 0 means no
+    /// display (driver absent or restarting), 1 means online.
+    pub mod display {
+        pub const MAGIC: u32 = 0x5044_4c46; // "FLDP"
+        pub const VERSION: u32 = 1;
+        pub const STATE_OFFLINE: u32 = 0;
+        pub const STATE_ONLINE: u32 = 1;
+        /// DRM fourcc 'XR24': 32-bit pixels, x:R:G:B little-endian.
+        pub const XRGB8888: u32 = 0x3432_5258;
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, Default)]
+        pub struct Header {
+            pub magic: u32,
+            pub version: u32,
+            pub state: u32,
+            pub width: u32,
+            pub height: u32,
+            pub stride: u32,
+            pub format: u32,
+            /// Bumped by every driver start (a display hotplug).
+            pub generation: u32,
+            pub fb_offset: u32,
+            /// Panel size in millimetres (for DPI).
+            pub width_mm: u32,
+            pub height_mm: u32,
+            pub refresh_hz: u32,
+        }
+    }
+
+    /// `INPUT_REPORT` payloads: evdev semantics, as virtio-input delivers them.
+    pub mod input {
+        /// One input event (`struct virtio_input_event` / evdev without time).
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, Default)]
+        pub struct Event {
+            pub kind: u16,
+            pub code: u16,
+            pub value: i32,
+        }
+        /// An absolute axis (`struct input_absinfo` minus `value`).
+        #[repr(C)]
+        #[derive(Clone, Copy, Debug, Default)]
+        pub struct Abs {
+            pub min: i32,
+            pub max: i32,
+            pub fuzz: i32,
+            pub flat: i32,
+            pub res: i32,
+        }
+        /// What the device is: name, ids and capability bitmaps (as evdev
+        /// EVIOCGBIT reports them).
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        pub struct Describe {
+            pub name: [u8; 64],
+            pub bustype: u16,
+            pub vendor: u16,
+            pub product: u16,
+            pub version: u16,
+            /// Bit n set: event type n supported.
+            pub ev_bits: u32,
+            pub key_bits: [u8; 96],
+            pub rel_bits: [u8; 2],
+            pub abs_bits: [u8; 8],
+            pub prop_bits: [u8; 4],
+            pub abs: [Abs; 64],
+        }
+    }
+
     /// `flare.block@1.0` — a block device in 512-byte sectors.
     ///
     /// Requests are CALLs with the operation as the label. Data travels in

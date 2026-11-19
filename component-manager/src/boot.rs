@@ -52,6 +52,17 @@ pub enum GrantKind {
     Dma {
         size: u64,
     },
+    /// Shared memory `name` (physically contiguous, system lifetime): every
+    /// grant of the same name maps the same pages. Holders may hand it to
+    /// devices (`DMA_PADDR`), like DMA memory.
+    Shm {
+        name: String,
+        size: u64,
+    },
+    /// Feed the Linux input device `name` (`/dev/input/eventN`).
+    Input {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +96,9 @@ pub struct LinuxConfig {
     pub env: Vec<String>,
     /// Linux root may manage components through /dev/flarectl.
     pub control: bool,
+    /// Shared memory holding a `flare.display@1.0` framebuffer, exposed to
+    /// Linux as the DRM/KMS device /dev/dri/card0.
+    pub display: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +113,36 @@ pub struct Composition {
 
 impl Composition {
     /// Endpoint names in first-mention order.
+    /// Shared-memory regions (name, size) in first-mention order.
+    pub fn shm_regions(&self) -> Vec<(String, u64)> {
+        let mut out: Vec<(String, u64)> = Vec::new();
+        for c in &self.components {
+            for g in &c.grants {
+                if let GrantKind::Shm { name, size } = &g.kind {
+                    if !out.iter().any(|(n, _)| n == name) {
+                        out.push((name.clone(), *size));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Linux input devices in first-mention order (event0, event1, ...).
+    pub fn input_devices(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for c in &self.components {
+            for g in &c.grants {
+                if let GrantKind::Input { name } = &g.kind {
+                    if !out.contains(name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn endpoints(&self) -> Vec<String> {
         let mut eps: Vec<String> = Vec::new();
         for c in &self.components {
@@ -129,6 +173,13 @@ pub fn parse_grant(s: &str) -> Result<Grant, String> {
         if let Some(h) = v.strip_prefix("0x") { u64::from_str_radix(h, 16) } else { v.parse() }
             .map_err(|_| format!("grant '{}': invalid number '{}'", s, v))
     };
+    let size_of = |v: &str| -> Result<u64, String> {
+        match (v.strip_suffix('k'), v.strip_suffix('m')) {
+            (Some(k), _) => Ok(num(k)? * 1024),
+            (_, Some(m)) => Ok(num(m)? * 1024 * 1024),
+            _ => num(v),
+        }
+    };
     let target_index = |t: &str| -> Result<(String, usize), String> {
         match t.split_once('#') {
             Some((d, i)) => Ok((d.to_string(), num(i)? as usize)),
@@ -152,17 +203,13 @@ pub fn parse_grant(s: &str) -> Result<Grant, String> {
             };
             GrantKind::Endpoint { name: name.to_string(), rights, badge }
         }
-        ["dma", size] => {
-            let n = match size.strip_suffix('k') {
-                Some(k) => num(k)? * 1024,
-                None => num(size)?,
-            };
-            GrantKind::Dma { size: n }
-        }
+        ["dma", size] => GrantKind::Dma { size: size_of(size)? },
+        ["shm", name, size] => GrantKind::Shm { name: name.to_string(), size: size_of(size)? },
+        ["input", name] => GrantKind::Input { name: name.to_string() },
         ["klog", r] => GrantKind::Klog { rights: Rights::parse(r).ok_or_else(|| format!("grant '{}': bad rights '{}'", s, r))? },
         _ => {
             return Err(format!(
-                "grant '{}' not understood; expected mmio:<dev>[#n], irq:<dev>[#n], endpoint:<name>:<rights>[:badge=n] or klog:<rights>",
+                "grant '{}' not understood; expected mmio:<dev>[#n], irq:<dev>[#n], endpoint:<name>:<rights>[:badge=n], klog:<rights>, dma:<size>, shm:<name>:<size> or input:<name>",
                 s
             ))
         }
@@ -207,7 +254,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -215,7 +262,8 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
             match list("init") {
                 Some(init) if !init.is_empty() && init[0].starts_with('/') => {
                     let control = sec.get("control").and_then(|v| v.as_bool()).unwrap_or(false);
-                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control })
+                    let display = sec.get("display").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control, display })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
             }
@@ -308,6 +356,15 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     let mut ep_recv: BTreeMap<String, usize> = BTreeMap::new();
     let mut ep_send: BTreeMap<String, usize> = BTreeMap::new();
     let mut klog_readers = Vec::new();
+    let mut input_owner: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(d) = comp.linux.as_ref().and_then(|l| l.display.as_ref()) {
+        if !comp.shm_regions().iter().any(|(n, _)| n == d) {
+            errs.push(format!(
+                "[linux] display = '{}' names no shared memory (grant shm:{}:<size> to its driver)",
+                d, d
+            ));
+        }
+    }
 
     if comp.components.is_empty() && comp.linux.is_none() {
         errs.push("composition starts no components".to_string());
@@ -391,6 +448,27 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
                         errs.push(format!("'{}': DMA region must be 1 byte to 1 MiB", who));
                     }
                 }
+                GrantKind::Shm { name, size } => {
+                    if *size == 0 || *size > 64 << 20 {
+                        errs.push(format!("'{}': shared memory '{}' must be 1 byte to 64 MiB", who, name));
+                    }
+                    if let Some((_, s)) = comp.shm_regions().iter().find(|(n, _)| n == name) {
+                        if s != size {
+                            errs.push(format!("shared memory '{}' granted with different sizes", name));
+                        }
+                    }
+                }
+                GrantKind::Input { name } => {
+                    if m.kind != Kind::Driver {
+                        errs.push(format!("'{}' is a {:?}, only drivers may feed input devices", who, m.kind));
+                    }
+                    if comp.linux.is_none() {
+                        errs.push(format!("'{}': input device '{}' needs the Linux personality", who, name));
+                    }
+                    if let Some(prev) = input_owner.insert(name.clone(), who.clone()) {
+                        errs.push(format!("input device '{}' fed by both '{}' and '{}'", name, prev, who));
+                    }
+                }
                 GrantKind::Klog { rights } => {
                     if rights.0 == 0 || !rights.is_subset_of(Rights::READ | Rights::WRITE) {
                         errs.push(format!("'{}': klog rights must be read and/or write", who));
@@ -415,7 +493,15 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
             errs.push(format!("halt-when-finished names unknown instance '{}'", h));
         }
     }
-    if let Err(rs) = resolve::resolve(manifests) {
+    // Several instances of one component (two input devices behind the same
+    // driver) resolve as one component.
+    let mut unique: Vec<Manifest> = Vec::new();
+    for m in manifests {
+        if !unique.iter().any(|u| u.name == m.name) {
+            unique.push(m.clone());
+        }
+    }
+    if let Err(rs) = resolve::resolve(&unique) {
         for r in rs {
             errs.push(format!("{}", r));
         }
@@ -452,6 +538,20 @@ grants = ["console=endpoint:console:send:badge=0x10"]
 
     fn devices() -> Vec<DeviceView> {
         vec![DeviceView { name: "uart0".into(), compatible: vec!["arm,pl011".into()], regs: 1, irqs: 1 }]
+    }
+
+    #[test]
+    fn parses_shared_memory_and_input_grants() {
+        assert_eq!(
+            parse_grant("fb=shm:display:4m").unwrap().kind,
+            GrantKind::Shm { name: "display".into(), size: 4 << 20 }
+        );
+        assert_eq!(parse_grant("dma=dma:8k").unwrap().kind, GrantKind::Dma { size: 8192 });
+        assert_eq!(parse_grant("in=input:touchscreen").unwrap().kind, GrantKind::Input { name: "touchscreen".into() });
+        let src = "name = \"t\"\nboard = \"b\"\n[component.d]\nmanifest = \"m\"\ngrants = [\"fb=shm:display:4m\"]\n[component.e]\nmanifest = \"m\"\ngrants = [\"fb=shm:display:4m\", \"x=shm:other:4k\"]\n[linux]\ninit = [\"/bin/sh\"]\ndisplay = \"display\"\n";
+        let c = parse(src).unwrap();
+        assert_eq!(c.shm_regions(), vec![("display".to_string(), 4 << 20), ("other".to_string(), 4096)]);
+        assert_eq!(c.linux.unwrap().display.as_deref(), Some("display"));
     }
 
     #[test]

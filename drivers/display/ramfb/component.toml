@@ -1,0 +1,14 @@
+[component]
+name = "ramfb"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # the panel goes offline and comes back (a hotplug)
+
+[binds]
+compatible = ["qemu,fw-cfg-mmio"]
+
+[provides]
+interfaces = ["flare.display@1.0"]
+
+[requires]
+interfaces = ["flare.console@1.0"]

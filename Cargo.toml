@@ -12,6 +12,8 @@ members = [
     "drivers/common/rtc-pl031",
     "drivers/common/gpio-keys-pl061",
     "drivers/virtio/blk",
+    "drivers/virtio/input",
+    "drivers/display/ramfb",
     "apps/storage-test",
     "apps/hello",
     "apps/spinner",

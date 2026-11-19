@@ -94,13 +94,17 @@ impl Input {
 /// Per-client line buffers (indexed by badge), so output from concurrent
 /// clients is never interleaved within a line.
 struct Lines {
-    buf: [[u8; 160]; 8],
-    len: [usize; 8],
+    buf: [[u8; 160]; CLIENTS],
+    len: [usize; CLIENTS],
 }
+
+/// Distinct client badges with their own line buffer (the composition
+/// hands out badges 1..CLIENTS-1; badge 0 is the kernel log).
+const CLIENTS: usize = 32;
 
 impl Lines {
     fn write(&mut self, uart: &Pl011, badge: u64, bytes: &[u8]) {
-        let i = (badge % 8) as usize;
+        let i = (badge as usize) % CLIENTS;
         for &b in bytes {
             self.buf[i][self.len[i]] = b;
             self.len[i] += 1;
@@ -168,7 +172,7 @@ fn main(bi: &'static BootInfo) -> i32 {
     let mut input = Input { buf: [0; 256], head: 0, len: 0 };
     drain_rx(&uart, &mut input, klog);
     let mut klog_buf = [0u8; 256];
-    let mut lines = Lines { buf: [[0; 160]; 8], len: [0; 8] };
+    let mut lines = Lines { buf: [[0; 160]; CLIENTS], len: [0; CLIENTS] };
     loop {
         let msg = match sys::recv(ep) {
             Ok(m) => m,

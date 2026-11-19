@@ -17,6 +17,8 @@
 
 pub mod abi;
 pub mod binder;
+pub mod drm;
+pub mod input;
 pub mod fs;
 pub mod mm;
 pub mod net;
@@ -140,7 +142,14 @@ pub struct Personality {
     pub binder_ctx: BTreeMap<String, binder::NodeRef>,
     /// The supervisor's last answer, read back from /dev/flarectl.
     pub ctl_response: Vec<u8>,
+    /// /dev/dri/card0 (when the composition gives Linux a display).
+    pub drm: drm::Drm,
+    /// /dev/input/eventN, as `boot::INPUT_DEVICES`.
+    pub inputs: Vec<input::InputDev>,
 }
+
+/// Debug: trace the system calls of programs whose path ends with this.
+const TRACE_EXE: Option<&str> = None;
 
 pub enum Out {
     Ret(i64),
@@ -181,6 +190,12 @@ impl Personality {
         if boot::LINUX_CONTROL {
             vfs.add_device("flarectl", vfs::DEV_FLARECTL, 0o600);
         }
+        if boot::LINUX_DISPLAY.is_some() {
+            vfs.add_device_at("/dev/dri", "card0", vfs::DEV_DRI_CARD0, 0o666);
+        }
+        for (i, _) in boot::INPUT_DEVICES.iter().enumerate() {
+            vfs.add_device_at("/dev/input", &format!("event{}", i), vfs::DEV_INPUT_EVENT0 + i as u64, 0o660);
+        }
         match vfs.unpack(boot::INITRAMFS) {
             Ok(n) => kprintln!("linux: initramfs unpacked: {} entries", n),
             Err(e) => kprintln!("linux: initramfs damaged: {}", e),
@@ -196,6 +211,8 @@ impl Personality {
             unix_names: BTreeMap::new(),
             binder_ctx: BTreeMap::new(),
             ctl_response: Vec::new(),
+            drm: drm::Drm::default(),
+            inputs: boot::INPUT_DEVICES.iter().map(|_| input::InputDev::new()).collect(),
         }
     }
 
@@ -896,8 +913,48 @@ impl Kernel {
     // Entry points
     // ---------------------------------------------------------------
 
+    /// Debug: once a second, where traced tasks are.
+    fn linux_sample(&mut self, now: u64) {
+        static LAST: crate::global::Global<u64> = crate::global::Global::new(0);
+        // SAFETY: under the kernel lock.
+        let last = unsafe { LAST.get() };
+        if TRACE_EXE.is_none() || now < *last + 1_000_000_000 {
+            return;
+        }
+        *last = now;
+        for c in 0..self.comps.len() {
+            if self.comps[c].free || self.comps[c].linux.is_none() {
+                continue;
+            }
+            if !TRACE_EXE.is_some_and(|t| self.proc(c).exe.ends_with(t)) {
+                continue;
+            }
+            let f = &self.comps[c].frame;
+            let tid = self.comps[c].linux.as_ref().unwrap().tid;
+            kprintln!("sample[{}] state {:?} pc {:#x} lr {:#x}", tid, self.comps[c].state, f.elr, f.x[30]);
+        }
+    }
+
     pub(crate) fn linux_syscall(&mut self, c: usize) {
-        match self.linux_dispatch(c) {
+        let trace = TRACE_EXE.is_some_and(|t| self.proc(c).exe.ends_with(t));
+        let f = self.comps[c].frame;
+        let path = if trace && [56, 79, 48, 35, 34, 78, 33].contains(&f.x[8]) {
+            self.ustr(c, f.x[1]).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let r = self.linux_dispatch(c);
+        if trace {
+            let tid = self.comps[c].linux.as_ref().map(|t| t.tid).unwrap_or(0);
+            match &r {
+                Out::Ret(v) if f.x[8] == 222 && *v > 0 && f.x[4] as i64 == -1 => {}
+                Out::Ret(v) if f.x[8] == 222 => kprintln!("strace[{}] mmap(len {:#x}, prot {}, fd {}, off {:#x}) = {:#x}", tid, f.x[1], f.x[2], f.x[4] as i64, f.x[5], v),
+                Out::Ret(v) => kprintln!("{} strace[{}] {}({:#x}, {:#x} {}, {:#x}) = {}", crate::arch::timer::now_ns() / 1_000_000, tid, f.x[8], f.x[0], f.x[1], path, f.x[2], v),
+                Out::Block => kprintln!("{} strace[{}] {}({:#x}, {:#x}, {:#x}) blocks", crate::arch::timer::now_ns() / 1_000_000, tid, f.x[8], f.x[0], f.x[1], f.x[2]),
+                Out::Gone => {}
+            }
+        }
+        match r {
             Out::Ret(v) => self.comps[c].frame.x[0] = v as u64,
             Out::Block => self.comps[c].state = State::LinuxWait,
             Out::Gone => {}
@@ -950,6 +1007,18 @@ impl Kernel {
             nr::WRITEV => self.sys_writev(c, a[0], a[1], a[2]),
             nr::PREAD64 => self.sys_pread(c, a[0], a[1], a[2], a[3]),
             nr::PWRITE64 => self.sys_pwrite(c, a[0], a[1], a[2], a[3]),
+            // preadv/pwritev (and the v2 forms without flags) at an offset;
+            // offset -1 means the file position, like readv/writev.
+            nr::PREADV | nr::PREADV2 if f.x[8] == nr::PREADV || a[4] == 0 => self.sys_preadv(c, a[0], a[1], a[2], a[3]),
+            nr::PWRITEV | nr::PWRITEV2 if f.x[8] == nr::PWRITEV || a[4] == 0 => {
+                self.sys_pwritev(c, a[0], a[1], a[2], a[3])
+            }
+            nr::PREADV2 | nr::PWRITEV2 => Err(EOPNOTSUPP),
+            // inotify: a valid descriptor that never reports events (Flare's
+            // device nodes are created at boot and do not change).
+            nr::INOTIFY_INIT1 => self.sys_inotify_init1(c, a[0]),
+            nr::INOTIFY_ADD_WATCH => self.proc(c).file(a[0]).map(|_| 1),
+            nr::INOTIFY_RM_WATCH => self.proc(c).file(a[0]).map(|_| 0),
             nr::OPENAT => self.sys_openat(c, a[0], a[1], a[2] as u32, a[3] as u32),
             nr::CLOSE => {
                 let old = {

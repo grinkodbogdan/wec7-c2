@@ -96,6 +96,20 @@ pub fn alloc() -> Option<u64> {
     Some(pa)
 }
 
+/// Allocate `pages` physically contiguous zeroed frames (for memory that
+/// devices scan out). Taken from the untouched ranges; never returned.
+pub fn alloc_contiguous(pages: u64) -> Option<u64> {
+    let f = frames();
+    let len = pages * PAGE_SIZE;
+    let r = f.ranges[..f.count].iter_mut().find(|(next, end)| end - next >= len)?;
+    let pa = r.0;
+    r.0 += len;
+    f.in_use += pages;
+    // SAFETY: fresh RAM owned by nobody else, identity-mapped.
+    unsafe { core::ptr::write_bytes(phys_to_virt(pa) as *mut u8, 0, len as usize) };
+    Some(pa)
+}
+
 pub fn free(pa: u64) {
     let f = frames();
     // SAFETY: the caller owned this frame; it now becomes a free-list node.

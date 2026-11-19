@@ -90,6 +90,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ramfb"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
 name = "rtc-pl031"
 version = "0.1.0"
 dependencies = [
@@ -123,6 +130,13 @@ dependencies = [
 
 [[package]]
 name = "virtio-blk"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
+name = "virtio-input"
 version = "0.1.0"
 dependencies = [
  "flare-rt",

@@ -79,6 +79,10 @@ pub enum FileKind {
     Binder(Rc<RefCell<super::binder::BinderProc>>),
     /// The supervisor's control device: write a command, read the answer.
     FlareCtl,
+    /// /dev/dri/card0
+    Drm(super::drm::DrmFileRef),
+    /// /dev/input/eventN
+    Evdev(super::input::EvdevRef),
 }
 
 pub struct OpenFile {
@@ -189,6 +193,8 @@ impl Kernel {
                 (if b.borrow().readable(tid) { EPOLLIN } else { 0 }) | EPOLLOUT
             }
             FileKind::Epoll(_) => 0,
+            FileKind::Drm(d) => self.drm_poll(d),
+            FileKind::Evdev(e) => self.evdev_poll(e),
             _ => EPOLLIN | EPOLLOUT,
         }
     }
@@ -289,6 +295,16 @@ impl Kernel {
             }
             FileKind::PipeW(_) | FileKind::Epoll(_) => Err(EBADF),
             FileKind::Binder(_) => Err(EINVAL),
+            FileKind::Drm(d) => {
+                let d = d.clone();
+                drop(f);
+                Ok(self.drm_read(&d, max))
+            }
+            FileKind::Evdev(e) => {
+                let e = e.clone();
+                drop(f);
+                self.evdev_read(&e, max)
+            }
             FileKind::FlareCtl => {
                 drop(f);
                 let resp = &mut self.lx().ctl_response;
@@ -427,6 +443,60 @@ impl Kernel {
         self.file_write(c, &file, &data).map(|n| n as i64)
     }
 
+    fn iovec(&mut self, c: usize, iov: u64, cnt: u64) -> Result<Vec<(u64, u64)>, i64> {
+        let mut v = Vec::new();
+        for i in 0..cnt.min(1024) {
+            v.push((self.uread_u64(c, iov + i * 16)?, self.uread_u64(c, iov + i * 16 + 8)?));
+        }
+        Ok(v)
+    }
+
+    pub(crate) fn sys_preadv(&mut self, c: usize, fd: u64, iov: u64, cnt: u64, off: u64) -> Result<i64, i64> {
+        if off as i64 == -1 {
+            return match self.sys_readv(c, fd, iov, cnt) {
+                super::Out::Ret(v) if v < 0 => Err(-v),
+                super::Out::Ret(v) => Ok(v),
+                _ => Err(EAGAIN),
+            };
+        }
+        let mut total = 0i64;
+        for (base, len) in self.iovec(c, iov, cnt)? {
+            if len == 0 {
+                continue;
+            }
+            let n = self.sys_pread(c, fd, base, len, off + total as u64)?;
+            total += n;
+            if (n as u64) < len {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
+    pub(crate) fn sys_pwritev(&mut self, c: usize, fd: u64, iov: u64, cnt: u64, off: u64) -> Result<i64, i64> {
+        if off as i64 == -1 {
+            return self.sys_writev(c, fd, iov, cnt);
+        }
+        let mut total = 0i64;
+        for (base, len) in self.iovec(c, iov, cnt)? {
+            if len == 0 {
+                continue;
+            }
+            let n = self.sys_pwrite(c, fd, base, len, off + total as u64)?;
+            total += n;
+            if (n as u64) < len {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
+    pub(crate) fn sys_inotify_init1(&mut self, c: usize, flags: u64) -> Result<i64, i64> {
+        let e = Rc::new(RefCell::new(EventFd { count: 0, semaphore: false }));
+        let f = open_file(FileKind::EventFd(e), flags as u32 & O_NONBLOCK, "anon_inode:inotify");
+        self.proc(c).install_fd(f, flags & O_CLOEXEC as u64 != 0, 0).map(|n| n as i64)
+    }
+
     pub(crate) fn sys_pread(&mut self, c: usize, fd: u64, buf: u64, len: u64, off: u64) -> Result<i64, i64> {
         let file = self.proc(c).file(fd)?;
         let saved = file.borrow().pos;
@@ -519,6 +589,18 @@ impl Kernel {
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
                 vfs::DEV_FLARECTL => FileKind::FlareCtl,
+                vfs::DEV_DRI_CARD0 => {
+                    drop(n);
+                    let k = self.drm_open();
+                    let f = open_file(k, flags, &r.path);
+                    return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+                }
+                d if (vfs::DEV_INPUT_EVENT0..vfs::DEV_INPUT_EVENT0 + 32).contains(&d) => {
+                    drop(n);
+                    let k = self.evdev_open((d - vfs::DEV_INPUT_EVENT0) as usize).ok_or(super::abi::ENODEV)?;
+                    let f = open_file(k, flags, &r.path);
+                    return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+                }
                 vfs::DEV_BINDER | vfs::DEV_HWBINDER | vfs::DEV_VNDBINDER => {
                     let dev = match n.rdev {
                         vfs::DEV_HWBINDER => "hwbinder",
@@ -640,6 +722,10 @@ impl Kernel {
             FileKind::Mem(d) => stat_bytes(8, S_IFREG | 0o444, d.len() as u64, 0, 0),
             FileKind::MemFd(o) => stat_bytes(10, S_IFREG | 0o600, o.borrow().size, 0, 0),
             FileKind::Socket(_) => stat_bytes(11, S_IFSOCK | 0o777, 0, 0, 0),
+            FileKind::Drm(_) => stat_bytes(13, S_IFCHR | 0o666, 0, vfs::DEV_DRI_CARD0, 0),
+            FileKind::Evdev(e) => {
+                stat_bytes(14, S_IFCHR | 0o660, 0, vfs::DEV_INPUT_EVENT0 + e.borrow().device as u64, 0)
+            }
             _ => stat_bytes(12, 0o600, 0, 0, 0),
         })
     }
@@ -789,6 +875,16 @@ impl Kernel {
                 _ => 0,
             };
             return self.uwrite(c, arg, &n.to_le_bytes()).map(|_| 0);
+        }
+        let dev = match &file.borrow().kind {
+            FileKind::Drm(d) => Some(Ok(d.clone())),
+            FileKind::Evdev(e) => Some(Err(e.clone())),
+            _ => None,
+        };
+        match dev {
+            Some(Ok(d)) => return self.drm_ioctl(c, &d, req, arg),
+            Some(Err(e)) => return self.evdev_ioctl(c, &e, req, arg),
+            None => {}
         }
         if !matches!(file.borrow().kind, FileKind::Tty) {
             return Err(ENOTTY);

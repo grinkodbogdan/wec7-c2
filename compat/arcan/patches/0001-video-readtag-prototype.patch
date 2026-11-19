@@ -1,0 +1,11 @@
+--- a/src/engine/arcan_video.h	2024-10-04 09:49:45.000000000 +0000
++++ b/src/engine/arcan_video.h	2026-11-19 15:52:55.626505495 +0000
+@@ -897,7 +897,7 @@
+ /* get a reference to the current video object tag, the allocation still
+  * belongs to the object and should not be aliased or used across _video
+  * calls. */
+-arcan_errc const arcan_video_readtag(
++arcan_errc arcan_video_readtag(
+ 	arcan_vobj_id id, const char** tag, const char** alt);
+ 
+ /* resolve an estimate of the current storage properties for the vobj,

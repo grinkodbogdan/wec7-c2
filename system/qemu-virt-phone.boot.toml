@@ -51,6 +51,44 @@ grants = [
 ]
 restart = "on-failure"
 
+# Display: the panel scans out the 'display' shared memory, which Linux
+# sees as /dev/dri/card0.
+[component.display]
+manifest = "drivers/display/ramfb"
+grants = [
+    "fwcfg=mmio:fwcfg0",
+    "dma=dma:4k",
+    "fb=shm:display:4m",
+    "display=endpoint:display:recv",
+    "console=endpoint:console:send:badge=8",
+]
+restart = "on-failure"
+
+# Touch and keys: each driver feeds one Linux evdev device.
+[component.touch]
+manifest = "drivers/virtio/input"
+grants = [
+    "regs=mmio:virtio30",
+    "irq=irq:virtio30",
+    "dma=dma:8k",
+    "irq-ep=endpoint:touch-irq:recv",
+    "input=input:touchscreen",
+    "console=endpoint:console:send:badge=9",
+]
+restart = "on-failure"
+
+[component.keyboard]
+manifest = "drivers/virtio/input"
+grants = [
+    "regs=mmio:virtio29",
+    "irq=irq:virtio29",
+    "dma=dma:8k",
+    "irq-ep=endpoint:keyboard-irq:recv",
+    "input=input:keyboard",
+    "console=endpoint:console:send:badge=10",
+]
+restart = "on-failure"
+
 [component.storage-test]
 manifest = "apps/storage-test"
 grants = [
@@ -80,3 +118,5 @@ init = ["/bin/sh", "/etc/rc"]
 env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
 # Linux root may stop, start and restart components through /dev/flarectl.
 control = true
+# The display shared memory as Linux's DRM/KMS device /dev/dri/card0.
+display = "display"

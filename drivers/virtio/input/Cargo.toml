@@ -1,0 +1,15 @@
+[package]
+name = "virtio-input"
+description = "virtio-input (virtio-mmio v2) driver component: touch, keys and pointers as Linux evdev devices"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "virtio-input"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

@@ -1,0 +1,15 @@
+--- a/src/platform/EGL/eglplatform.h	2024-10-04 09:49:45.000000000 +0000
++++ b/src/platform/EGL/eglplatform.h	2026-11-19 15:53:39.160544623 +0000
+@@ -93,6 +93,12 @@
+ typedef struct egl_native_pixmap_t*     EGLNativePixmapType;
+ typedef void*                           EGLNativeDisplayType;
+ 
++#elif defined(__unix__) && defined(EGL_NO_X11)
++
++typedef void             *EGLNativeDisplayType;
++typedef khronos_uintptr_t EGLNativePixmapType;
++typedef khronos_uintptr_t EGLNativeWindowType;
++
+ #elif defined(__unix__)
+ 
+ /* X11 (tentative)  */

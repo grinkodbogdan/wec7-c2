@@ -42,6 +42,10 @@ enum Object {
     Klog,
     /// A DMA region: (component, slot) it was granted to.
     Dma(usize, usize),
+    /// Shared memory `boot::SHM_REGIONS[n]`.
+    Shm(usize),
+    /// Linux input device `boot::INPUT_DEVICES[n]`.
+    Input(usize),
 }
 
 impl Object {
@@ -51,7 +55,8 @@ impl Object {
             Object::Mmio { .. } => CapKind::Mmio,
             Object::Irq(_) => CapKind::Irq,
             Object::Klog => CapKind::Klog,
-            Object::Dma(..) => CapKind::Dma,
+            Object::Dma(..) | Object::Shm(_) => CapKind::Dma,
+            Object::Input(_) => CapKind::Input,
         }
     }
 }
@@ -178,6 +183,8 @@ pub struct Kernel {
     pub(crate) linux: Option<linux::Personality>,
     /// Per CPU: whose FP/SIMD/TLS state is live in its registers.
     pub(crate) ext_owner: [Option<usize>; MAX_CPUS],
+    /// Shared-memory regions (physical base, length), as `boot::SHM_REGIONS`.
+    pub(crate) shm: Vec<(u64, u64)>,
 }
 
 static KERNEL: Global<Option<Kernel>> = Global::new(None);
@@ -208,7 +215,18 @@ pub fn start() -> ! {
         ticks: 0,
         linux: None,
         ext_owner: [None; MAX_CPUS],
+        shm: Vec::new(),
     };
+    for (name, size) in boot::SHM_REGIONS {
+        let len = page_ceil(*size);
+        match frame::alloc_contiguous(len / PAGE_SIZE) {
+            Some(pa) => {
+                kprintln!("boot: shared memory '{}': {} KiB at {:#x}", name, len / 1024, pa);
+                k.shm.push((pa, len));
+            }
+            None => panic!("no contiguous memory for shared memory '{}'", name),
+        }
+    }
     kprintln!(
         "boot: system '{}': {} component(s), endpoints {:?}",
         boot::SYSTEM_NAME,
@@ -554,6 +572,8 @@ impl Kernel {
                 GrantKind::Endpoint { endpoint, rights, badge } => (Object::Endpoint(endpoint), rights, badge),
                 GrantKind::Klog { rights } => (Object::Klog, rights, 0),
                 GrantKind::Dma { .. } => (Object::Dma(i, slot), Rights::READ | Rights::WRITE | Rights::MAP, 0),
+                GrantKind::Shm { region } => (Object::Shm(region), Rights::READ | Rights::WRITE | Rights::MAP, 0),
+                GrantKind::Input { device } => (Object::Input(device), Rights::WRITE, 0),
             };
             let mut desc =
                 CapDesc { slot: slot as u32, kind: obj.kind() as u32, vaddr: 0, size: 0, name: fixed_from_str(g.name) };
@@ -597,6 +617,27 @@ impl Kernel {
                 cap.mapping = Some((mmio_va, len));
                 desc.vaddr = mmio_va;
                 desc.size = size;
+                mmio_va += len;
+            }
+            if let GrantKind::Shm { region } = g.kind {
+                // The region's own pages, mapped unowned: they outlive
+                // every holder.
+                let (pa, len) = self.shm[region];
+                if mmio_va + len > USER_MMIO_END {
+                    self.teardown(i);
+                    return Err("MMIO window exhausted");
+                }
+                let mut vs = self.comps[i].vspace.as_ref().unwrap().borrow_mut();
+                for off in (0..len).step_by(PAGE_SIZE as usize) {
+                    if vs.map_page(mmio_va + off, pa + off, Prot::RW, false, false).is_err() {
+                        drop(vs);
+                        self.teardown(i);
+                        return Err("cannot map shared memory");
+                    }
+                }
+                cap.mapping = Some((mmio_va, len));
+                desc.vaddr = mmio_va;
+                desc.size = len;
                 mmio_va += len;
             }
             let root = self.root(obj);
@@ -950,6 +991,7 @@ impl Kernel {
             nr::KLOG_READ => self.sys_klog_read(c, a[0], a[1], a[2]),
             nr::TTY_INPUT => self.sys_tty_input(c, a[0], a[1], a[2]),
             nr::DMA_PADDR => self.sys_dma_paddr(c, a[0], a[1]),
+            nr::INPUT_REPORT => self.sys_input_report(c, a[0], a[1], a[2], a[3]),
             nr::EXIT => {
                 self.exit(c, a[0] as i64);
                 return;
@@ -978,6 +1020,17 @@ impl Kernel {
         let pa = self.comps[c].vspace.as_ref().ok_or(Error::BadAddress)?.borrow().lookup(va + offset);
         let pa = pa.ok_or(Error::BadAddress)?;
         self.ret(c, &[pa]);
+        Ok(())
+    }
+
+    fn sys_input_report(&mut self, c: usize, slot: u64, op: u64, ptr: u64, len: u64) -> SysResult {
+        let (_, cap) = self.typed(c, slot, CapKind::Input, Rights::WRITE)?;
+        let Object::Input(dev) = cap.obj else { return Err(Error::WrongType) };
+        let bytes = self.copy_from_user(c, ptr, len.min(4096) as usize)?;
+        if !self.linux_input_report(dev, op, &bytes) {
+            return Err(Error::InvalidArg);
+        }
+        self.ret(c, &[]);
         Ok(())
     }
 

@@ -192,6 +192,21 @@ const EXPECTED: &[&str] = &[
     "rc: droid kotlin.apk exit status 0",
     "I/SelfTest: selftest: 51/51 passed",
     "rc: droid selftest.apk exit status 0",
+    "linux: input device event0: QEMU Virtio Tablet",
+    "linux: input device event1: QEMU Virtio Keyboard",
+    "virtio-input: 'QEMU Virtio Tablet' online",
+    "ramfb: panel 480x854 online (generation 1, incarnation 0)",
+    "driver flare: Flare display (shared-memory KMS)",
+    "GL renderer softpipe, version OpenGL ES 3.1 Mesa 25.1.9",
+    "frame 2 flipped",
+    "flarehome: ready on a 480x854 panel, 16 apps, 6 events",
+    "flarehome: unlocked",
+    "flarehome: page events",
+    "flarehome: page applications",
+    "flarehome: launched Terminal",
+    "flarehome: minimized Terminal (1 open)",
+    "flarehome: launched Phone",
+    "flarehome: minimized Phone (2 open)",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
@@ -506,6 +521,22 @@ fn build_apk(app: &Path, apk: &Path) {
     run(c);
 }
 
+/// Build (once) Arcan 0.6 with Mesa's software rasterizer for Flare's
+/// Linux personality; returns the directory to overlay on the rootfs.
+fn arcan_stage() -> PathBuf {
+    let out = root().join("target").join("arcan");
+    if !out.join("stage/.stamp").exists() {
+        println!("xtask: building Arcan and Mesa (once; takes a few minutes)");
+        let mut c = Command::new(root().join("compat/arcan/build.sh"));
+        c.arg(&out);
+        run(c);
+    }
+    let stage = out.join("stage");
+    // The appls in the source tree are copied fresh on every build.
+    copy_tree(&root().join("compat/arcan/appl"), &stage.join("usr/share/arcan/appl"));
+    stage
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -542,6 +573,10 @@ fn assemble_rootfs() -> PathBuf {
     run(c);
     let dst = rootfs.join("usr/bin/std-test");
     std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/std-test"), &dst).unwrap();
+    // Arcan, Mesa and their libraries (built by compat/arcan/build.sh).
+    let arcan = arcan_stage();
+    copy_tree(&arcan, &rootfs);
+    symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
     // Android apps: the droid runtime and the APKs it runs.
     let mut c = cargo();
     c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "droid"]);
@@ -640,6 +675,151 @@ fn disk_image() -> PathBuf {
     path
 }
 
+/// A QEMU QMP connection (JSON lines over a Unix socket).
+struct Qmp {
+    reader: std::io::BufReader<std::os::unix::net::UnixStream>,
+    w: std::os::unix::net::UnixStream,
+}
+
+impl Qmp {
+    fn connect(sock: &Path) -> Option<Qmp> {
+        use std::io::BufRead;
+        let stream = std::os::unix::net::UnixStream::connect(sock).ok()?;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        let mut q = Qmp { reader: std::io::BufReader::new(stream.try_clone().ok()?), w: stream };
+        let mut line = String::new();
+        q.reader.read_line(&mut line).ok()?; // greeting
+        q.cmd("{\"execute\":\"qmp_capabilities\"}")?;
+        Some(q)
+    }
+
+    /// Run a command; its reply (events in between are skipped).
+    fn cmd(&mut self, json: &str) -> Option<String> {
+        use std::io::BufRead;
+        self.w.write_all(json.as_bytes()).ok()?;
+        self.w.write_all(b"\n").ok()?;
+        loop {
+            let mut line = String::new();
+            if self.reader.read_line(&mut line).ok()? == 0 {
+                return None;
+            }
+            if line.contains("\"return\"") || line.contains("\"error\"") {
+                return Some(line);
+            }
+        }
+    }
+
+    /// Move the virtio tablet to panel coordinates (480x854).
+    fn point(&mut self, x: f64, y: f64) {
+        let (ax, ay) = ((x * 32767.0 / 480.0) as i64, (y * 32767.0 / 854.0) as i64);
+        self.cmd(&format!(
+            "{{\"execute\":\"input-send-event\",\"arguments\":{{\"events\":[{{\"type\":\"abs\",\"data\":{{\"axis\":\"x\",\"value\":{}}}}},{{\"type\":\"abs\",\"data\":{{\"axis\":\"y\",\"value\":{}}}}}]}}}}",
+            ax, ay
+        ));
+    }
+
+    fn button(&mut self, down: bool) {
+        self.cmd(&format!(
+            "{{\"execute\":\"input-send-event\",\"arguments\":{{\"events\":[{{\"type\":\"btn\",\"data\":{{\"down\":{},\"button\":\"left\"}}}}]}}}}",
+            down
+        ));
+    }
+
+    fn tap(&mut self, x: f64, y: f64) {
+        self.point(x, y);
+        std::thread::sleep(Duration::from_millis(100));
+        self.button(true);
+        std::thread::sleep(Duration::from_millis(150));
+        self.button(false);
+    }
+
+    fn swipe(&mut self, from: (f64, f64), to: (f64, f64)) {
+        self.point(from.0, from.1);
+        std::thread::sleep(Duration::from_millis(100));
+        self.button(true);
+        for i in 1..=8 {
+            std::thread::sleep(Duration::from_millis(60));
+            let t = i as f64 / 8.0;
+            self.point(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        self.button(false);
+    }
+
+    /// Save the display once it has stopped changing (frames are slow on
+    /// a software rasterizer under emulation).
+    fn screenshot(&mut self, path: &Path) {
+        let tmp = path.with_extension("tmp.png");
+        let grab = |q: &mut Qmp| -> Vec<u8> {
+            q.cmd(&format!(
+                "{{\"execute\":\"screendump\",\"arguments\":{{\"filename\":\"{}\",\"format\":\"png\"}}}}",
+                tmp.display()
+            ));
+            std::fs::read(&tmp).unwrap_or_default()
+        };
+        std::thread::sleep(Duration::from_secs(3));
+        let mut prev = grab(self);
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_secs(3));
+            let cur = grab(self);
+            if cur == prev {
+                break;
+            }
+            prev = cur;
+        }
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// Wait until the console output contains `text`.
+fn wait_output(output: &Mutex<Vec<u8>>, text: &str, secs: u64) -> bool {
+    let until = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < until {
+        if String::from_utf8_lossy(&output.lock().unwrap()).contains(text) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    false
+}
+
+/// Drive the phone shell through the touchscreen, as a user would, and
+/// keep screenshots in target/screenshots. The shell logs each step; the
+/// expected lines check them.
+fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
+    let dir = root().join("target/screenshots");
+    let _ = std::fs::create_dir_all(&dir);
+    let shot = |q: &mut Qmp, name: &str| q.screenshot(&dir.join(format!("{}.png", name)));
+    let (left, right) = ((60.0, 500.0), (420.0, 500.0));
+    shot(qmp, "1-lock");
+    qmp.swipe((60.0, 600.0), (400.0, 600.0));
+    wait_output(output, "flarehome: unlocked", 30);
+    shot(qmp, "2-applications");
+    qmp.swipe(left, right);
+    wait_output(output, "flarehome: page events", 30);
+    shot(qmp, "3-events");
+    qmp.swipe(right, left);
+    wait_output(output, "flarehome: page applications", 30);
+    shot(qmp, "tmp");
+    // Terminal: third row, third column of the launcher
+    qmp.tap(300.0, 356.0);
+    wait_output(output, "flarehome: launched Terminal", 30);
+    shot(qmp, "4-terminal");
+    qmp.swipe((470.0, 400.0), (150.0, 400.0));
+    wait_output(output, "flarehome: minimized Terminal", 30);
+    shot(qmp, "tmp");
+    qmp.swipe(left, right);
+    shot(qmp, "tmp");
+    // Phone: first row, first column
+    qmp.tap(60.0, 100.0);
+    wait_output(output, "flarehome: launched Phone", 30);
+    shot(qmp, "tmp");
+    qmp.swipe((5.0, 400.0), (330.0, 400.0));
+    wait_output(output, "flarehome: minimized Phone (2 open)", 30);
+    shot(qmp, "5-open-applications");
+    let _ = std::fs::remove_file(dir.join("tmp.png"));
+}
+
 /// Press the board's power key through QEMU's QMP socket.
 fn qmp_powerdown(sock: &Path) -> bool {
     use std::io::{BufRead, BufReader};
@@ -689,8 +869,9 @@ fn qemu_test(o: &Opts) -> bool {
             sink.lock().unwrap().extend_from_slice(&buf[..n]);
         }
     });
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(600);
     let mut timed_out = false;
+    let mut ui_done = false;
     loop {
         if child.try_wait().unwrap().is_some() {
             break;
@@ -698,7 +879,14 @@ fn qemu_test(o: &Opts) -> bool {
         // Once the interactive shell is up: press the power key, and when
         // the keys driver has reported it, type into the shell.
         let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
-        if !pressed && seen.contains("flare:~# ") {
+        // First the phone shell, through the touchscreen.
+        if !ui_done && seen.contains("flarehome: ready") {
+            if let Some(mut q) = Qmp::connect(&qmp) {
+                ui_script(&mut q, &output);
+            }
+            ui_done = true;
+        }
+        if !pressed && ui_done && seen.contains("flare:~# ") {
             pressed = qmp_powerdown(&qmp);
         }
         if !typed && pressed && seen.contains("gpio-keys: power key pressed") {
@@ -720,7 +908,7 @@ fn qemu_test(o: &Opts) -> bool {
     let mut ok = !timed_out;
     println!("\n---- qemu-test ----");
     if timed_out {
-        println!("FAIL: QEMU did not halt within 60 s");
+        println!("FAIL: QEMU did not halt within 600 s");
     }
     for e in EXPECTED {
         if !text.contains(e) {
@@ -782,7 +970,13 @@ fn fhd(args: &[String]) {
 }
 
 fn cm(o: &Opts) {
-    let (comp, manifests) = load_composition(&o.system);
+    let (comp, all) = load_composition(&o.system);
+    let mut manifests: Vec<Manifest> = Vec::new();
+    for m in all {
+        if !manifests.iter().any(|u| u.name == m.name) {
+            manifests.push(m);
+        }
+    }
     let res = flare_cm::resolve::resolve(&manifests).unwrap_or_else(|errs| {
         for e in errs {
             eprintln!("{}", e);

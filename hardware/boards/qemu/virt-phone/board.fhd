@@ -10,7 +10,7 @@ soc = "qemu/virt"
 description = "Reference phone board on QEMU virt, used for framekernel bring-up"
 
 [memory.dram]
-size = 0x10000000          # 256 MiB fitted
+size = 0x40000000          # 1 GiB fitted
 
 [device.rtc0]
 status = "okay"
@@ -23,15 +23,30 @@ role = "buttons"           # QEMU wires the power key to line 3
 status = "okay"
 role = "storage"           # virtio-blk: the userdata disk
 
+[device.virtio30]
+status = "okay"
+role = "touchscreen"       # virtio-tablet: absolute pointer over the panel
+
+[device.virtio29]
+status = "okay"
+role = "keyboard"          # virtio-keyboard: hardware keys
+
+[device.fwcfg0]
+status = "okay"
+role = "display"           # ramfb: 480x854 portrait panel
+
 [chosen]
 console = "uart0"
 
 [emulation]
 qemu-machine = "virt"
 qemu-cpu = "cortex-a53"
-memory-mib = 256
+memory-mib = 1024
 # Emulated devices behind the described ones. @disk is the disk image the
 # build tools create.
 qemu-args = ["-global", "virtio-mmio.force-legacy=false",
              "-drive", "if=none,file=@disk,format=raw,id=userdata",
-             "-device", "virtio-blk-device,drive=userdata"]
+             "-device", "virtio-blk-device,drive=userdata",
+             "-device", "virtio-tablet-device",
+             "-device", "virtio-keyboard-device",
+             "-device", "ramfb"]

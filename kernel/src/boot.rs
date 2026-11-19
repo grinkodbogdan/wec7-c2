@@ -33,6 +33,14 @@ pub enum GrantKind {
     Dma {
         size: u64,
     },
+    /// `SHM_REGIONS[region]`.
+    Shm {
+        region: usize,
+    },
+    /// `INPUT_DEVICES[device]`.
+    Input {
+        device: usize,
+    },
 }
 
 #[derive(Debug)]

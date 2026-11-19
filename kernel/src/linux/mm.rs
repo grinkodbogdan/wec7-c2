@@ -158,54 +158,68 @@ pub fn prot_of(p: u64) -> Prot {
     Prot { none: p & (PROT_READ | PROT_WRITE | PROT_EXEC) == 0, write: p & PROT_WRITE != 0, exec: p & PROT_EXEC != 0 }
 }
 
+/// VMAs are kept sorted by start and never overlap, so lookups are binary
+/// searches and allocation is one pass over the gaps.
 impl Mm {
+    /// Index of the first VMA ending above `va`.
+    fn first_ending_above(&self, va: u64) -> usize {
+        self.vmas.partition_point(|v| v.end <= va)
+    }
+
     pub fn find(&self, va: u64) -> Option<&Vma> {
-        self.vmas.iter().find(|v| (v.start..v.end).contains(&va))
+        self.vmas.get(self.first_ending_above(va)).filter(|v| v.start <= va)
     }
 
     pub fn overlaps(&self, start: u64, end: u64) -> bool {
-        self.vmas.iter().any(|v| v.start < end && start < v.end)
+        self.vmas.get(self.first_ending_above(start)).is_some_and(|v| v.start < end)
     }
 
     pub fn insert(&mut self, v: Vma) {
-        let i = self.vmas.iter().position(|x| x.start > v.start).unwrap_or(self.vmas.len());
+        let i = self.vmas.partition_point(|x| x.start <= v.start);
         self.vmas.insert(i, v);
     }
 
     /// Cut `[start, end)` out of the VMA list; returns the removed pieces.
     pub fn carve(&mut self, start: u64, end: u64) -> Vec<Vma> {
+        let first = self.first_ending_above(start);
+        let mut last = first;
+        while last < self.vmas.len() && self.vmas[last].start < end {
+            last += 1;
+        }
         let mut removed = Vec::new();
         let mut keep = Vec::new();
-        for v in core::mem::take(&mut self.vmas) {
-            if v.end <= start || v.start >= end {
-                keep.push(v);
-                continue;
-            }
+        for v in self.vmas.drain(first..last) {
             if v.start < start {
                 keep.push(v.slice(v.start, start));
             }
+            removed.push(v.slice(v.start.max(start), v.end.min(end)));
             if v.end > end {
                 keep.push(v.slice(end, v.end));
             }
-            removed.push(v.slice(v.start.max(start), v.end.min(end)));
         }
-        keep.sort_by_key(|v| v.start);
-        self.vmas = keep;
+        self.vmas.splice(first..first, keep);
         removed
     }
 
     /// Highest free range of `len` bytes below `top` and above `floor`.
     pub fn find_free(&self, len: u64, top: u64, floor: u64) -> Option<u64> {
-        let mut candidate = top.checked_sub(len)?;
-        loop {
-            if candidate < floor {
+        // Walk the gaps downwards from `top`.
+        let mut hi = top;
+        for v in self.vmas.iter().rev() {
+            if v.start >= hi {
+                continue;
+            }
+            if v.end < hi && hi - v.end >= len {
+                let at = page_floor(hi - len);
+                return (at >= floor && at >= v.end).then_some(at);
+            }
+            hi = v.start;
+            if hi < floor.saturating_add(len) {
                 return None;
             }
-            match self.vmas.iter().filter(|v| v.start < candidate + len && candidate < v.end).map(|v| v.start).min() {
-                None => return Some(candidate),
-                Some(s) => candidate = page_floor(s.checked_sub(len)?),
-            }
         }
+        let at = page_floor(hi.checked_sub(len)?);
+        (at >= floor).then_some(at)
     }
 }
 
@@ -329,6 +343,7 @@ impl Kernel {
         let len = page_ceil(len);
         let shared = flags & 3 == MAP_SHARED || flags & 3 == 3;
         let mut binder = None;
+        let mut drm = None;
         let backing = if flags & MAP_ANONYMOUS != 0 {
             if shared {
                 Backing::Shared(Rc::new(RefCell::new(MemObj::new(len))), 0)
@@ -359,8 +374,19 @@ impl Kernel {
                     binder = Some(b.clone());
                     Backing::Anon
                 }
+                (super::fs::FileKind::Drm(d), _) => {
+                    drm = Some(d.clone());
+                    Backing::Anon
+                }
                 _ => return Err(EACCES),
             }
+        };
+        let backing = match drm {
+            Some(d) => {
+                let (obj, base) = self.drm_mmap(&d, off).ok_or(EINVAL)?;
+                Backing::Shared(obj, base)
+            }
+            None => backing,
         };
         let mut p = self.proc(c);
         let va = if flags & MAP_FIXED != 0 {
@@ -547,6 +573,32 @@ impl Kernel {
         if (is_data || is_inst) && (dfsc == 1 || dfsc == 3) {
             let write = is_data && esr & (1 << 6) != 0;
             if self.linux_populate(c, far, write, is_inst) {
+                return;
+            }
+        }
+        // MRS of an ID register (op0 3, op1 0, CRn 0): emulated like Linux,
+        // as "no optional features" except MIDR_EL1 and MPIDR's CPU-free
+        // form, so feature probes fall back instead of dying.
+        if ec == 0x18 && esr & 1 == 1 {
+            let iss = esr & 0x1ff_ffff;
+            let (op0, op2, op1, crn, rt, crm) =
+                ((iss >> 20) & 3, (iss >> 17) & 7, (iss >> 14) & 7, (iss >> 10) & 0xf, (iss >> 5) & 0x1f, (iss >> 1) & 0xf);
+            if op0 == 3 && op1 == 0 && crn == 0 {
+                let v = match (crm, op2) {
+                    // SAFETY: reading an ID register at EL1 has no side effects.
+                    (0, 0) => unsafe {
+                        let m: u64;
+                        core::arch::asm!("mrs {}, midr_el1", out(reg) m);
+                        m
+                    },
+                    (0, 5) => 1 << 31, // MPIDR_EL1: RES1, affinity 0
+                    _ => 0,
+                };
+                let f = &mut self.comps[c].frame;
+                if rt != 31 {
+                    f.x[rt as usize] = v;
+                }
+                f.elr = pc + 4;
                 return;
             }
         }

@@ -106,6 +106,12 @@ fn main() {
     let _ = writeln!(g, "// @generated from {}; do not edit.", system_path.display());
     let _ = writeln!(g, "pub const SYSTEM_NAME: &str = {:?};", comp.name);
     let _ = writeln!(g, "pub const ENDPOINTS: &[&str] = &{:?};", eps);
+    let shm = comp.shm_regions();
+    let inputs = comp.input_devices();
+    let _ = writeln!(g, "pub const SHM_REGIONS: &[(&str, u64)] = &{:?};", shm);
+    let _ = writeln!(g, "pub const INPUT_DEVICES: &[&str] = &{:?};", inputs);
+    let display = comp.linux.as_ref().and_then(|l| l.display.as_ref()).and_then(|d| shm.iter().position(|(n, _)| n == d));
+    let _ = writeln!(g, "pub const LINUX_DISPLAY: Option<usize> = {:?};", display);
     let halt: Vec<usize> = comp
         .halt_when_finished
         .iter()
@@ -183,6 +189,12 @@ fn main() {
                 ),
                 GrantKind::Klog { rights } => format!("GrantKind::Klog {{ rights: Rights({}) }}", rights.0),
                 GrantKind::Dma { size } => format!("GrantKind::Dma {{ size: {:#x} }}", size),
+                GrantKind::Shm { name, .. } => {
+                    format!("GrantKind::Shm {{ region: {} }}", shm.iter().position(|(n, _)| n == name).unwrap())
+                }
+                GrantKind::Input { name } => {
+                    format!("GrantKind::Input {{ device: {} }}", inputs.iter().position(|n| n == name).unwrap())
+                }
             };
             let _ = writeln!(g, "            Grant {{ name: {:?}, kind: {} }},", gr.local, kind);
         }

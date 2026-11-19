@@ -31,6 +31,10 @@ pub const DEV_HWBINDER: u64 = (10 << 8) | 61;
 pub const DEV_VNDBINDER: u64 = (10 << 8) | 62;
 /// Flare's component supervisor (only with `[linux] control = true`).
 pub const DEV_FLARECTL: u64 = (10 << 8) | 63;
+/// DRM major 226, minor 0.
+pub const DEV_DRI_CARD0: u64 = 226 << 8;
+/// evdev: major 13, minors from 64.
+pub const DEV_INPUT_EVENT0: u64 = (13 << 8) | 64;
 
 pub struct Node {
     pub ino: u64,
@@ -138,6 +142,15 @@ impl Vfs {
         n.borrow_mut().rdev = rdev;
         if let Ok(dev) = self.lookup("/", "/dev", true) {
             dev.node.borrow_mut().children.insert(name.to_string(), n);
+        }
+    }
+
+    /// Add a character device node `dir/name`, creating `dir`.
+    pub fn add_device_at(&mut self, dir: &str, name: &str, rdev: u64, perm: u32) {
+        let n = self.new_node(S_IFCHR | perm);
+        n.borrow_mut().rdev = rdev;
+        if let Ok(d) = self.mkdir_p(dir, 0o755) {
+            d.borrow_mut().children.insert(name.to_string(), n);
         }
     }
 

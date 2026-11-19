@@ -1,0 +1,14 @@
+[component]
+name = "virtio-input"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # the device is reset; /dev/input/eventN stays, events resume
+
+[binds]
+compatible = ["virtio,mmio"]
+
+[provides]
+interfaces = []
+
+[requires]
+interfaces = ["flare.console@1.0"]

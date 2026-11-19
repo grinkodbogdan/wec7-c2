@@ -110,6 +110,12 @@ pub fn dma_paddr(dma: Slot, offset: u64) -> Result<u64, Error> {
     status(r[0]).map(|_| r[1])
 }
 
+/// Feed the Linux input device behind `input`: op 0 describes it, op 1
+/// delivers events (see `flare_abi::proto::input`).
+pub fn input_report(input: Slot, op: u64, bytes: &[u8]) -> Result<(), Error> {
+    status(raw(nr::INPUT_REPORT, [input, op, bytes.as_ptr() as u64, bytes.len() as u64, 0, 0, 0, 0])[0])
+}
+
 pub fn exit(code: i32) -> ! {
     raw(nr::EXIT, [code as i64 as u64, 0, 0, 0, 0, 0, 0, 0]);
     loop {

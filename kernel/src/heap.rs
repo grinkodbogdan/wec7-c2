@@ -1,15 +1,16 @@
 //! Kernel heap: size-class free lists over a static arena.
 //!
 //! Small blocks (16 B .. 4 KiB, powers of two) come from per-class free
-//! lists; larger blocks are page multiples kept on a first-fit list. Blocks
-//! are never split or merged, which keeps the allocator tiny and
-//! predictable; kernel allocations are few and long-lived.
+//! lists; larger blocks are page multiples kept on a best-fit list, split
+//! on reuse (never merged, except that freeing the most recent block
+//! returns it to the bump region). Bulk data (file pages, buffers) lives
+//! in frames, not here.
 
 use crate::global::Global;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{self, addr_of_mut};
 
-const HEAP_SIZE: usize = 16 << 20;
+const HEAP_SIZE: usize = 64 << 20;
 const CLASSES: usize = 9; // 16 << 0 ..= 16 << 8 (4096)
 const PAGE: usize = 4096;
 
@@ -64,18 +65,32 @@ unsafe impl GlobalAlloc for Heap {
         }
         let size = (layout.size() + PAGE - 1) & !(PAGE - 1);
         let align = layout.align().max(PAGE);
-        // First fit on the large list.
+        // Best fit on the large list; the unused tail of a bigger block goes
+        // back on the list (a block's size must match what dealloc will be
+        // told, or the difference would leak).
+        let mut best: Option<(*mut usize, usize, usize)> = None;
         let mut prev: *mut usize = &mut s.large;
         let mut cur = s.large;
         while cur != 0 {
-            let next = *(cur as *const usize);
             let bsize = *((cur + 8) as *const usize);
-            if bsize >= size && cur.is_multiple_of(align) {
-                *prev = next;
-                return cur as *mut u8;
+            if bsize >= size && cur.is_multiple_of(align) && best.is_none_or(|(_, _, b)| bsize < b) {
+                best = Some((prev, cur, bsize));
+                if bsize == size {
+                    break;
+                }
             }
             prev = cur as *mut usize;
-            cur = next;
+            cur = *(cur as *const usize);
+        }
+        if let Some((prev, cur, bsize)) = best {
+            *prev = *(cur as *const usize);
+            if bsize > size {
+                let rest = cur + size;
+                *(rest as *mut usize) = s.large;
+                *((rest + 8) as *mut usize) = bsize - size;
+                s.large = rest;
+            }
+            return cur as *mut u8;
         }
         let p = (s.next + align - 1) & !(align - 1);
         if p + size > s.end {
@@ -93,8 +108,12 @@ unsafe impl GlobalAlloc for Heap {
             *(p as *mut usize) = s.small[c];
             s.small[c] = p as usize;
         } else {
-            // Large blocks keep their original (page-rounded) size.
             let size = (layout.size() + PAGE - 1) & !(PAGE - 1);
+            if p as usize + size == s.next {
+                // The most recent block: give it back to the bump region.
+                s.next = p as usize;
+                return;
+            }
             *(p as *mut usize) = s.large;
             *((p as usize + 8) as *mut usize) = size;
             s.large = p as usize;

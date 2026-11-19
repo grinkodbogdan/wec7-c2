@@ -1,0 +1,23 @@
+--- a/src/platform/agp/glinit.c	2024-10-04 09:49:45.000000000 +0000
++++ b/src/platform/agp/glinit.c	2026-11-19 16:24:40.277525595 +0000
+@@ -77,9 +77,20 @@
+ /* match the table and order in glfun.h, forego the use of the PFN...
+  * as we need even the "abi-bound" 1.x functions dynamically loaded for the
+  * possibility of loading/unloading GL libraries at runtime */
++#if defined(GLES2) || defined(GLES3)
++/* GLES has no glDrawBuffer; gles.c provides a no-op */
++	dst->draw_buffer =
++		(void(*)(GLenum))
++			lookup_opt(tag, "glDrawBuffer");
++	if (!dst->draw_buffer){
++		extern void glDrawBuffer(GLint mode);
++		dst->draw_buffer = (void(*)(GLenum)) glDrawBuffer;
++	}
++#else
+ 	dst->draw_buffer =
+ 		(void(*)(GLenum))
+ 			lookup(tag, "glDrawBuffer");
++#endif
+ 	dst->read_buffer =
+ 		(void(*)(GLenum))
+ 			lookup(tag, "glReadBuffer");

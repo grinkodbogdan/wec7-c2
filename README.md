@@ -15,9 +15,12 @@ Status: **M0 and M1 are done; the Linux ABI (M5) and Android apps (M6) run.**
 
 * Unmodified Linux arm64 binaries run on Flare's own kernel, with no Linux kernel underneath. That covers busybox, Rust `std`, dynamic linking and Binder.
 * Android apps written in Java and Kotlin run from their APKs, with no Android userspace.
+* Flare boots into a graphical phone shell: Arcan, rendering through Flare's own KMS device, with touch input from user-space drivers.
 
 See [docs/roadmap.md](docs/roadmap.md), [docs/linux.md](docs/linux.md) and
-[docs/android.md](docs/android.md).
+[docs/android.md](docs/android.md) and [docs/display.md](docs/display.md).
+
+![The Flare phone shell](docs/img/flarehome-2-applications.png)
 
 ## Quick start
 
@@ -25,7 +28,8 @@ Requirements:
 
 * a Rust toolchain (`rustup` installs the pinned target from `rust-toolchain.toml`);
 * `qemu-system-aarch64`;
-* a JDK (17 or newer), `curl`, `unzip` and `zip`, to build the Android test apps. The Android build tools and the Kotlin compiler are downloaded once and pinned by checksum.
+* a JDK (17 or newer), `curl`, `unzip` and `zip`, to build the Android test apps. The Android build tools and the Kotlin compiler are downloaded once and pinned by checksum;
+* clang, lld, meson, ninja, cmake, bison, flex, git and python3 with `mako` and `pyyaml`, to build Arcan and Mesa once (see [docs/display.md](docs/display.md)).
 
 ```sh
 cargo xtask test        # host unit tests + boot the system in QEMU and check its behaviour
@@ -69,6 +73,11 @@ flare: system halted after 197 ticks (9 capabilities live, 38 frames in use)
   PL031 clock, PL061 power key, virtio-blk storage (with DMA). Drivers are
   **hot-restartable**: the boot test restarts the console and storage
   drivers while clients use them, and nothing is lost.
+* **A touch phone UI**: Arcan 0.6 with Mesa's software rasterizer runs
+  `flarehome`, a Harmattan-style swipe shell, on `/dev/dri/card0` and
+  `/dev/input`, which Flare implements over a user-space panel driver (ramfb
+  in shared memory) and virtio-input drivers. See
+  [docs/display.md](docs/display.md).
 * **Android apps (Java and Kotlin) run from their APKs** under `droid`, which has
   its own DEX interpreter and natively implemented Java core and Android API.
   No Android userspace is involved. See [docs/android.md](docs/android.md).
@@ -104,6 +113,8 @@ Follows the illustrative layout of the project specification (§7):
 | `apps/` | Demo native components (`hello`, `spinner`, `intruder`) |
 | `kernel/src/linux/` | Linux ABI personality: processes, VFS + initramfs, TTY, ~110 system calls |
 | `compat/linux/` | Linux root filesystem content and Linux test programs |
+| `compat/arcan/` | Arcan + Mesa build for Flare, the `flarehome` phone shell, `kmstest` |
+| `drivers/display/` | Display drivers (today: `ramfb`) |
 | `compat/android/` | `droid` (runs APKs without Android userspace) and test apps in Java and Kotlin |
 | `system/` | Boot compositions: which components start, with exactly which capabilities |
 | `xtask/` | `cargo xtask` build/run/test driver |
@@ -117,5 +128,6 @@ Follows the illustrative layout of the project specification (§7):
 * [Flare Hardware Description](docs/fhd.md) — the FHD format and porting
 * [Linux personality](docs/linux.md) — what runs, what is implemented, what is not
 * [Android apps](docs/android.md) — how APKs run without Android userspace
+* [Display and the phone shell](docs/display.md) — KMS, touch, Arcan and `flarehome`
 * [Decisions](docs/decisions.md) — positions taken on the spec's open questions
 * [Roadmap](docs/roadmap.md) — milestone status and next steps

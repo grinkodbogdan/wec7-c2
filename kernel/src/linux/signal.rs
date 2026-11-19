@@ -438,6 +438,7 @@ impl Kernel {
     /// Expire interval timers (ITIMER_REAL).
     pub(crate) fn linux_timers(&mut self) {
         let now = timer::now_ns();
+        self.linux_sample(now);
         let leaders: Vec<usize> = (0..self.comps.len())
             .filter(|&i| !self.comps[i].free && self.comps[i].state != State::Dead && self.comps[i].linux.is_some())
             .filter(|&i| {

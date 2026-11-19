@@ -68,6 +68,9 @@ _start:
     orr     x2, x2, #(1 << 0)       // M
     orr     x2, x2, #(1 << 2)       // C
     orr     x2, x2, #(1 << 12)      // I
+    orr     x2, x2, #(1 << 14)      // DZE: DC ZVA at EL0
+    orr     x2, x2, #(1 << 15)      // UCT: CTR_EL0 readable at EL0
+    orr     x2, x2, #(1 << 26)      // UCI: cache maintenance at EL0 (JITs)
     bic     x2, x2, #(1 << 1)       // A
     bic     x2, x2, #(1 << 19)      // WXN
     msr     sctlr_el1, x2
@@ -110,6 +113,9 @@ __secondary_entry:
     orr     x2, x2, #(1 << 0)
     orr     x2, x2, #(1 << 2)
     orr     x2, x2, #(1 << 12)
+    orr     x2, x2, #(1 << 14)
+    orr     x2, x2, #(1 << 15)
+    orr     x2, x2, #(1 << 26)
     bic     x2, x2, #(1 << 1)
     bic     x2, x2, #(1 << 19)
     msr     sctlr_el1, x2
