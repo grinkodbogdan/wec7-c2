@@ -22,11 +22,16 @@ pub fn init() {
     let t = unsafe { TIMER.get() };
     t.interval = freq / HZ;
     t.irq = dev.irqs[0];
+    init_cpu();
+    kprintln!("timer: {} Hz counter, {} Hz preemption tick on interrupt {}", freq, HZ, t.irq);
+}
+
+/// Start this CPU's preemption tick (the timer and its PPI are per CPU).
+pub fn init_cpu() {
     rearm();
     // SAFETY: enable the virtual timer, interrupt unmasked.
     unsafe { core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nostack)) };
-    gic::enable(t.irq);
-    kprintln!("timer: {} Hz counter, {} Hz preemption tick on interrupt {}", freq, HZ, t.irq);
+    gic::enable(irq());
 }
 
 /// Nanoseconds since boot, from the virtual counter.

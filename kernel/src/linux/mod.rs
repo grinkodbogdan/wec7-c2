@@ -579,8 +579,8 @@ impl Kernel {
         comp.frame.elr = interp.as_ref().map_or(info.entry, |i| i.entry);
         comp.frame.sp_el0 = sp;
         *comp.ext = Default::default();
-        if self.ext_owner == Some(c) {
-            self.ext_owner = None;
+        if self.ext_owner[crate::smp::cpu()] == Some(c) {
+            self.ext_owner[crate::smp::cpu()] = None;
         }
         // A thread that execs takes over the leader's tid (Linux semantics).
         let pid = self.proc(c).pid;
@@ -1102,7 +1102,7 @@ impl Kernel {
                 return self.sys_nanosleep(c, req, f.x[8] == nr::CLOCK_NANOSLEEP && a[1] & 1 != 0);
             }
             nr::SCHED_YIELD => {
-                self.need_resched = true;
+                self.need_resched[crate::smp::cpu()] = true;
                 Ok(0)
             }
             nr::FUTEX => return self.sys_futex(c, a),

@@ -12,6 +12,7 @@ use crate::boot::{self, GrantKind, Restart};
 use crate::global::Global;
 use crate::mm::vspace::{AddressSpace, Prot};
 use crate::mm::{frame, page_ceil, page_floor, PAGE_SIZE};
+use crate::smp::{self, MAX_CPUS};
 use crate::{elf, klog, linux, platform};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -154,19 +155,20 @@ pub struct Kernel {
     irqs: BTreeMap<u32, IrqBinding>,
     klog_reader: Option<KlogReader>,
     ready: VecDeque<usize>,
-    current: Option<usize>,
-    pub(crate) need_resched: bool,
+    /// Per CPU: the component running there.
+    current: [Option<usize>; MAX_CPUS],
+    pub(crate) need_resched: [bool; MAX_CPUS],
     pub(crate) free_asids: Vec<u16>,
     pub(crate) halting: bool,
     ticks: u64,
     /// The Linux personality, if the composition starts one.
     pub(crate) linux: Option<linux::Personality>,
-    /// Whose FP/SIMD/TLS state is live in the CPU.
-    pub(crate) ext_owner: Option<usize>,
+    /// Per CPU: whose FP/SIMD/TLS state is live in its registers.
+    pub(crate) ext_owner: [Option<usize>; MAX_CPUS],
 }
 
 static KERNEL: Global<Option<Kernel>> = Global::new(None);
-static BOOT_FRAME: Global<TrapFrame> = Global::new(TrapFrame::zeroed());
+static BOOT_FRAMES: Global<[TrapFrame; MAX_CPUS]> = Global::new([TrapFrame::zeroed(); MAX_CPUS]);
 
 fn kernel() -> &'static mut Kernel {
     // SAFETY: obtained once per kernel entry and threaded through by
@@ -186,13 +188,13 @@ pub fn start() -> ! {
         irqs: BTreeMap::new(),
         klog_reader: None,
         ready: VecDeque::new(),
-        current: None,
-        need_resched: false,
+        current: [None; MAX_CPUS],
+        need_resched: [false; MAX_CPUS],
         free_asids: (1..=255).rev().collect(),
         halting: false,
         ticks: 0,
         linux: None,
-        ext_owner: None,
+        ext_owner: [None; MAX_CPUS],
     };
     kprintln!(
         "boot: system '{}': {} component(s), endpoints {:?}",
@@ -209,16 +211,43 @@ pub fn start() -> ! {
     k.linux_start();
     // SAFETY: the one and only initialization of the kernel state.
     unsafe { *KERNEL.get() = Some(k) };
-    // SAFETY: BOOT_FRAME is only used here.
-    let frame = unsafe { BOOT_FRAME.get() };
-    kernel().leave(frame);
-    arch::enter_first(frame)
+    smp::start_secondaries();
+    enter_user(0, arch::boot_stack_top())
+}
+
+/// A secondary CPU joins the scheduler (called with the kernel lock held).
+pub fn secondary_start(id: usize) -> ! {
+    enter_user(id, smp::stack_top(id))
+}
+
+fn enter_user(cpu: usize, stack_top: u64) -> ! {
+    // SAFETY: each CPU uses only its own boot frame.
+    let frame = unsafe { &mut BOOT_FRAMES.get()[cpu] };
+    leave_loop(frame);
+    smp::unlock();
+    arch::enter_first(frame, stack_top)
+}
+
+/// Choose what this CPU runs next, idling (with the kernel lock released)
+/// until there is something.
+fn leave_loop(frame: &mut TrapFrame) {
+    loop {
+        if kernel().try_leave(frame) {
+            return;
+        }
+        smp::idle_wait();
+        kernel().handle_irqs();
+    }
 }
 
 /// Synchronous exception from EL0: system call or fault.
 pub fn on_user_sync(frame: &mut TrapFrame) {
     let k = kernel();
-    let cur = k.current.expect("user exception without a current component");
+    let cur = k.current[smp::cpu()].expect("user exception without a current component");
+    if k.comps[cur].state == State::Dead {
+        leave_loop(frame); // killed by another CPU while running here
+        return;
+    }
     k.comps[cur].frame = *frame;
     let esr = arch::read_esr();
     if k.comps[cur].linux.is_some() {
@@ -226,7 +255,7 @@ pub fn on_user_sync(frame: &mut TrapFrame) {
             0x15 => k.linux_syscall(cur),
             _ => k.linux_fault(cur, arch::read_far(), esr, frame.elr),
         }
-        k.leave(frame);
+        leave_loop(frame);
         return;
     }
     match esr >> 26 {
@@ -243,17 +272,17 @@ pub fn on_user_sync(frame: &mut TrapFrame) {
         }
         ec => k.fault(cur, format!("unhandled exception class {:#x} at pc {:#x}", ec, frame.elr)),
     }
-    k.leave(frame);
+    leave_loop(frame);
 }
 
 /// Interrupt taken while a component was running.
 pub fn on_user_irq(frame: &mut TrapFrame) {
     let k = kernel();
-    if let Some(cur) = k.current {
+    if let Some(cur) = k.current[smp::cpu()] {
         k.comps[cur].frame = *frame;
     }
     k.handle_irqs();
-    k.leave(frame);
+    leave_loop(frame);
 }
 
 impl Kernel {
@@ -261,11 +290,14 @@ impl Kernel {
     // Scheduling
     // ---------------------------------------------------------------
 
-    /// Pick the component to run next and load its state into `frame`.
-    fn leave(&mut self, frame: &mut TrapFrame) {
+    /// Pick the component to run next on this CPU and load its state into
+    /// `frame`; `false` if there is nothing to run.
+    fn try_leave(&mut self, frame: &mut TrapFrame) -> bool {
         loop {
-            self.pick_next();
-            let c = self.current.expect("scheduler picked nothing");
+            if !self.pick_next() {
+                return false;
+            }
+            let c = self.current[smp::cpu()].expect("scheduler picked nothing");
             // Linux signals are delivered on the way back to user mode.
             if self.comps[c].linux.is_some() {
                 self.linux_deliver(c);
@@ -276,56 +308,64 @@ impl Kernel {
             break;
         }
         self.load(frame);
+        true
     }
 
-    fn pick_next(&mut self) {
-        loop {
-            self.linux_poll();
-            self.flush_klog();
-            if self.halting && self.console_drained() {
-                self.halt();
-            }
-            if let Some(c) = self.current {
-                if self.comps[c].state == State::Running {
-                    if self.need_resched && !self.ready.is_empty() {
-                        self.comps[c].state = State::Ready;
-                        self.ready.push_back(c);
-                    } else {
-                        break;
-                    }
-                }
-            }
-            self.need_resched = false;
-            let mut picked = None;
-            while let Some(n) = self.ready.pop_front() {
-                if self.comps[n].state == State::Ready {
-                    picked = Some(n);
-                    break;
-                }
-            }
-            if let Some(n) = picked {
-                self.comps[n].state = State::Running;
-                self.current = Some(n);
-                break;
-            }
-            // Nothing runnable: idle until an interrupt arrives.
-            self.current = None;
-            arch::wait_for_interrupt();
-            self.handle_irqs();
+    /// Choose this CPU's next component; `false` if there is none (the
+    /// caller idles and asks again).
+    fn pick_next(&mut self) -> bool {
+        let cpu = smp::cpu();
+        self.linux_poll();
+        self.flush_klog();
+        if self.halting && self.console_drained() {
+            self.halt();
         }
-        self.need_resched = false;
+        if let Some(c) = self.current[cpu] {
+            if self.comps[c].state == State::Dead {
+                // Torn down by another CPU while it ran here.
+                self.current[cpu] = None;
+                self.ext_owner[cpu] = None;
+                mmu::switch_to_kernel();
+                self.release_vspace(c);
+            } else if self.comps[c].state == State::Running {
+                if !(self.need_resched[cpu] && !self.ready.is_empty()) {
+                    self.need_resched[cpu] = false;
+                    return true;
+                }
+                self.comps[c].state = State::Ready;
+                self.ready.push_back(c);
+            }
+        }
+        self.need_resched[cpu] = false;
+        while let Some(n) = self.ready.pop_front() {
+            if self.comps[n].state == State::Ready {
+                self.comps[n].state = State::Running;
+                self.current[cpu] = Some(n);
+                return true;
+            }
+        }
+        // Nothing runnable here. Leave the registers of whoever ran last in
+        // memory (it may resume on another CPU) and go idle.
+        self.current[cpu] = None;
+        if let Some(o) = self.ext_owner[cpu].take() {
+            if self.comps[o].state != State::Dead {
+                arch::ext_save(&mut self.comps[o].ext);
+            }
+        }
+        false
     }
 
     fn load(&mut self, frame: &mut TrapFrame) {
-        let c = self.current.expect("scheduler picked nothing");
-        if self.ext_owner != Some(c) {
-            if let Some(o) = self.ext_owner {
+        let cpu = smp::cpu();
+        let c = self.current[cpu].expect("scheduler picked nothing");
+        if self.ext_owner[cpu] != Some(c) {
+            if let Some(o) = self.ext_owner[cpu] {
                 if self.comps[o].state != State::Dead {
                     arch::ext_save(&mut self.comps[o].ext);
                 }
             }
             arch::ext_restore(&self.comps[c].ext);
-            self.ext_owner = Some(c);
+            self.ext_owner[cpu] = Some(c);
         }
         *frame = self.comps[c].frame;
         mmu::switch_to(self.comps[c].vspace.as_ref().expect("running component without address space").borrow().ttbr());
@@ -333,7 +373,7 @@ impl Kernel {
 
     /// Save `c`'s FP/SIMD/TLS state if it is live in the CPU.
     pub(crate) fn save_ext(&mut self, c: usize) {
-        if self.ext_owner == Some(c) {
+        if self.ext_owner[smp::cpu()] == Some(c) {
             arch::ext_save(&mut self.comps[c].ext);
         }
     }
@@ -341,7 +381,8 @@ impl Kernel {
     /// A slot for a new dynamic component (Linux process).
     pub(crate) fn alloc_comp(&mut self, name: &str) -> usize {
         let c = Component::new(name, None);
-        match self.comps.iter().position(|x| x.free) {
+        let in_use = |i: usize| self.current.contains(&Some(i));
+        match (0..self.comps.len()).find(|&i| self.comps[i].free && self.comps[i].vspace.is_none() && !in_use(i)) {
             Some(i) => {
                 self.comps[i] = c;
                 i
@@ -356,6 +397,7 @@ impl Kernel {
     pub(crate) fn make_ready(&mut self, c: usize) {
         self.comps[c].state = State::Ready;
         self.ready.push_back(c);
+        smp::kick_idle();
     }
 
     /// Make `c` ready and let it run next (IPC hand-off).
@@ -363,15 +405,20 @@ impl Kernel {
         self.comps[c].state = State::Ready;
         self.ready.retain(|&x| x != c);
         self.ready.push_front(c);
+        smp::kick_idle();
     }
 
     fn handle_irqs(&mut self) {
         while let Some(iar) = gic::ack() {
             let id = iar & 0x3ff;
-            if id == timer::irq() {
+            if id < 16 {
+                // An inter-processor wake-up: nothing to do but look again.
+            } else if id == timer::irq() {
                 timer::rearm();
-                self.ticks += 1;
-                self.need_resched = true;
+                if smp::cpu() == 0 {
+                    self.ticks += 1;
+                }
+                self.need_resched[smp::cpu()] = true;
             } else if let Some(b) = self.irqs.get_mut(&id) {
                 // Level-triggered lines stay masked until the driver acks.
                 gic::disable(id);
@@ -407,8 +454,9 @@ impl Kernel {
             klog::set_reader_bound(false);
         }
         kprintln!(
-            "flare: system halted after {} ticks ({} capabilities live, {} frames in use)",
+            "flare: system halted after {} ticks on {} CPUs ({} capabilities live, {} frames in use)",
             self.ticks,
+            smp::online(),
             self.cdt.len(),
             frame::in_use()
         );
@@ -566,6 +614,26 @@ impl Kernel {
                 self.undo(id, v);
             }
         }
+        // Still running on another CPU: that CPU releases the address space
+        // when it next enters the kernel (it may be executing in it now).
+        let me = smp::cpu();
+        if let Some(other) = (0..MAX_CPUS).find(|&i| i != me && self.current[i] == Some(c)) {
+            for owner in self.ext_owner.iter_mut() {
+                if *owner == Some(c) {
+                    *owner = None;
+                }
+            }
+            self.comps[c].state = State::Dead;
+            gic::send_sgi(1 << other, smp::SGI_WAKE);
+            return;
+        }
+        self.release_vspace(c);
+        let comp = &mut self.comps[c];
+        comp.state = State::Dead;
+    }
+
+    /// Drop a component's address space (destroying it with its last user).
+    fn release_vspace(&mut self, c: usize) {
         let comp = &mut self.comps[c];
         if let Some(vs) = comp.vspace.take() {
             // The last thread using an address space destroys it.
@@ -575,10 +643,11 @@ impl Kernel {
                 vs.destroy();
             }
         }
-        if self.ext_owner == Some(c) {
-            self.ext_owner = None;
+        for owner in self.ext_owner.iter_mut() {
+            if *owner == Some(c) {
+                *owner = None;
+            }
         }
-        comp.state = State::Dead;
     }
 
     /// Undo the side effects of a capability that has just been removed.
@@ -750,7 +819,7 @@ impl Kernel {
         let result = match f.x[8] {
             nr::DEBUG_WRITE => self.sys_debug_write(c, a[0], a[1], a[2]),
             nr::YIELD => {
-                self.need_resched = true;
+                self.need_resched[smp::cpu()] = true;
                 self.ret(c, &[]);
                 Ok(())
             }

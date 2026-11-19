@@ -27,11 +27,13 @@ mod kernel;
 mod linux;
 mod mm;
 mod platform;
+mod smp;
 
 use core::panic::PanicInfo;
 
 #[no_mangle]
 pub extern "C" fn kmain() -> ! {
+    smp::init_boot_cpu();
     // SAFETY: called exactly once, first thing, on the boot CPU.
     unsafe { arch::mmu::init() };
     heap::init();
@@ -50,6 +52,7 @@ pub extern "C" fn kmain() -> ! {
     arch::enable_fp();
     arch::gic::init();
     arch::timer::init();
+    smp::lock();
     kernel::start()
 }
 

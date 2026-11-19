@@ -90,6 +90,27 @@ pub unsafe fn init() {
     );
 }
 
+/// Switch a secondary CPU from the boot tables to the kernel's tables.
+///
+/// # Safety
+/// Once per secondary CPU, after the boot CPU ran `init`.
+pub unsafe fn init_secondary() {
+    let ttbr1 = virt_to_phys(KERNEL_L1.get().0.as_ptr() as u64);
+    let ttbr0 = virt_to_phys(EMPTY_L1.get().0.as_ptr() as u64);
+    core::arch::asm!(
+        "dsb ish",
+        "msr ttbr1_el1, {t1}",
+        "msr ttbr0_el1, {t0}",
+        "isb",
+        "tlbi vmalle1",
+        "dsb ish",
+        "isb",
+        t1 = in(reg) ttbr1,
+        t0 = in(reg) ttbr0,
+        options(nostack),
+    );
+}
+
 /// Install a user translation table (physical base | ASID << 48).
 pub fn switch_to(ttbr: u64) {
     // SAFETY: only changes the lower half; the kernel runs in the upper half.

@@ -88,6 +88,44 @@ __high_entry:
 7:  wfe
     b       7b
 
+// Secondary CPUs, started by PSCI CPU_ON at their physical address with the
+// MMU off; x0 = CPU index. Same tables as the boot CPU, then the upper half.
+.global __secondary_entry
+__secondary_entry:
+    msr     daifset, #0xf
+    mov     x19, x0
+    adrp    x0, __boot_l1_lo
+    adrp    x1, __boot_l1_hi
+    ldr     x2, =0xff00
+    msr     mair_el1, x2
+    ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
+    msr     tcr_el1, x2
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x1
+    dsb     ish
+    tlbi    vmalle1
+    dsb     ish
+    isb
+    mrs     x2, sctlr_el1
+    orr     x2, x2, #(1 << 0)
+    orr     x2, x2, #(1 << 2)
+    orr     x2, x2, #(1 << 12)
+    bic     x2, x2, #(1 << 1)
+    bic     x2, x2, #(1 << 19)
+    msr     sctlr_el1, x2
+    isb
+    ldr     x0, =__secondary_high
+    br      x0
+__secondary_high:
+    ldr     x1, =SECONDARY_STACKS
+    add     x2, x19, #1
+    lsl     x2, x2, #16                 // (id + 1) * 64 KiB
+    add     sp, x1, x2
+    mov     x0, x19
+    bl      secondary_main
+9:  wfe
+    b       9b
+
 .section .text.vectors, "ax"
 .macro VECTOR kind
     .balign 0x80
@@ -165,19 +203,19 @@ __exception_restore:
     add     sp, sp, #272
     eret
 
-// __enter_first(frame: *const TrapFrame): copy the frame to the top of the
-// kernel stack and return to user space through the common restore path.
+// __enter_first(frame: *const TrapFrame, stack_top): copy the frame to the
+// top of this CPU's kernel stack and return to user space through the
+// common restore path.
 .global __enter_first
 __enter_first:
-    ldr     x1, =__stack_top
+    mov     x4, x1
     sub     x1, x1, #272
     mov     x2, #34
 8:  ldr     x3, [x0], #8
     str     x3, [x1], #8
     subs    x2, x2, #1
     b.ne    8b
-    ldr     x1, =__stack_top
-    sub     sp, x1, #272
+    sub     sp, x4, #272
     b       __exception_restore
 "#
 );

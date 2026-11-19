@@ -37,6 +37,7 @@ pub fn init() {
 
 #[no_mangle]
 extern "C" fn exception_entry(frame: &mut TrapFrame, kind: u64) {
+    crate::smp::lock();
     match kind {
         8 => kernel::on_user_sync(frame),
         9 => kernel::on_user_irq(frame),
@@ -52,4 +53,5 @@ extern "C" fn exception_entry(frame: &mut TrapFrame, kind: u64) {
             );
         }
     }
+    crate::smp::unlock();
 }

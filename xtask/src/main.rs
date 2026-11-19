@@ -383,7 +383,18 @@ fn qemu_command(o: &Opts, kernel: &Path) -> Command {
     if let Some(mib) = p.emulation_int("memory-mib") {
         c.args(["-m", &format!("{}M", mib)]);
     }
-    c.args(["-smp", "1", "-display", "none", "-monitor", "none", "-serial", "stdio", "-no-reboot", "-kernel"]);
+    c.args([
+        "-smp",
+        &p.cpus.to_string(),
+        "-display",
+        "none",
+        "-monitor",
+        "none",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-kernel",
+    ]);
     c.arg(kernel);
     c
 }

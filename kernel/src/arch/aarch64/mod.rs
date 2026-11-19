@@ -45,14 +45,23 @@ pub fn read_far() -> u64 {
     v
 }
 
-/// Enter user space for the first time with the given frame.
-pub fn enter_first(frame: &'static TrapFrame) -> ! {
+/// Enter user space for the first time on this CPU with the given frame.
+pub fn enter_first(frame: &'static TrapFrame, stack_top: u64) -> ! {
     extern "C" {
-        fn __enter_first(frame: *const TrapFrame) -> !;
+        fn __enter_first(frame: *const TrapFrame, stack_top: u64) -> !;
     }
     // SAFETY: `frame` is a valid EL0 frame in static memory (not on the
     // kernel stack, which the trampoline overwrites).
-    unsafe { __enter_first(frame) }
+    unsafe { __enter_first(frame, stack_top) }
+}
+
+/// Top of the boot CPU's kernel stack.
+pub fn boot_stack_top() -> u64 {
+    extern "C" {
+        static __stack_top: u8;
+    }
+    // SAFETY: only the symbol's address is used.
+    unsafe { &__stack_top as *const u8 as u64 }
 }
 
 /// User state the kernel never touches itself (it is built soft-float):

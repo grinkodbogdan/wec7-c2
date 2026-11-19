@@ -11,6 +11,7 @@ const GICD_ICENABLER: usize = 0x180;
 const GICD_ICPENDR: usize = 0x280;
 const GICD_IPRIORITYR: usize = 0x400;
 const GICD_ITARGETSR: usize = 0x800;
+const GICD_SGIR: usize = 0xf00;
 const GICC_CTLR: usize = 0x000;
 const GICC_PMR: usize = 0x004;
 const GICC_BPR: usize = 0x008;
@@ -55,17 +56,31 @@ pub fn init() {
         w32(g.dist + GICD_ICENABLER + i / 8, !0);
         w32(g.dist + GICD_ICPENDR + i / 8, !0);
     }
-    for i in 0..lines {
+    for i in 32..lines {
         w8(g.dist + GICD_IPRIORITYR + i, 0xa0);
-        if i >= 32 {
-            w8(g.dist + GICD_ITARGETSR + i, 1);
-        }
+        w8(g.dist + GICD_ITARGETSR + i, 1);
     }
     w32(g.dist + GICD_CTLR, 1);
+    init_cpu();
+    kprintln!("gic: GICv2 at {:#x}/{:#x}, {} interrupt lines", dev.regs[0].base, dev.regs[1].base, lines);
+}
+
+/// The banked, per-CPU half: SGI/PPI priorities and the CPU interface.
+pub fn init_cpu() {
+    let g = gic();
+    for i in 0..32 {
+        w8(g.dist + GICD_IPRIORITYR + i, 0xa0);
+    }
     w32(g.cpu + GICC_PMR, 0xf0);
     w32(g.cpu + GICC_BPR, 0);
     w32(g.cpu + GICC_CTLR, 1);
-    kprintln!("gic: GICv2 at {:#x}/{:#x}, {} interrupt lines", dev.regs[0].base, dev.regs[1].base, lines);
+}
+
+/// Send software-generated interrupt `id` to the CPUs in `targets`.
+pub fn send_sgi(targets: u32, id: u32) {
+    // SAFETY: make prior memory writes visible before the interrupt.
+    unsafe { core::arch::asm!("dsb ish", options(nostack)) };
+    w32(gic().dist + GICD_SGIR, ((targets & 0xff) << 16) | (id & 0xf));
 }
 
 pub fn enable(intid: u32) {

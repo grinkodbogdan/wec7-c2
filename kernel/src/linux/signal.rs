@@ -398,8 +398,8 @@ impl Kernel {
                 let o = r + 16 + i * 16;
                 ext.v[i] = u128::from_le_bytes(fr[o..o + 16].try_into().unwrap());
             }
-            if self.ext_owner == Some(c) {
-                self.ext_owner = None;
+            if self.ext_owner[crate::smp::cpu()] == Some(c) {
+                self.ext_owner[crate::smp::cpu()] = None;
             }
         }
         self.task(c).sig.mask = mask & !UNBLOCKABLE;
