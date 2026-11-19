@@ -22,6 +22,21 @@ const LINUX_TARGET: &str = "aarch64-unknown-linux-musl";
 /// Static busybox for arm64 from Alpine Linux, pinned by checksum.
 const BUSYBOX_URL: &str = "https://dl-cdn.alpinelinux.org/alpine/v3.20/main/aarch64/busybox-static-1.36.1-r31.apk";
 const BUSYBOX_SHA256: &str = "1d8e7a7fc2ed69bdb8eb7be9d962489c21a0f75b72d8a325437c8a09d4cfac70";
+/// Toolchains for building the Android test apps, pinned by checksum. Apps
+/// are built from source (javac/kotlinc → d8/R8 → aapt2); the APKs run on
+/// Flare under `droid`, with no Android userspace.
+const ANDROID_BUILD_TOOLS: (&str, &str) = (
+    "https://dl.google.com/android/repository/build-tools_r35.0.1_linux.zip",
+    "5993499f3229a021b89f87088c57242aeefaa62316bf3d69da7de40bfd5350f1",
+);
+const ANDROID_PLATFORM: (&str, &str) = (
+    "https://dl.google.com/android/repository/platform-35_r02.zip",
+    "0988cacad01b38a18a47bac14a0695f246bc76c1b06c0eeb8eb0dc825ab0c8e0",
+);
+const KOTLIN_COMPILER: (&str, &str) = (
+    "https://github.com/JetBrains/kotlin/releases/download/v2.1.0/kotlin-compiler-2.1.0.zip",
+    "b6698d5728ad8f9edcdd01617d638073191d8a03139cc538a391b4e3759ad297",
+);
 const BUSYBOX_APPLETS: &[&str] = &[
     "sh",
     "ash",
@@ -158,6 +173,25 @@ const EXPECTED: &[&str] = &[
     "dynamic: ok",
     "binder: death notification ok",
     "binder: ok",
+    "droid: org.flare.hello: launching org.flare.hello.MainActivity",
+    "I/FlareHello: onCreate on Flare virt-phone, API 35",
+    "I/FlareHello: sum 1..100 = 5050, fib(20) = 6765, 7/2.0 = 3.5",
+    "I/FlareHello: shapes rect,circle total area 15.142",
+    "I/FlareHello: word 'the' appears 3 times, 9 distinct words",
+    "I/FlareHello: caught IndexOutOfBoundsException",
+    "I/FlareHello: lambda ran, created = 1",
+    "I/FlareHello: onResume: app is running",
+    "droid: org.flare.hello.MainActivity finished cleanly (0 missing APIs)",
+    "rc: droid hello.apk exit status 0",
+    "I/FlareKotlin: Kotlin onCreate on Flare (API 35)",
+    "I/FlareKotlin: data class: Task(id=1, title=boot kernel, done=true), copy: Task(id=1, title=boot kernel, done=false), equal: true",
+    "I/FlareKotlin: sealed when: total area 7.14",
+    "I/FlareKotlin: groupingBy: {a=3, b=2, c=1}",
+    "I/FlareKotlin: range map: [1, 4, 9, 16, 25], sum 55, max 25",
+    "I/FlareKotlin: onResume: kotlin app is running",
+    "rc: droid kotlin.apk exit status 0",
+    "I/SelfTest: selftest: 51/51 passed",
+    "rc: droid selftest.apk exit status 0",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
@@ -172,6 +206,9 @@ const FORBIDDEN: &[&str] = &[
     "killed by SIG",
     "unimplemented system call",
     ": FAILED",
+    "E/SelfTest: FAIL",
+    "droid: uncaught exception",
+    "droid: missing",
 ];
 
 struct Opts {
@@ -308,6 +345,167 @@ fn busybox() -> PathBuf {
     bin
 }
 
+/// Download (once) a file and verify its checksum.
+fn fetch((url, sha256): (&str, &str)) -> PathBuf {
+    let dir = root().join("target").join("downloads");
+    let file = dir.join(url.rsplit('/').next().unwrap());
+    let ok = file.with_extension("verified");
+    if ok.exists() && file.exists() {
+        return file;
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    println!("xtask: downloading {}", url);
+    let mut c = Command::new("curl");
+    c.args(["-fsSL", "--retry", "3", "-o"]).arg(&file).arg(url);
+    run(c);
+    let out = Command::new("sha256sum").arg(&file).output().unwrap_or_else(|e| die(&format!("sha256sum: {}", e)));
+    let sum = String::from_utf8_lossy(&out.stdout);
+    if !sum.starts_with(sha256) {
+        let _ = std::fs::remove_file(&file);
+        die(&format!("{}: checksum mismatch: {}", url, sum.trim()));
+    }
+    std::fs::write(&ok, sha256).unwrap();
+    file
+}
+
+/// Download and unpack (once) a zip; returns the directory it unpacked to.
+fn unpacked(dl: (&str, &str)) -> PathBuf {
+    let zip = fetch(dl);
+    let dir = zip.with_extension("d");
+    if !dir.join(".stamp").exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Command::new("unzip");
+        c.arg("-q").arg(&zip).arg("-d").arg(&dir);
+        run(c);
+        std::fs::write(dir.join(".stamp"), "").unwrap();
+    }
+    dir
+}
+
+/// The single top-level directory of an unpacked archive.
+fn only_subdir(dir: &Path) -> PathBuf {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| die(&format!("{}: empty archive", dir.display())))
+}
+
+fn files_with_ext(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                files_with_ext(&p, ext, out);
+            } else if p.extension().is_some_and(|x| x == ext) {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn newest_mtime(dir: &Path) -> std::time::SystemTime {
+    let mut newest = std::time::UNIX_EPOCH;
+    for ext in ["java", "kt", "xml"] {
+        let mut v = Vec::new();
+        files_with_ext(dir, ext, &mut v);
+        for f in v {
+            if let Ok(m) = f.metadata().and_then(|m| m.modified()) {
+                newest = newest.max(m);
+            }
+        }
+    }
+    newest
+}
+
+/// Build the Android apps in compat/android/apps into APKs (cached until
+/// their sources change). Java-only apps are dexed with d8; apps with
+/// Kotlin sources are compiled with kotlinc and shrunk with R8 (the Kotlin
+/// standard library is part of the app, as in any Android build).
+fn build_apks() -> Vec<PathBuf> {
+    let apps = root().join("compat/android/apps");
+    let out_dir = root().join("target").join("apks");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let mut dirs: Vec<PathBuf> =
+        std::fs::read_dir(&apps).unwrap().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    let mut apks = Vec::new();
+    for app in dirs {
+        let name = app.file_name().unwrap().to_string_lossy().to_string();
+        let apk = out_dir.join(format!("{}.apk", name));
+        let fresh = apk.metadata().and_then(|m| m.modified()).map(|t| t > newest_mtime(&app)).unwrap_or(false);
+        if !fresh {
+            build_apk(&app, &apk);
+        }
+        apks.push(apk);
+    }
+    apks
+}
+
+fn build_apk(app: &Path, apk: &Path) {
+    let bt = only_subdir(&unpacked(ANDROID_BUILD_TOOLS));
+    let android_jar = only_subdir(&unpacked(ANDROID_PLATFORM)).join("android.jar");
+    println!("xtask: building {}", apk.display());
+    let work = apk.with_extension("work");
+    let _ = std::fs::remove_dir_all(&work);
+    let (classes, dex) = (work.join("classes"), work.join("dex"));
+    std::fs::create_dir_all(&classes).unwrap();
+    std::fs::create_dir_all(&dex).unwrap();
+    let (mut java, mut kotlin) = (Vec::new(), Vec::new());
+    files_with_ext(&app.join("src"), "java", &mut java);
+    files_with_ext(&app.join("src"), "kt", &mut kotlin);
+    let mut inputs: Vec<PathBuf> = Vec::new();
+    let mut cp = android_jar.display().to_string();
+    if !kotlin.is_empty() {
+        let kc = only_subdir(&unpacked(KOTLIN_COMPILER));
+        let stdlib = kc.join("lib/kotlin-stdlib.jar");
+        let mut c = Command::new(kc.join("bin/kotlinc"));
+        c.args(["-nowarn", "-no-reflect", "-jvm-target", "11", "-cp"]).arg(&android_jar).arg("-d").arg(&classes);
+        c.args(&kotlin).args(&java);
+        run(c);
+        cp = format!("{}:{}:{}", cp, classes.display(), stdlib.display());
+        inputs.push(stdlib);
+    }
+    if !java.is_empty() {
+        let mut c = Command::new("javac");
+        c.args(["-nowarn", "--release", "11", "-cp", &cp, "-d"]).arg(&classes).args(&java);
+        run(c);
+    }
+    files_with_ext(&classes, "class", &mut inputs);
+    let mut c;
+    if kotlin.is_empty() {
+        c = Command::new(bt.join("d8"));
+        c.args(["--min-api", "24"]);
+    } else {
+        let rules = work.join("keep.pro");
+        std::fs::write(
+            &rules,
+            "-keep public class * extends android.app.Activity { public <init>(); *** on*(...); }\n\
+             -dontobfuscate\n-dontwarn **\n",
+        )
+        .unwrap();
+        c = Command::new("java");
+        c.arg("-cp").arg(bt.join("lib/d8.jar")).arg("com.android.tools.r8.R8");
+        c.args(["--release", "--min-api", "24", "--pg-conf"]).arg(&rules);
+    }
+    c.arg("--lib").arg(&android_jar).arg("--output").arg(&dex).args(&inputs);
+    // R8 warns about Kotlin metadata newer than itself, which is harmless:
+    // show its output only if it fails.
+    let out = c.output().unwrap_or_else(|e| die(&format!("cannot run {:?}: {}", c, e)));
+    if !out.status.success() {
+        eprint!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        die(&format!("command failed: {:?}", c));
+    }
+    let mut c = Command::new(bt.join("aapt2"));
+    c.arg("link").arg("-I").arg(&android_jar).arg("--manifest").arg(app.join("AndroidManifest.xml")).arg("-o").arg(apk);
+    run(c);
+    let mut c = Command::new("zip");
+    c.arg("-q").arg(apk).arg("classes.dex").current_dir(&dex);
+    run(c);
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -344,6 +542,17 @@ fn assemble_rootfs() -> PathBuf {
     run(c);
     let dst = rootfs.join("usr/bin/std-test");
     std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/std-test"), &dst).unwrap();
+    // Android apps: the droid runtime and the APKs it runs.
+    let mut c = cargo();
+    c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "droid"]);
+    run(c);
+    std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/droid"), rootfs.join("usr/bin/droid"))
+        .unwrap();
+    let apps = rootfs.join("data/app");
+    std::fs::create_dir_all(&apps).unwrap();
+    for apk in build_apks() {
+        std::fs::copy(&apk, apps.join(apk.file_name().unwrap())).unwrap();
+    }
     let cc = linux_sdk();
     let tests = rootfs.join("usr/libexec/flare-tests");
     std::fs::create_dir_all(&tests).unwrap();

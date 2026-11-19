@@ -13,7 +13,7 @@ Each is a working decision for the prototype, to be revisited with evidence.
 | D6 | FHD syntax and relation to device tree | Own small, strict, **layered (SoC/board)** TOML-like syntax, validated at build time; DT-like vocabulary (compatible, reg, interrupts) so DTS can be imported later | Readable diffs for ports, precise errors, no silent defaults. |
 | D7 | Graphics stack and buffer sharing | Open | Needs shared-memory capabilities first (M3). |
 | D8 | Linux ABI placement | **In the framekernel for now** (`kernel/src/linux`, Asterinas-style), isolated in its own module with no Flare capabilities granted to Linux processes; console I/O goes through the user-space console driver | Fastest route to running real binaries. Moving it to a privileged personality component (split design) stays on the table once the ABI surface is known. |
-| D9 | Android strategy | Open; native ABI + selected AOSP components preferred, guest kernel only as an explicit fallback | Per spec invariant "fallbacks are explicit". |
+| D9 | Android strategy | **Apps without Android userspace**: `droid` loads APKs and runs their DEX bytecode on its own interpreter, with the Java core and Android API implemented natively over Flare services. No init, servicemanager, zygote, ART or system_server. The Linux ABI, dynamic linking and Binder stay available for native code, and AOSP components remain an explicit fallback | Smallest path to running apps. Startup is milliseconds and memory is what the app uses. Missing APIs show up precisely, one at a time ([android.md](android.md)). |
 | D10 | Boot chain, verified boot, updates | Open | |
 
 ## Implementation choices worth knowing

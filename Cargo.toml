@@ -17,11 +17,13 @@ members = [
     "apps/spinner",
     "apps/intruder",
     "compat/linux/std-test",
+    "compat/android/droid",
     "xtask",
 ]
 # Crates that build and test on the host. The kernel and the components are
 # bare-metal arm64 crates; build them with `cargo xtask build`.
 default-members = [
+    "compat/android/droid",
     "interfaces/abi",
     "libs/config",
     "libs/cap",
@@ -37,3 +39,7 @@ publish = false
 
 [profile.release]
 debug = true
+
+# droid ships in the Linux root filesystem: keep it small.
+[profile.release.package.droid]
+debug = false

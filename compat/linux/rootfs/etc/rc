@@ -20,6 +20,11 @@ echo "rc: memory: $(grep MemTotal /proc/meminfo)"
 echo "rc: std-test exit status $?"
 sleep 1 && echo "rc: slept 1 second"
 /etc/run-tests
+# Android apps, straight from their APKs: no init, zygote or system_server.
+for apk in /data/app/*.apk; do
+    /usr/bin/droid $apk
+    echo "rc: droid $(basename $apk) exit status $?"
+done
 echo "rc: starting an interactive shell (type 'exit' to power off)"
 cd /root
 exec /bin/sh

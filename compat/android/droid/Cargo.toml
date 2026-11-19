@@ -1,0 +1,13 @@
+[package]
+name = "droid"
+description = "Runs Android apps (APKs with DEX bytecode) without Android's userspace: a DEX interpreter with a minimal Java core library and Android API layer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "droid"
+path = "src/main.rs"
+
+[dependencies]
+miniz_oxide = "0.8"

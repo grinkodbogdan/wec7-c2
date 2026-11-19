@@ -93,5 +93,6 @@ Android needs everything above plus Android-specific contracts (spec §8.2):
 5. Then the AOSP userspace itself: `servicemanager`, `init`, ART + zygote,
    `system_server`, SurfaceFlinger with a Flare display service.
 
-Steps 1–4 are kernel-ABI work in this repository. Step 5 means building and
-booting AOSP userspace against that ABI.
+Steps 1–4 are kernel-ABI work in this repository. Step 5 is not the plan:
+apps run from their APKs under `droid`, without AOSP userspace (see
+[android.md](android.md)). The ABI work above serves apps' native code.

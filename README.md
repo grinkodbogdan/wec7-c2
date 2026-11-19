@@ -11,15 +11,21 @@ granted by a boot composition. Hardware is described in **FHD** files, so a
 phone port is hardware descriptions, driver components and configuration —
 not kernel patches.
 
-Status: **M0, M1 done; Linux ABI baseline (M5) running** — unmodified static
-Linux arm64 binaries (busybox, Rust `std`) run on Flare's own kernel, with
-no Linux kernel underneath. See [docs/roadmap.md](docs/roadmap.md) and
-[docs/linux.md](docs/linux.md).
+Status: **M0 and M1 are done; the Linux ABI (M5) and Android apps (M6) run.**
+
+* Unmodified Linux arm64 binaries run on Flare's own kernel, with no Linux kernel underneath. That covers busybox, Rust `std`, dynamic linking and Binder.
+* Android apps written in Java and Kotlin run from their APKs, with no Android userspace.
+
+See [docs/roadmap.md](docs/roadmap.md), [docs/linux.md](docs/linux.md) and
+[docs/android.md](docs/android.md).
 
 ## Quick start
 
-Requirements: a Rust toolchain (`rustup` installs the pinned target from
-`rust-toolchain.toml`) and `qemu-system-aarch64`.
+Requirements:
+
+* a Rust toolchain (`rustup` installs the pinned target from `rust-toolchain.toml`);
+* `qemu-system-aarch64`;
+* a JDK (17 or newer), `curl`, `unzip` and `zip`, to build the Android test apps. The Android build tools and the Kotlin compiler are downloaded once and pinned by checksum.
 
 ```sh
 cargo xtask test        # host unit tests + boot the system in QEMU and check its behaviour
@@ -63,6 +69,9 @@ flare: system halted after 197 ticks (9 capabilities live, 38 frames in use)
   PL031 clock, PL061 power key, virtio-blk storage (with DMA). Drivers are
   **hot-restartable**: the boot test restarts the console and storage
   drivers while clients use them, and nothing is lost.
+* **Android apps (Java and Kotlin) run from their APKs** under `droid`, which has
+  its own DEX interpreter and natively implemented Java core and Android API.
+  No Android userspace is involved. See [docs/android.md](docs/android.md).
 * The **Linux personality** boots busybox as pid 1 from an initramfs: shell
   scripts, pipes, fork/exec/wait, files, `/proc`, an interactive shell on the
   console, and a Rust `std` program (heap, files, time, FP, `Command`).
@@ -95,6 +104,7 @@ Follows the illustrative layout of the project specification (§7):
 | `apps/` | Demo native components (`hello`, `spinner`, `intruder`) |
 | `kernel/src/linux/` | Linux ABI personality: processes, VFS + initramfs, TTY, ~110 system calls |
 | `compat/linux/` | Linux root filesystem content and Linux test programs |
+| `compat/android/` | `droid` (runs APKs without Android userspace) and test apps in Java and Kotlin |
 | `system/` | Boot compositions: which components start, with exactly which capabilities |
 | `xtask/` | `cargo xtask` build/run/test driver |
 | `docs/` | Architecture contracts and decisions |
@@ -106,5 +116,6 @@ Follows the illustrative layout of the project specification (§7):
 * [Components](docs/components.md) — manifests, compositions, lifecycle, hot-swap
 * [Flare Hardware Description](docs/fhd.md) — the FHD format and porting
 * [Linux personality](docs/linux.md) — what runs, what is implemented, what is not
+* [Android apps](docs/android.md) — how APKs run without Android userspace
 * [Decisions](docs/decisions.md) — positions taken on the spec's open questions
 * [Roadmap](docs/roadmap.md) — milestone status and next steps
