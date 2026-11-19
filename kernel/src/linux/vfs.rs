@@ -25,6 +25,10 @@ pub const DEV_URANDOM: u64 = (1 << 8) | 9;
 pub const DEV_TTY: u64 = 5 << 8;
 pub const DEV_CONSOLE: u64 = (5 << 8) | 1;
 pub const DEV_KMSG: u64 = (1 << 8) | 11;
+/// Binder devices (misc major 10).
+pub const DEV_BINDER: u64 = (10 << 8) | 60;
+pub const DEV_HWBINDER: u64 = (10 << 8) | 61;
+pub const DEV_VNDBINDER: u64 = (10 << 8) | 62;
 
 pub struct Node {
     pub ino: u64,
@@ -101,6 +105,9 @@ impl Vfs {
             ("tty", DEV_TTY, 0o666),
             ("console", DEV_CONSOLE, 0o600),
             ("kmsg", DEV_KMSG, 0o644),
+            ("binder", DEV_BINDER, 0o666),
+            ("hwbinder", DEV_HWBINDER, 0o666),
+            ("vndbinder", DEV_VNDBINDER, 0o666),
         ] {
             let n = v.new_node(S_IFCHR | mode);
             n.borrow_mut().rdev = rdev;

@@ -328,6 +328,7 @@ impl Kernel {
         }
         let len = page_ceil(len);
         let shared = flags & 3 == MAP_SHARED || flags & 3 == 3;
+        let mut binder = None;
         let backing = if flags & MAP_ANONYMOUS != 0 {
             if shared {
                 Backing::Shared(Rc::new(RefCell::new(MemObj::new(len))), 0)
@@ -354,6 +355,10 @@ impl Kernel {
                 (super::fs::FileKind::Reg(n), false) => Backing::File(n.borrow().data.clone(), off),
                 (super::fs::FileKind::Mem(d), _) => Backing::File(Cow::Owned(d.clone()), off),
                 (super::fs::FileKind::Zero, _) => Backing::Anon,
+                (super::fs::FileKind::Binder(b), _) => {
+                    binder = Some(b.clone());
+                    Backing::Anon
+                }
                 _ => return Err(EACCES),
             }
         };
@@ -382,6 +387,11 @@ impl Kernel {
             addr
         } else {
             p.mm.find_free(len, super::MMAP_TOP, MMAP_FLOOR).ok_or(ENOMEM)?
+        };
+        let backing = match binder {
+            // The binder receive area: the kernel writes it, the process reads it.
+            Some(b) => Backing::Shared(b.borrow_mut().map(va, len), 0),
+            None => backing,
         };
         p.mm.carve(va, va + len);
         p.mm.insert(Vma { start: va, end: va + len, prot, backing });

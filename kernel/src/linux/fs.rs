@@ -76,6 +76,7 @@ pub enum FileKind {
     SignalFd(u64),
     Epoll(Rc<RefCell<Epoll>>),
     Socket(Rc<RefCell<Socket>>),
+    Binder(Rc<RefCell<super::binder::BinderProc>>),
 }
 
 pub struct OpenFile {
@@ -181,6 +182,10 @@ impl Kernel {
                 }
             }
             FileKind::Socket(s) => s.borrow().poll(),
+            FileKind::Binder(b) => {
+                let tid = self.comps[c].linux.as_ref().unwrap().tid;
+                (if b.borrow().readable(tid) { EPOLLIN } else { 0 }) | EPOLLOUT
+            }
             FileKind::Epoll(_) => 0,
             _ => EPOLLIN | EPOLLOUT,
         }
@@ -281,6 +286,7 @@ impl Kernel {
                 s.recv_bytes(max)
             }
             FileKind::PipeW(_) | FileKind::Epoll(_) => Err(EBADF),
+            FileKind::Binder(_) => Err(EINVAL),
         }
     }
 
@@ -490,6 +496,17 @@ impl Kernel {
             return Err(ENOTDIR);
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
+                vfs::DEV_BINDER | vfs::DEV_HWBINDER | vfs::DEV_VNDBINDER => {
+                    let dev = match n.rdev {
+                        vfs::DEV_HWBINDER => "hwbinder",
+                        vfs::DEV_VNDBINDER => "vndbinder",
+                        _ => "binder",
+                    };
+                    drop(n);
+                    let b = self.binder_open(c, dev);
+                    let f = open_file(FileKind::Binder(b), flags, &r.path);
+                    return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+                }
                 vfs::DEV_NULL => FileKind::Null,
                 vfs::DEV_ZERO => FileKind::Zero,
                 vfs::DEV_URANDOM => FileKind::Random,

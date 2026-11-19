@@ -16,6 +16,7 @@
 //! (github.com/grinkodbogdan/qrt).
 
 pub mod abi;
+pub mod binder;
 pub mod fs;
 pub mod mm;
 pub mod net;
@@ -135,6 +136,8 @@ pub struct Personality {
     epoch: u64,
     warned: Vec<u64>,
     pub unix_names: BTreeMap<String, Weak<RefCell<net::Socket>>>,
+    /// Binder context managers (servicemanager), per binder device.
+    pub binder_ctx: BTreeMap<String, binder::NodeRef>,
 }
 
 pub enum Out {
@@ -186,6 +189,7 @@ impl Personality {
             epoch: rtc_epoch(),
             warned: Vec::new(),
             unix_names: BTreeMap::new(),
+            binder_ctx: BTreeMap::new(),
         }
     }
 
@@ -994,7 +998,17 @@ impl Kernel {
             }
             nr::DUP3 => self.sys_dup3(c, a[0], a[1], a[2] as u32),
             nr::FCNTL => self.sys_fcntl(c, a[0], a[1], a[2]),
-            nr::IOCTL => self.sys_ioctl(c, a[0], a[1], a[2]),
+            nr::IOCTL => {
+                let file = self.proc(c).file(a[0]);
+                if let Ok(f) = file {
+                    if let Some(b) = self.binder_file(&f) {
+                        let nonblock = f.borrow().flags & O_NONBLOCK != 0;
+                        return self.binder_ioctl(c, b, nonblock, a[1] & 0xffff_ffff, a[2]);
+                    }
+                }
+                // The request is an unsigned int; libcs may sign-extend it.
+                self.sys_ioctl(c, a[0], a[1] & 0xffff_ffff, a[2])
+            }
             nr::PIPE2 => self.sys_pipe2(c, a[0], a[1] as u32),
             nr::PPOLL => return self.sys_ppoll(c, a[0], a[1], a[2]),
             nr::PSELECT6 => Err(ENOSYS),

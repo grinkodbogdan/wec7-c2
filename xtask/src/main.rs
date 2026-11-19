@@ -97,7 +97,7 @@ const BUSYBOX_APPLETS: &[&str] = &[
 ];
 /// Linux ABI conformance tests (C, from QRT's tests/linux), built with the
 /// musl SDK in compat/linux/sdk and installed in /usr/libexec/flare-tests.
-const LINUX_TESTS: &[&str] = &["hello", "memory", "procs", "threads", "signals", "events"];
+const LINUX_TESTS: &[&str] = &["hello", "memory", "procs", "threads", "signals", "events", "binder"];
 const BUSYBOX_SBIN: &[&str] = &["init", "poweroff", "reboot", "halt"];
 const DEFAULT_SYSTEM: &str = "system/qemu-virt-phone.boot.toml";
 
@@ -145,6 +145,8 @@ const EXPECTED: &[&str] = &[
     "threads: ok",
     "dynamic: dlopen/dlsym: ok",
     "dynamic: ok",
+    "binder: death notification ok",
+    "binder: ok",
     "shell-42",
     "linux: init exited (status 0)",
     "flare: system halted",
