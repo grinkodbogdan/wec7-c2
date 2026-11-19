@@ -211,6 +211,12 @@ const EXPECTED: &[&str] = &[
     "flarehome: launched Phone",
     "flarehome: minimized Phone (2 open)",
     "virtio-console: port online (incarnation 0, user-space driver)",
+    "art: Hello from ART on Flare: Dalvik 2.1.0",
+    "art: words {brown=1, dog=1, end=1, fox=1, jumps=1, lazy=1, over=1, quick=1, the=3}",
+    "art: fib(25) = 75025",
+    "art: hello from Thread-0",
+    "art: 4 processors, pi = 3.14159",
+    "rc: art exit status 0",
     "fdbd: serving fdb on /dev/fdb",
     "shell-42",
     "linux: init exited (status 0)",
@@ -562,6 +568,59 @@ fn arcan_stage() -> PathBuf {
     stage
 }
 
+/// Hash of the files a staged third-party build depends on.
+fn inputs_hash(files: &[PathBuf]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for f in files {
+        f.file_name().hash(&mut h);
+        std::fs::read(f).unwrap_or_default().hash(&mut h);
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// Stage (when its inputs change) ART, the Android runtime, as /opt/art,
+/// with a Java check program compiled to DEX.
+fn art_stage() -> PathBuf {
+    let dir = root().join("compat/android/art");
+    let out = root().join("target").join("art");
+    let inputs = inputs_hash(&[
+        dir.join("build.sh"),
+        dir.join("stage.py"),
+        dir.join("alpine.lock"),
+        dir.join("art-run"),
+        root().join("compat/arcan/alpine.py"),
+    ]);
+    let stamp = out.join("stage/.stamp");
+    if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) {
+        println!("xtask: staging ART (Android runtime)");
+        let mut c = Command::new(dir.join("build.sh"));
+        c.arg(&out);
+        run(c);
+        std::fs::write(&stamp, &inputs).unwrap();
+    }
+    // The check program: javac + d8 into a jar of classes.dex.
+    let bt = only_subdir(&unpacked(ANDROID_BUILD_TOOLS));
+    let work = out.join("tests");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(work.join("classes")).unwrap();
+    let mut c = Command::new("javac");
+    c.args(["-nowarn", "--release", "11", "-d"]).arg(work.join("classes")).arg(dir.join("tests/HelloArt.java"));
+    run(c);
+    let mut classes = Vec::new();
+    files_with_ext(&work.join("classes"), "class", &mut classes);
+    let mut c = Command::new(bt.join("d8"));
+    c.args(["--min-api", "26", "--output"]).arg(&work).args(&classes);
+    run(c);
+    let tests = out.join("stage/opt/art/tests");
+    std::fs::create_dir_all(&tests).unwrap();
+    let _ = std::fs::remove_file(tests.join("hello-art.jar"));
+    let mut c = Command::new("zip");
+    c.arg("-q").arg(tests.join("hello-art.jar")).arg("classes.dex").current_dir(&work);
+    run(c);
+    out.join("stage")
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -602,6 +661,8 @@ fn assemble_rootfs() -> PathBuf {
     let arcan = arcan_stage();
     copy_tree(&arcan, &rootfs);
     symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
+    // ART, the Android runtime (/opt/art, art-run).
+    copy_tree(&art_stage(), &rootfs);
     // fdbd, the device end of the debug bridge.
     let mut c = cargo();
     c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);

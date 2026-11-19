@@ -761,6 +761,19 @@ impl Kernel {
                 }
                 out
             }
+            ["trace", "off"] => {
+                if let Some(l) = self.linux.as_mut() {
+                    l.trace = None;
+                }
+                "tracing off\n".into()
+            }
+            ["trace", prog] => match self.linux.as_mut() {
+                Some(l) => {
+                    l.trace = Some(String::from(*prog));
+                    format!("tracing system calls of '{}' to the console (trace off to stop)\n", prog)
+                }
+                None => "no Linux personality\n".into(),
+            },
             ["stop", n] => match find(self, n) {
                 None => format!("no component '{}'\n", n),
                 Some(i) if self.comps[i].state == State::Dead => format!("'{}' is not running\n", n),
@@ -802,7 +815,9 @@ impl Kernel {
                     format!("restarted '{}'\n", n)
                 }
             },
-            _ => String::from("usage: list | start <instance> | stop <instance> | restart <instance>\n"),
+            _ => String::from(
+                "usage: list | start <instance> | stop <instance> | restart <instance> | trace <program>|off\n",
+            ),
         }
     }
 

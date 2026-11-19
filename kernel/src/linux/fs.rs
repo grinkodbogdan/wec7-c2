@@ -7,7 +7,6 @@ use super::net::Socket;
 use super::vfs::{self, NodeRef};
 use super::{Kernel, Out, MAX_FDS};
 use crate::arch::timer;
-use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
 use alloc::rc::{Rc, Weak};
 use alloc::string::{String, ToString};
@@ -226,11 +225,7 @@ impl Kernel {
                 Ok(Some((0..n).map(|_| lx.random() as u8).collect()))
             }
             FileKind::Reg(n) => {
-                let data = n.borrow();
-                let src: &[u8] = &data.data;
-                let end = (pos + max).min(src.len());
-                let out = if pos < end { src[pos..end].to_vec() } else { Vec::new() };
-                drop(data);
+                let out = n.borrow().data.read(pos, max);
                 f.pos += out.len() as u64;
                 Ok(Some(out))
             }
@@ -388,13 +383,13 @@ impl Kernel {
                 let n = n.clone();
                 let mut node = n.borrow_mut();
                 let pos = if append { node.data.len() } else { f.pos as usize };
-                let buf = node.data.to_mut();
-                if buf.len() < pos + data.len() {
-                    buf.resize(pos + data.len(), 0);
+                let done = node.data.write(pos, data);
+                f.pos = (pos + done) as u64;
+                if done == 0 && !data.is_empty() {
+                    Err(super::abi::ENOSPC)
+                } else {
+                    Ok(done)
                 }
-                buf[pos..pos + data.len()].copy_from_slice(data);
-                f.pos = (pos + data.len()) as u64;
-                Ok(data.len())
             }
             FileKind::MemFd(o) => {
                 let pos = if append { o.borrow().size } else { f.pos };
@@ -689,11 +684,7 @@ impl Kernel {
         drop(n);
         if flags & O_TRUNC != 0 && flags & O_ACCMODE != 0 {
             if let FileKind::Reg(n) = &kind {
-                let mut n = n.borrow_mut();
-                n.data = Cow::Owned(Vec::new());
-                if let Some(s) = &n.shm {
-                    s.borrow_mut().truncate(0);
-                }
+                n.borrow_mut().data.truncate(0);
             }
         }
         let f = open_file(kind, flags, &r.path);
@@ -828,6 +819,30 @@ impl Kernel {
         self.uwrite(c, buf, &st).map(|_| 0)
     }
 
+    pub(crate) fn sys_fchmod(&mut self, c: usize, fd: u64, mode: u32) -> Result<i64, i64> {
+        let file = self.proc(c).file(fd)?;
+        let f = file.borrow();
+        match &f.kind {
+            FileKind::Reg(n) | FileKind::Dir(n) => {
+                let mut n = n.borrow_mut();
+                n.mode = (n.mode & S_IFMT) | (mode & 0o7777);
+                Ok(0)
+            }
+            _ => Ok(0),
+        }
+    }
+
+    pub(crate) fn sys_fchmodat(&mut self, c: usize, dirfd: u64, path: u64, mode: u32) -> Result<i64, i64> {
+        let p = self.ustr(c, path)?;
+        let base = self.base_dir(c, dirfd)?;
+        let r = self.lx().vfs.lookup(&base, &p, true)?;
+        let mut n = r.node.borrow_mut();
+        if n.mode & S_IFMT != S_IFCHR {
+            n.mode = (n.mode & S_IFMT) | (mode & 0o7777);
+        }
+        Ok(0)
+    }
+
     pub(crate) fn sys_faccessat(&mut self, c: usize, dirfd: u64, path: u64) -> Result<i64, i64> {
         let p = self.ustr(c, path)?;
         let base = self.base_dir(c, dirfd)?;
@@ -893,11 +908,7 @@ impl Kernel {
         let f = file.borrow();
         match &f.kind {
             FileKind::Reg(n) => {
-                let mut n = n.borrow_mut();
-                n.data.to_mut().resize(len as usize, 0);
-                if let Some(s) = &n.shm {
-                    s.borrow_mut().truncate(len);
-                }
+                n.borrow_mut().data.truncate(len as usize);
                 Ok(0)
             }
             FileKind::MemFd(o) => {

@@ -96,6 +96,50 @@ Run any APK yourself, on Flare or on a Linux host:
 cargo run -p droid -- path/to/app.apk
 ```
 
+## ART: the real Android runtime
+
+`droid` covers simple apps; real apps need Android's own runtime and
+framework. Flare now runs **ART**, the Android runtime. It uses the
+standalone build that
+[Android Translation Layer](https://gitlab.com/android_translation_layer/android_translation_layer)
+(ATL) maintains, and the same stack that [Vinix](https://github.com/vlang/vinix)
+uses for its Android apps: ART executes the DEX bytecode and ATL implements
+the Android framework.
+
+* `compat/android/art/build.sh` takes Alpine edge's prebuilt aarch64
+  `art_standalone` (Apache-2.0). The exact packages are recorded in
+  `alpine.lock`. It stages them as the private prefix `/opt/art`, with its
+  own musl loader, the libraries, the JNI natives, the boot class path and
+  ICU data (45 MB).
+* `art-run [dalvikvm args]` runs it. Flare uses 4 KiB pages, so the stock
+  packages work unmodified; Vinix has to rebuild them for its 16 KiB pages.
+* The boot test runs `HelloArt` under ART: collections, a thread,
+  `String.format`, and `fib(25)` in about 85 ms, all interpreted.
+
+Getting there fixed Linux-ABI gaps that ART depends on:
+
+* **`msync` on unmapped memory fails with `ENOMEM`.** ART probes for free
+  low memory this way.
+* **`mmap` honours address hints below the default mmap area.** ART's heap
+  must sit below 4 GiB for compressed references.
+* **Blocked signals are queued even when their action is "ignore".** ART's
+  signal catcher waits for SIGQUIT with `sigtimedwait`.
+* **`chmod`/`fchmod` work.**
+* **`sched_getaffinity` reports every CPU.**
+* **Written files live in page frames, not the kernel heap.** This is what
+  makes the 45 MB runtime pushable with fdb.
+
+Known upstream issue: ATL's ART checks for `framework-res.apk` with a
+`compare` that throws for dex paths shorter than 17 characters, so the
+check program lives at `/opt/art/tests/hello-art.jar`. Debugging this used
+`fdb ctl trace <program>`, which prints a program's system calls, periodic
+stack samples and an abort backtrace to the console.
+
+Next: ATL itself (the framework, `android.*` in Java with JNI natives). It
+then needs a display path: either upstream ATL's GTK4 over Wayland into
+Arcan, or a native backend as Vinix did. After that, run the unmodified
+APKs Vinix verified: Arity calculator, Editor and Open Sudoku.
+
 ## Limits and next steps
 
 * **No display or input yet.** After `onResume` the activity is paused and

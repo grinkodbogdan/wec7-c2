@@ -14,7 +14,8 @@ import subprocess
 import sys
 import tarfile
 
-REL = "v3.22"
+REL = os.environ.get("ALPINE_RELEASE", "v3.22")
+REPOS = os.environ.get("ALPINE_REPOS", "main community").split()
 MIRROR = "https://dl-cdn.alpinelinux.org/alpine"
 SKIP = {"busybox", "alpine-baselayout", "apk-tools", "scanelf", "ssl_client", "musl-utils"}
 
@@ -25,8 +26,8 @@ def fetch(url, path):
 
 def index(cache):
     idx, prov = {}, {}
-    for repo in ["main", "community"]:
-        path = f"{cache}/APKINDEX-{repo}"
+    for repo in REPOS:
+        path = f"{cache}/APKINDEX-{REL}-{repo}"
         if not os.path.exists(path):
             fetch(f"{MIRROR}/{REL}/{repo}/aarch64/APKINDEX.tar.gz", path + ".tgz")
             with tarfile.open(path + ".tgz") as t:

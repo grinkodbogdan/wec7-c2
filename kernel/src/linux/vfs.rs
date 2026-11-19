@@ -44,13 +44,72 @@ pub struct Node {
     pub ino: u64,
     pub mode: u32,
     pub rdev: u64,
-    /// File contents or symlink target. Initramfs files borrow the archive
-    /// embedded in the kernel image and are copied on first write.
-    pub data: Cow<'static, [u8]>,
+    /// File contents or symlink target.
+    pub data: Data,
     pub children: BTreeMap<String, NodeRef>,
     pub mtime: u64,
-    /// Pages shared by MAP_SHARED mappings of this file.
-    pub shm: Option<super::mm::MemRef>,
+}
+
+/// File contents: initramfs files borrow the archive embedded in the kernel
+/// image; written files live in page frames (never the kernel heap), which
+/// MAP_SHARED mappings of the file share.
+#[derive(Clone)]
+pub enum Data {
+    Static(&'static [u8]),
+    Pages(super::mm::MemRef),
+}
+
+impl Data {
+    pub fn len(&self) -> usize {
+        match self {
+            Data::Static(s) => s.len(),
+            Data::Pages(o) => o.borrow().size as usize,
+        }
+    }
+
+    pub fn read(&self, off: usize, max: usize) -> Vec<u8> {
+        match self {
+            Data::Static(s) => s.get(off..(off + max).min(s.len())).unwrap_or(&[]).to_vec(),
+            Data::Pages(o) => o.borrow_mut().read(off as u64, max),
+        }
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.read(0, self.len())
+    }
+
+    /// The whole contents, borrowed when possible.
+    pub fn bytes(&self) -> Cow<'static, [u8]> {
+        match self {
+            Data::Static(s) => Cow::Borrowed(s),
+            Data::Pages(_) => Cow::Owned(self.to_vec()),
+        }
+    }
+
+    /// The frames holding the contents (copied there on first use).
+    pub fn pages(&mut self) -> super::mm::MemRef {
+        if let Data::Static(s) = self {
+            *self = Data::Pages(Rc::new(RefCell::new(super::mm::MemObj::from_bytes(s))));
+        }
+        match self {
+            Data::Pages(o) => o.clone(),
+            Data::Static(_) => unreachable!(),
+        }
+    }
+
+    pub fn write(&mut self, off: usize, data: &[u8]) -> usize {
+        self.pages().borrow_mut().write(off as u64, data)
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        let pages = self.pages();
+        let mut o = pages.borrow_mut();
+        if (len as u64) < o.size {
+            o.truncate(len as u64);
+        } else {
+            o.size = len as u64;
+        }
+    }
 }
 
 impl Node {
@@ -130,10 +189,10 @@ impl Vfs {
             proc_dir.borrow_mut().children.insert(name.to_string(), n);
         }
         let n = v.new_node(S_IFLNK | 0o777);
-        n.borrow_mut().data = Cow::Borrowed(b"/proc/self");
+        n.borrow_mut().data = Data::Static(b"/proc/self");
         let self_dir = v.new_node(S_IFDIR | 0o555);
         let exe = v.new_node(S_IFLNK | 0o777);
-        exe.borrow_mut().data = Cow::Borrowed(b"/bin/busybox");
+        exe.borrow_mut().data = Data::Static(b"/bin/busybox");
         self_dir.borrow_mut().children.insert("exe".to_string(), exe);
         let proc_dir = v.lookup("/", "/proc", true).unwrap().node;
         proc_dir.borrow_mut().children.insert("self".to_string(), self_dir);
@@ -204,7 +263,7 @@ impl Vfs {
                     let (parent, name) = split_parent(path);
                     let dir = self.mkdir_p(parent, 0o755).map_err(|_| "cannot create directory")?;
                     let n = self.new_node(if kind == 1 { S_IFREG | (mode & 0o7777) } else { S_IFLNK | 0o777 });
-                    n.borrow_mut().data = Cow::Borrowed(data);
+                    n.borrow_mut().data = Data::Static(data);
                     dir.borrow_mut().children.insert(name.to_string(), n);
                 }
                 _ => return Err("unknown initramfs entry kind"),
@@ -254,7 +313,7 @@ impl Vfs {
             let next = cur.borrow().children.get(*part).cloned().ok_or(ENOENT)?;
             let last = i + 1 == parts.len();
             if next.borrow().is_symlink() && (!last || follow) {
-                let target = String::from_utf8_lossy(&next.borrow().data).into_owned();
+                let target = String::from_utf8_lossy(&next.borrow().data.to_vec()).into_owned();
                 let base = if walked.is_empty() { "/".to_string() } else { walked.clone() };
                 let rest: Vec<&str> = parts[i + 1..].to_vec();
                 let mut new_path = absolute(&base, &target);
@@ -320,7 +379,7 @@ impl Vfs {
         let (parent, name) = split_parent(&abs);
         let dir = self.lookup("/", parent, true)?;
         let n = self.new_node(S_IFLNK | 0o777);
-        n.borrow_mut().data = Cow::Owned(target.as_bytes().to_vec());
+        n.borrow_mut().data = Data::Pages(Rc::new(RefCell::new(super::mm::MemObj::from_bytes(target.as_bytes()))));
         dir.node.borrow_mut().children.insert(name.to_string(), n);
         Ok(())
     }
@@ -358,14 +417,6 @@ impl Vfs {
 
 impl Node {
     fn dir(ino: u64, perm: u32) -> Node {
-        Node {
-            ino,
-            mode: S_IFDIR | perm,
-            rdev: 0,
-            data: Cow::Borrowed(&[]),
-            children: BTreeMap::new(),
-            mtime: 0,
-            shm: None,
-        }
+        Node { ino, mode: S_IFDIR | perm, rdev: 0, data: Data::Static(&[]), children: BTreeMap::new(), mtime: 0 }
     }
 }

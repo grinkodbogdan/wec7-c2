@@ -27,6 +27,7 @@ pub const ESPIPE: i64 = 29;
 pub const EPIPE: i64 = 32;
 pub const ERANGE: i64 = 34;
 pub const ENAMETOOLONG: i64 = 36;
+pub const ENOSPC: i64 = 28;
 pub const ENOSYS: i64 = 38;
 pub const EOPNOTSUPP: i64 = 95;
 pub const ENOTEMPTY: i64 = 39;

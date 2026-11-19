@@ -144,14 +144,13 @@ pub struct Personality {
     pub binder_ctx: BTreeMap<String, binder::NodeRef>,
     /// The supervisor's last answer, read back from /dev/flarectl.
     pub ctl_response: Vec<u8>,
+    /// Program whose system calls are traced to the console (`trace`).
+    pub trace: Option<String>,
     /// /dev/dri/card0 (when the composition gives Linux a display).
     pub drm: drm::Drm,
     /// /dev/input/eventN, as `boot::INPUT_DEVICES`.
     pub inputs: Vec<input::InputDev>,
 }
-
-/// Debug: trace the system calls of programs whose path ends with this.
-const TRACE_EXE: Option<&str> = None;
 
 pub enum Out {
     Ret(i64),
@@ -219,6 +218,7 @@ impl Personality {
             unix_names: BTreeMap::new(),
             binder_ctx: BTreeMap::new(),
             ctl_response: Vec::new(),
+            trace: None,
             drm: drm::Drm::default(),
             inputs: boot::INPUT_DEVICES.iter().map(|_| input::InputDev::new()).collect(),
         }
@@ -507,7 +507,7 @@ impl Kernel {
             if !n.is_reg() || n.mode & 0o111 == 0 {
                 return Err(EACCES);
             }
-            let image = n.data.clone();
+            let image = n.data.bytes();
             drop(n);
             if image.starts_with(b"#!") && depth < 4 {
                 depth += 1;
@@ -555,7 +555,7 @@ impl Kernel {
             None => None,
             Some(ipath) => {
                 let data = match self.lx().vfs.lookup("/", ipath, true) {
-                    Ok(r) if r.node.borrow().is_reg() => r.node.borrow().data.clone(),
+                    Ok(r) if r.node.borrow().is_reg() => r.node.borrow().data.bytes(),
                     _ => {
                         kprintln!("linux: exec {}: interpreter {} not found", path, ipath);
                         return fail(self, vs, ENOENT);
@@ -986,12 +986,24 @@ impl Kernel {
     // Entry points
     // ---------------------------------------------------------------
 
+    /// Whether task `c` runs a program being traced (`trace <name>` on
+    /// /dev/flarectl: its path ends with `/<name>`).
+    fn traced(&self, c: usize) -> bool {
+        match self.linux.as_ref().and_then(|l| l.trace.as_ref()) {
+            Some(t) => {
+                let exe = &self.proc(c).exe;
+                exe.ends_with(t.as_str()) && exe[..exe.len() - t.len()].ends_with('/')
+            }
+            None => false,
+        }
+    }
+
     /// Debug: once a second, where traced tasks are.
     fn linux_sample(&mut self, now: u64) {
         static LAST: crate::global::Global<u64> = crate::global::Global::new(0);
         // SAFETY: under the kernel lock.
         let last = unsafe { LAST.get() };
-        if TRACE_EXE.is_none() || now < *last + 1_000_000_000 {
+        if self.linux.as_ref().is_none_or(|l| l.trace.is_none()) || now < *last + 1_000_000_000 {
             return;
         }
         *last = now;
@@ -999,23 +1011,64 @@ impl Kernel {
             if self.comps[c].free || self.comps[c].linux.is_none() {
                 continue;
             }
-            if !TRACE_EXE.is_some_and(|t| self.proc(c).exe.ends_with(t)) {
+            if !self.traced(c) {
                 continue;
             }
-            let f = &self.comps[c].frame;
+            let f = self.comps[c].frame;
             let tid = self.comps[c].linux.as_ref().unwrap().tid;
-            kprintln!("sample[{}] state {:?} pc {:#x} lr {:#x}", tid, self.comps[c].state, f.elr, f.x[30]);
+            let (pend, mask) = {
+                let t = self.comps[c].linux.as_ref().unwrap();
+                (t.sig.pending | t.p.borrow().sig.pending, t.sig.mask)
+            };
+            let mut chain = alloc::format!(
+                "sample[{}] state {:?} pc {:#x} lr {:#x} x8 {} sigpend {:#x} sigblk {:#x}:",
+                tid,
+                self.comps[c].state,
+                f.elr,
+                f.x[30],
+                f.x[8],
+                pend,
+                mask
+            );
+            let mut fp = f.x[29];
+            for _ in 0..24 {
+                let (Ok(next), Ok(lr)) = (self.uread_u64(c, fp), self.uread_u64(c, fp + 8)) else { break };
+                chain.push_str(&alloc::format!(" {:#x}", lr));
+                if next <= fp {
+                    break;
+                }
+                fp = next;
+            }
+            kprintln!("{}", chain);
         }
     }
 
     pub(crate) fn linux_syscall(&mut self, c: usize) {
-        let trace = TRACE_EXE.is_some_and(|t| self.proc(c).exe.ends_with(t));
+        let trace = self.traced(c);
         let f = self.comps[c].frame;
         let path = if trace && [56, 79, 48, 35, 34, 78, 33].contains(&f.x[8]) {
             self.ustr(c, f.x[1]).unwrap_or_default()
         } else {
             String::new()
         };
+        // A traced program aborting itself: show its call chain (frame
+        // pointers), to be symbolized on the host.
+        if trace
+            && (f.x[8] == 131 || f.x[8] == 129 || f.x[8] == 130)
+            && [6, 11].contains(&f.x[if f.x[8] == 131 { 2 } else { 1 }])
+        {
+            let mut fp = f.x[29];
+            let mut chain = alloc::format!("backtrace pc {:#x} lr {:#x}", f.elr, f.x[30]);
+            for _ in 0..40 {
+                let (Ok(next), Ok(lr)) = (self.uread_u64(c, fp), self.uread_u64(c, fp + 8)) else { break };
+                chain.push_str(&alloc::format!(" {:#x}", lr));
+                if next <= fp {
+                    break;
+                }
+                fp = next;
+            }
+            kprintln!("{}", chain);
+        }
         let r = self.linux_dispatch(c);
         if trace {
             let tid = self.comps[c].linux.as_ref().map(|t| t.tid).unwrap_or(0);
@@ -1165,7 +1218,9 @@ impl Kernel {
             },
             nr::RENAMEAT | nr::RENAMEAT2 => self.sys_rename(c, a[0], a[1], a[2], a[3]),
             nr::FTRUNCATE => self.sys_ftruncate(c, a[0], a[1]),
-            nr::FCHMOD | nr::FCHMODAT | nr::FCHOWNAT | nr::FCHOWN | nr::UTIMENSAT => Ok(0),
+            nr::FCHMOD => self.sys_fchmod(c, a[0], a[1] as u32),
+            nr::FCHMODAT => self.sys_fchmodat(c, a[0], a[1], a[2] as u32),
+            nr::FCHOWNAT | nr::FCHOWN | nr::UTIMENSAT => Ok(0),
             nr::DUP => {
                 let mut p = self.proc(c);
                 p.file(a[0]).and_then(|f| p.install_fd(f, false, 0)).map(|n| n as i64)
@@ -1187,7 +1242,28 @@ impl Kernel {
             nr::PPOLL => return self.sys_ppoll(c, a[0], a[1], a[2]),
             nr::PSELECT6 => Err(ENOSYS),
             nr::SENDFILE => self.sys_sendfile(c, a[0], a[1], a[2], a[3]),
-            nr::SYNC | nr::FSYNC | nr::FADVISE64 | nr::MSYNC | nr::MLOCK => Ok(0),
+            // msync: nothing to write back, but unmapped ranges fail (ART
+            // probes for free address space this way).
+            nr::MSYNC => {
+                let (start, end) = (a[0], a[0].saturating_add(a[1]));
+                let p = self.proc(c);
+                let mut va = start & !(PAGE_SIZE - 1);
+                let mut ok = a[0].is_multiple_of(PAGE_SIZE);
+                while ok && va < end {
+                    match p.mm.find(va) {
+                        Some(v) => va = v.end,
+                        None => ok = false,
+                    }
+                }
+                if !a[0].is_multiple_of(PAGE_SIZE) {
+                    Err(EINVAL)
+                } else if ok {
+                    Ok(0)
+                } else {
+                    Err(ENOMEM)
+                }
+            }
+            nr::SYNC | nr::FSYNC | nr::FADVISE64 | nr::MLOCK => Ok(0),
             nr::EVENTFD2 => self.sys_eventfd2(c, a[0], a[1]),
             nr::EPOLL_CREATE1 => self.sys_epoll_create1(c, a[0]),
             nr::EPOLL_CTL => self.sys_epoll_ctl(c, a[0], a[1], a[2], a[3]),
@@ -1359,7 +1435,10 @@ impl Kernel {
                 let bytes: Vec<u8> = (0..len.div_ceil(8)).flat_map(|_| self.lx().random().to_le_bytes()).collect();
                 self.uwrite(c, a[0], &bytes[..len]).map(|_| len as i64)
             }
-            nr::SCHED_GETAFFINITY => self.uwrite(c, a[2], &1u64.to_le_bytes()).map(|_| 8),
+            nr::SCHED_GETAFFINITY => {
+                let cpus = (crate::platform::CPUS as usize).min(crate::smp::MAX_CPUS);
+                self.uwrite(c, a[2], &((1u64 << cpus) - 1).to_le_bytes()).map(|_| 8)
+            }
             nr::REBOOT => {
                 if matches!(a[2], LINUX_REBOOT_CMD_POWER_OFF | LINUX_REBOOT_CMD_HALT | LINUX_REBOOT_CMD_RESTART) {
                     kprintln!("linux: reboot({:#x}) requested by pid {}", a[2], self.proc(c).pid);

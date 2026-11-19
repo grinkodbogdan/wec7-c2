@@ -125,6 +125,8 @@ pub enum Backing {
     Shared(MemRef, u64),
     /// Private file mapping: contents copied in on first touch.
     File(Cow<'static, [u8]>, u64),
+    /// Private mapping of a page-backed file: pages copied on first touch.
+    Private(MemRef, u64),
 }
 
 #[derive(Clone)]
@@ -142,6 +144,7 @@ impl Vma {
             Backing::Anon => Backing::Anon,
             Backing::Shared(o, off) => Backing::Shared(o.clone(), off + delta),
             Backing::File(d, off) => Backing::File(d.clone(), off + delta),
+            Backing::Private(o, off) => Backing::Private(o.clone(), off + delta),
         };
         Vma { start, end, prot: self.prot, backing }
     }
@@ -273,6 +276,18 @@ impl Kernel {
                 vs.protect(page, prot);
                 true
             }
+            Backing::Private(obj, off) => {
+                let Ok(pa) = vs.map_new(page, Prot::RW) else { return false };
+                let foff = off + (page - vma.start);
+                let data = obj.borrow_mut().read(foff, PAGE_SIZE as usize);
+                // SAFETY: a frame just mapped for this page.
+                unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), phys_to_virt(pa) as *mut u8, data.len()) };
+                if prot.exec {
+                    crate::arch::sync_icache(phys_to_virt(pa), PAGE_SIZE);
+                }
+                vs.protect(page, prot);
+                true
+            }
             Backing::Shared(obj, off) => {
                 let idx = (off + (page - vma.start)) / PAGE_SIZE;
                 let Some(pa) = obj.borrow_mut().page(idx) else { return false };
@@ -359,15 +374,11 @@ impl Kernel {
                     let data = o.borrow_mut().read(off, len as usize);
                     Backing::File(Cow::Owned(data), 0)
                 }
-                (super::fs::FileKind::Reg(n), true) => {
-                    let mut node = n.borrow_mut();
-                    if node.shm.is_none() {
-                        let obj = MemObj::from_bytes(&node.data);
-                        node.shm = Some(Rc::new(RefCell::new(obj)));
-                    }
-                    Backing::Shared(node.shm.clone().unwrap(), off)
-                }
-                (super::fs::FileKind::Reg(n), false) => Backing::File(n.borrow().data.clone(), off),
+                (super::fs::FileKind::Reg(n), true) => Backing::Shared(n.borrow_mut().data.pages(), off),
+                (super::fs::FileKind::Reg(n), false) => match &n.borrow().data {
+                    super::vfs::Data::Static(s) => Backing::File(Cow::Borrowed(s), off),
+                    super::vfs::Data::Pages(o) => Backing::Private(o.clone(), off),
+                },
                 (super::fs::FileKind::Mem(d), _) => Backing::File(Cow::Owned(d.clone()), off),
                 (super::fs::FileKind::Zero, _) => Backing::Anon,
                 (super::fs::FileKind::Binder(b), _) => {
@@ -406,7 +417,7 @@ impl Kernel {
             p.mm.find_free(len, LOW_TOP, LOW_FLOOR).ok_or(ENOMEM)?
         } else if addr != 0
             && addr.is_multiple_of(PAGE_SIZE)
-            && addr >= MMAP_FLOOR
+            && addr >= USER_MIN_ADDR
             && addr + len <= super::MMAP_TOP
             && !p.mm.overlaps(addr, addr + len)
         {

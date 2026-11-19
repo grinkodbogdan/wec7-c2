@@ -1,0 +1,12 @@
+#!/bin/sh
+# art-run [dalvikvm args...]: run ART (the Android runtime) from its private
+# prefix /opt/art, with its own musl loader and libraries. Without a boot
+# image ART interprets; dex2oat is not used yet.
+A=/opt/art
+export ANDROID_ROOT=$A ANDROID_ART_ROOT=$A ANDROID_I18N_ROOT=$A ANDROID_TZDATA_ROOT=$A
+export ANDROID_DATA=${ANDROID_DATA:-/data/art} ICU_DATA=$A/icu/78.3
+mkdir -p $ANDROID_DATA/dalvik-cache/arm64
+F=$A/framework
+BCP=$F/core-oj-hostdex.jar:$F/core-libart-hostdex.jar:$F/okhttp-hostdex.jar:$F/bouncycastle-hostdex.jar:$F/apache-xml-hostdex.jar
+exec $A/lib/ld-musl-aarch64.so.1 --library-path $A/lib:/usr/lib $A/bin/dalvikvm \
+    -Xbootclasspath:$BCP -Xnoimage-dex2oat -Xusejit:false -Xms32m -Xmx256m "$@"

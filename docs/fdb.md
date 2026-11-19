@@ -17,6 +17,7 @@ cargo fdb run target/apks/kotlin.apk  # install to /data/app and run it with dro
 cargo fdb appl compat/arcan/appl/flarehome   # push the appl, restart the UI with it
 cargo fdb log                         # follow the UI's output
 cargo fdb ctl restart storage         # ask the supervisor
+cargo fdb ctl trace arcan             # trace a program's system calls to the console (trace off)
 cargo fdb screenshot shot.png         # the display, as PNG
 ```
 

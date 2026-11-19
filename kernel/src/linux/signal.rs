@@ -180,7 +180,10 @@ impl Kernel {
             self.linux_exit_group(c, st);
             return;
         }
-        if self.sig_ignored(c, sig) {
+        // Blocked signals are queued even if ignored now (sigwait needs them).
+        let blocked =
+            self.group(c).iter().any(|&t| self.comps[t].linux.as_ref().is_some_and(|l| l.sig.mask & bit(sig) != 0));
+        if self.sig_ignored(c, sig) && !blocked {
             return;
         }
         let mut p = self.proc(c);
@@ -200,7 +203,7 @@ impl Kernel {
             self.linux_exit_group(c, SIGKILL as i32);
             return;
         }
-        if self.sig_ignored(c, sig) {
+        if self.sig_ignored(c, sig) && self.task(c).sig.mask & bit(sig) == 0 {
             return;
         }
         let t = self.task(c);
