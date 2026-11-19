@@ -127,6 +127,7 @@ fn main() {
             std::fs::write(out.join("initramfs.bin"), &archive).unwrap();
             let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = Some(&{:?});", l.init);
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &{:?};", l.env);
+            let _ = writeln!(g, "pub const LINUX_CONTROL: bool = {};", l.control);
             let _ = writeln!(
                 g,
                 "pub static INITRAMFS: &[u8] = include_bytes!({:?});",
@@ -142,6 +143,7 @@ fn main() {
         None => {
             let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = None;");
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &[];");
+            let _ = writeln!(g, "pub const LINUX_CONTROL: bool = false;");
             let _ = writeln!(g, "pub static INITRAMFS: &[u8] = &[];");
         }
     }

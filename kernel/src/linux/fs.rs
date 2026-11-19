@@ -77,6 +77,8 @@ pub enum FileKind {
     Epoll(Rc<RefCell<Epoll>>),
     Socket(Rc<RefCell<Socket>>),
     Binder(Rc<RefCell<super::binder::BinderProc>>),
+    /// The supervisor's control device: write a command, read the answer.
+    FlareCtl(Vec<u8>),
 }
 
 pub struct OpenFile {
@@ -287,12 +289,27 @@ impl Kernel {
             }
             FileKind::PipeW(_) | FileKind::Epoll(_) => Err(EBADF),
             FileKind::Binder(_) => Err(EINVAL),
+            FileKind::FlareCtl(_) => {
+                drop(f);
+                let resp = &mut self.lx().ctl_response;
+                let n = max.min(resp.len());
+                Ok(Some(resp.drain(..n).collect()))
+            }
         }
     }
 
     pub(crate) fn file_write(&mut self, c: usize, file: &FileRef, data: &[u8]) -> Result<usize, i64> {
         let mut f = file.borrow_mut();
         let append = f.flags & O_APPEND != 0;
+        if let FileKind::FlareCtl(_) = f.kind {
+            drop(f);
+            let cmd = String::from_utf8_lossy(data).into_owned();
+            let pid = self.proc(c).pid;
+            kprintln!("linux: pid {} asks the supervisor: {}", pid, cmd.trim());
+            let resp = self.supervisor(cmd.trim()).into_bytes();
+            self.lx().ctl_response = resp;
+            return Ok(data.len());
+        }
         let r = match &f.kind {
             FileKind::Tty => {
                 drop(f);
@@ -473,6 +490,11 @@ impl Kernel {
         let abs = vfs::absolute(&base, &path);
         let procs = self.comps.iter().filter(|x| x.linux.is_some() && !x.free).count();
         let umask = self.proc(c).umask;
+        if abs == "/proc/components" {
+            let data = self.supervisor("list").into_bytes();
+            let f = open_file(FileKind::Mem(data), flags, &abs);
+            return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+        }
         let lx = self.lx();
         if let Some(name) = abs.strip_prefix("/proc/") {
             if let Some(data) = lx.proc_content(name, procs) {
@@ -496,6 +518,7 @@ impl Kernel {
             return Err(ENOTDIR);
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
+                vfs::DEV_FLARECTL => FileKind::FlareCtl(Vec::new()),
                 vfs::DEV_BINDER | vfs::DEV_HWBINDER | vfs::DEV_VNDBINDER => {
                     let dev = match n.rdev {
                         vfs::DEV_HWBINDER => "hwbinder",

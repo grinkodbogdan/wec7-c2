@@ -79,6 +79,8 @@ pub struct LinuxConfig {
     /// argv of pid 1; `init[0]` is a path in the root filesystem.
     pub init: Vec<String>,
     pub env: Vec<String>,
+    /// Linux root may manage components through /dev/flarectl.
+    pub control: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,14 +196,15 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env"].contains(&e.key.as_str()) {
+                if !["init", "env", "control"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
             let list = |k: &str| sec.get(k).and_then(|v| v.as_str_list());
             match list("init") {
                 Some(init) if !init.is_empty() && init[0].starts_with('/') => {
-                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default() })
+                    let control = sec.get("control").and_then(|v| v.as_bool()).unwrap_or(false);
+                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
             }

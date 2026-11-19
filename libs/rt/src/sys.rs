@@ -44,6 +44,22 @@ pub fn call(ep: Slot, label: u64, w: [u64; MSG_WORDS]) -> Result<Message, Error>
     status(r[0]).map(|_| message(&r))
 }
 
+/// `call`, retried when the server dies or drops the call (it is being
+/// restarted or replaced): the endpoint survives the server, so the retry
+/// reaches its next incarnation. Requests must be idempotent.
+pub fn call_retry(ep: Slot, label: u64, w: [u64; MSG_WORDS]) -> Result<Message, Error> {
+    let mut tries = 0;
+    loop {
+        match call(ep, label, w) {
+            Err(Error::PeerDied | Error::NoReply) if tries < 1000 => {
+                tries += 1;
+                yield_now();
+            }
+            r => return r,
+        }
+    }
+}
+
 pub fn recv(ep: Slot) -> Result<Message, Error> {
     let r = raw(nr::RECV, [ep, 0, 0, 0, 0, 0, 0, 0]);
     status(r[0]).map(|_| message(&r))

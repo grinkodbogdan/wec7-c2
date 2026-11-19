@@ -29,6 +29,8 @@ pub const DEV_KMSG: u64 = (1 << 8) | 11;
 pub const DEV_BINDER: u64 = (10 << 8) | 60;
 pub const DEV_HWBINDER: u64 = (10 << 8) | 61;
 pub const DEV_VNDBINDER: u64 = (10 << 8) | 62;
+/// Flare's component supervisor (only with `[linux] control = true`).
+pub const DEV_FLARECTL: u64 = (10 << 8) | 63;
 
 pub struct Node {
     pub ino: u64,
@@ -128,6 +130,15 @@ impl Vfs {
         let proc_dir = v.lookup("/", "/proc", true).unwrap().node;
         proc_dir.borrow_mut().children.insert("self".to_string(), self_dir);
         v
+    }
+
+    /// Add a character device node under /dev.
+    pub fn add_device(&mut self, name: &str, rdev: u64, perm: u32) {
+        let n = self.new_node(S_IFCHR | perm);
+        n.borrow_mut().rdev = rdev;
+        if let Ok(dev) = self.lookup("/", "/dev", true) {
+            dev.node.borrow_mut().children.insert(name.to_string(), n);
+        }
     }
 
     fn new_node(&mut self, mode: u32) -> NodeRef {

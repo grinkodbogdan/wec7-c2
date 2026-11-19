@@ -63,7 +63,7 @@ const INTERP_BASE: u64 = 0x7f_4000_0000;
 pub const MAX_FDS: usize = 1024;
 
 pub fn proc_files() -> &'static [&'static str] {
-    &["version", "uptime", "meminfo", "cpuinfo", "loadavg", "mounts", "filesystems", "cmdline", "stat"]
+    &["version", "uptime", "meminfo", "cpuinfo", "loadavg", "mounts", "filesystems", "cmdline", "stat", "components"]
 }
 
 /// A thread group: what the threads of one Linux process share.
@@ -138,6 +138,8 @@ pub struct Personality {
     pub unix_names: BTreeMap<String, Weak<RefCell<net::Socket>>>,
     /// Binder context managers (servicemanager), per binder device.
     pub binder_ctx: BTreeMap<String, binder::NodeRef>,
+    /// The supervisor's last answer, read back from /dev/flarectl.
+    pub ctl_response: Vec<u8>,
 }
 
 pub enum Out {
@@ -176,6 +178,9 @@ fn utsname() -> [u8; 390] {
 impl Personality {
     pub fn new() -> Personality {
         let mut vfs = Vfs::new();
+        if boot::LINUX_CONTROL {
+            vfs.add_device("flarectl", vfs::DEV_FLARECTL, 0o600);
+        }
         match vfs.unpack(boot::INITRAMFS) {
             Ok(n) => kprintln!("linux: initramfs unpacked: {} entries", n),
             Err(e) => kprintln!("linux: initramfs damaged: {}", e),
@@ -190,6 +195,7 @@ impl Personality {
             warned: Vec::new(),
             unix_names: BTreeMap::new(),
             binder_ctx: BTreeMap::new(),
+            ctl_response: Vec::new(),
         }
     }
 

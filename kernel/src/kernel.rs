@@ -101,6 +101,11 @@ pub(crate) struct Component {
     started: bool,
     restarts: u32,
     finished: bool,
+    /// Stopped by the supervisor (not a failure).
+    stopped: bool,
+    /// Start again once its old address space is released (restart of a
+    /// component that was running on another CPU).
+    respawn: bool,
 }
 
 impl Component {
@@ -121,6 +126,8 @@ impl Component {
             started: false,
             restarts: 0,
             finished: false,
+            stopped: false,
+            respawn: false,
         }
     }
 }
@@ -327,6 +334,9 @@ impl Kernel {
                 self.ext_owner[cpu] = None;
                 mmu::switch_to_kernel();
                 self.release_vspace(c);
+                if core::mem::take(&mut self.comps[c].respawn) {
+                    self.respawn(c);
+                }
             } else if self.comps[c].state == State::Running {
                 if !(self.need_resched[cpu] && !self.ready.is_empty()) {
                     self.need_resched[cpu] = false;
@@ -630,6 +640,82 @@ impl Kernel {
         self.release_vspace(c);
         let comp = &mut self.comps[c];
         comp.state = State::Dead;
+    }
+
+    fn respawn(&mut self, c: usize) {
+        let name = self.comps[c].name.clone();
+        if let Err(e) = self.spawn(c) {
+            kprintln!("supervisor: cannot start '{}': {}", name, e);
+        }
+    }
+
+    /// Runtime management of boot components (the supervisor): drivers and
+    /// services can be stopped, started and restarted while the system
+    /// runs. A restart revokes everything the component holds and grants it
+    /// afresh; its clients' calls in flight fail with E_PEER_DIED and are
+    /// retried against the new incarnation (the endpoints survive).
+    pub(crate) fn supervisor(&mut self, cmd: &str) -> String {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        let find = |k: &Kernel, n: &str| (0..boot::COMPONENTS.len()).find(|&i| k.comps[i].name == n);
+        match words.as_slice() {
+            ["list"] | [] => {
+                let mut out = String::from("instance     state      incarnation  restarts\n");
+                for i in 0..boot::COMPONENTS.len() {
+                    let c = &self.comps[i];
+                    let state = match c.state {
+                        State::Dead if c.stopped => "stopped",
+                        State::Dead if c.finished => "finished",
+                        State::Dead => "dead",
+                        State::Running => "running",
+                        _ => "waiting",
+                    };
+                    out.push_str(&format!("{:<12} {:<10} {:>11}  {:>8}\n", c.name, state, c.incarnation, c.restarts));
+                }
+                out
+            }
+            ["stop", n] => match find(self, n) {
+                None => format!("no component '{}'\n", n),
+                Some(i) if self.comps[i].state == State::Dead => format!("'{}' is not running\n", n),
+                Some(i) => {
+                    kprintln!("supervisor: stopping '{}'", n);
+                    self.teardown(i);
+                    self.comps[i].stopped = true;
+                    format!("stopped '{}'\n", n)
+                }
+            },
+            ["start", n] => match find(self, n) {
+                None => format!("no component '{}'\n", n),
+                Some(i) if self.comps[i].state != State::Dead => format!("'{}' is already running\n", n),
+                Some(i) => {
+                    kprintln!("supervisor: starting '{}'", n);
+                    self.comps[i].stopped = false;
+                    self.comps[i].finished = false;
+                    match self.spawn(i) {
+                        Ok(()) => format!("started '{}'\n", n),
+                        Err(e) => format!("cannot start '{}': {}\n", n, e),
+                    }
+                }
+            },
+            ["restart", n] => match find(self, n) {
+                None => format!("no component '{}'\n", n),
+                Some(i) => {
+                    kprintln!("supervisor: restarting '{}' (incarnation {})", n, self.comps[i].incarnation + 1);
+                    if self.comps[i].state != State::Dead {
+                        self.teardown(i);
+                    }
+                    self.comps[i].stopped = false;
+                    self.comps[i].finished = false;
+                    if self.comps[i].vspace.is_some() {
+                        // Still running on another CPU: started once it lets go.
+                        self.comps[i].respawn = true;
+                    } else {
+                        self.respawn(i);
+                    }
+                    format!("restarted '{}'\n", n)
+                }
+            },
+            _ => String::from("usage: list | start <instance> | stop <instance> | restart <instance>\n"),
+        }
     }
 
     /// Drop a component's address space (destroying it with its last user).

@@ -4,6 +4,10 @@
 export PATH=/bin:/sbin:/usr/bin HOME=/root PS1='flare:\w# '
 cat /etc/motd
 echo "rc: uname -a: $(uname -a)"
+echo "rc: components:"; cat /proc/components
+# Hot-restart the console driver while everything keeps using it.
+echo restart uart > /dev/flarectl && cat /dev/flarectl
+echo "rc: still talking after the console driver restarted"
 echo "rc: arithmetic: 6 * 7 = $((6 * 7))"
 mkdir -p /tmp/demo && echo "written by sh" > /tmp/demo/file.txt
 echo "rc: file round-trip: $(cat /tmp/demo/file.txt)"

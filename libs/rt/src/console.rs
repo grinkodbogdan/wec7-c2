@@ -30,7 +30,7 @@ pub fn slot() -> Option<Slot> {
 /// Write bytes through a specific console capability.
 pub fn write_to(slot: Slot, bytes: &[u8]) -> Result<(), Error> {
     for chunk in bytes.chunks(proto::MAX_CHUNK) {
-        let reply = sys::call(slot, proto::label(proto::WRITE, chunk.len()), proto::pack(chunk))?;
+        let reply = sys::call_retry(slot, proto::label(proto::WRITE, chunk.len()), proto::pack(chunk))?;
         if reply.label != 0 {
             return Err(Error::InvalidArg);
         }
@@ -48,7 +48,7 @@ pub fn write(bytes: &[u8]) -> Result<(), Error> {
 /// Fetch whatever input the console has buffered (may be empty).
 pub fn poll_input(buf: &mut [u8; proto::MAX_CHUNK]) -> Result<usize, Error> {
     let s = slot().ok_or(Error::NoCap)?;
-    let reply = sys::call(s, proto::label(proto::POLL_INPUT, 0), [0; flare_abi::MSG_WORDS])?;
+    let reply = sys::call_retry(s, proto::label(proto::POLL_INPUT, 0), [0; flare_abi::MSG_WORDS])?;
     let n = (reply.label as usize).min(proto::MAX_CHUNK);
     buf[..n].copy_from_slice(&proto::unpack(&reply.words)[..n]);
     Ok(n)
