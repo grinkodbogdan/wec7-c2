@@ -169,5 +169,6 @@ version = "0.1.0"
 dependencies = [
  "fdb",
  "flare-cm",
+ "flare-config",
  "flare-fhd",
 ]

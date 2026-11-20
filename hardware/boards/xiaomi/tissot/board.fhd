@@ -1,0 +1,111 @@
+# Flare Hardware Description — board layer
+#
+# Xiaomi Mi A1 ("tissot"): MSM8953, 4 GiB LPDDR3, 5.5" 1080x1920 panel.
+# Boots from Xiaomi's (Qualcomm LK) boot loader as a Linux arm64 Image in an
+# Android boot image; `cargo xtask image xiaomi-tissot` builds it.
+#
+# Memory: the boot loader passes a device tree, which Flare ignores; this
+# file is the memory map instead. Firmware carve-outs (mainline
+# msm8953.dtsi + msm8953-xiaomi-tissot.dts, rounded out to 2 MiB) are
+# listed as reserved and are never mapped; the usable RAM is described
+# around them. Only the low 2 GiB window (below 4 GiB) is used.
+
+fhd = 0
+kind = "board"
+name = "xiaomi-tissot"
+soc = "qcom/msm8953"
+description = "Xiaomi Mi A1 (tissot): first hardware port, framebuffer console"
+
+# LK always loads arm64 kernels at 0x80080000: the kernel image (with its
+# root filesystem) must end before the GPU zap-shader region at 0x81800000.
+[memory.ram-image]
+base = 0x80000000
+size = 0x01800000
+
+[memory.zap]
+base = 0x81800000
+size = 0x00200000
+reserved = true
+
+[memory.ram-low]
+base = 0x81a00000
+size = 0x03000000
+
+# qseecom, smem, TrustZone, modem (mpss), ADSP, WCNSS, the boot loader
+# itself (0x8f600000), dfps data, the splash buffer (the framebuffer node
+# below), venus and the modem boot authenticator (mba).
+[memory.firmware]
+base = 0x84a00000
+size = 0x0b600000
+reserved = true
+
+[memory.splash]
+base = 0x90000000
+size = 0x00001000
+reserved = true
+
+[memory.firmware2]
+base = 0x91400000
+size = 0x00e00000
+reserved = true
+
+[memory.ram-mid]
+base = 0x92200000
+size = 0x0dd00000
+
+[memory.ramoops]
+base = 0x9ff00000
+size = 0x00100000
+reserved = true
+
+[memory.ram-high]
+base = 0xa0000000
+size = 0x52d00000
+
+[memory.rmtfs]
+base = 0xf2d00000
+size = 0x00300000
+reserved = true
+
+[memory.ram-top]
+base = 0xf3000000
+size = 0x0d000000
+
+# The panel, as the boot loader left it: its continuous-splash buffer,
+# scanned out by the display engine (MDP) in video mode. Flare draws its
+# console into it. 1080x1920, 24-bit RGB, rows of 1080 * 3 bytes.
+[device.fb0]
+compatible = "simple-framebuffer"
+reg = [0x90001000, 0x005eec00]
+width = 1080
+height = 1920
+stride = 3240
+format = "r8g8b8"
+console-scale = 2
+role = "display"
+status = "okay"
+
+[chosen]
+console = "fb0"
+panic = "halt"             # keep a panic message on the screen
+
+# The boot loader (Qualcomm LK, Xiaomi build): an Android boot image (v0
+# header) holding a gzip-compressed Linux arm64 Image with a device tree
+# appended. LK picks the device tree whose qcom,msm-id / qcom,board-id match
+# the phone (MSM8953 = 293; tissot's board id from mainline), and refuses to
+# boot without one; Flare's appended tree carries just those, /memory and
+# /chosen. The phone is A/B: flash boot_a or boot_b, or `fastboot boot`.
+[boot-image]
+format = "android-v0"
+page-size = 2048
+base = 0x80000000
+kernel-offset = 0x00080000             # LK forces 64-bit kernels to 0x80080000 anyway
+ramdisk-offset = 0x02000000
+tags-offset = 0x01e00000
+kernel-compression = "gzip"
+cmdline = "flare"
+dtb-model = "Xiaomi Mi A1 (Flare OS)"
+dtb-compatible = ["xiaomi,tissot", "qcom,msm8953"]
+qcom-msm-id = [293, 0]
+qcom-board-id = [0x1000b, 0]
+max-kernel-end = 0x81800000

@@ -1,0 +1,51 @@
+# Flare Hardware Description — board layer
+#
+# A test double of a phone port on QEMU virt: RAM split around a firmware
+# carve-out, and the console drawn on a 1080x1920 RGB888 framebuffer in the
+# carve-out (like a phone's splash buffer), with panics kept on screen.
+# `cargo xtask fbcon-test` boots it and reads the framebuffer back.
+
+fhd = 0
+kind = "board"
+name = "qemu-virt-fbcon"
+soc = "qemu/virt"
+description = "QEMU virt with a phone-style memory map and framebuffer console"
+
+[memory.dram]
+base = 0x40000000
+size = 0x10000000
+
+[memory.firmware]
+base = 0x50000000
+size = 0x00001000
+reserved = true
+
+# (the framebuffer, below, is the rest of the carve-out's start)
+
+[memory.firmware2]
+base = 0x505f0000
+size = 0x00210000
+reserved = true
+
+[memory.dram-high]
+base = 0x50800000
+size = 0x2f800000
+
+[device.fb0]
+compatible = "simple-framebuffer"
+reg = [0x50001000, 0x005eec00]
+width = 1080
+height = 1920
+stride = 3240
+format = "r8g8b8"
+console-scale = 2
+status = "okay"
+
+[chosen]
+console = "fb0"
+panic = "halt"
+
+[emulation]
+qemu-machine = "virt"
+qemu-cpu = "cortex-a53"
+memory-mib = 1024

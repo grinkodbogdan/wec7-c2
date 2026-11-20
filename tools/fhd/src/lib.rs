@@ -108,12 +108,21 @@ pub struct Platform {
     pub soc: String,
     pub arch: String,
     pub cpus: u32,
+    /// MPIDR affinity value of each CPU, in boot order (`cpu-mpidr`;
+    /// default 0, 1, 2, ...). CPU 0 is the one the bootloader started.
+    pub cpu_mpidr: Vec<u64>,
+    /// What a kernel panic does: "power-off" (default) or "halt", which
+    /// keeps the panic message on the board's console (phones).
+    pub panic: String,
     pub description: Option<String>,
     pub memory: Vec<MemRegion>,
     pub nodes: Vec<Node>,
     pub console: Option<String>,
     /// Emulator settings for boards that are virtual (`[emulation]`).
     pub emulation: BTreeMap<String, Value>,
+    /// How the board's boot loader wants the kernel packaged
+    /// (`[boot-image]`, real boards; read by `cargo xtask image`).
+    pub boot_image: BTreeMap<String, Value>,
     /// Files this platform was assembled from (for build-system rerun triggers).
     pub sources: Vec<String>,
 }
@@ -225,11 +234,14 @@ pub fn load_from_sources(
         soc: root_str(&soc, "name").unwrap_or_default(),
         arch: root_str(&soc, "arch").unwrap_or_default(),
         cpus: soc.doc.root().get("cpus").and_then(|v| v.as_int()).unwrap_or(1) as u32,
+        cpu_mpidr: Vec::new(),
+        panic: "power-off".into(),
         description: root_str(&board, "description"),
         memory: Vec::new(),
         nodes: Vec::new(),
         console: None,
         emulation: BTreeMap::new(),
+        boot_image: BTreeMap::new(),
         sources: vec![soc.file.clone(), board.file.clone()],
     };
     if board.doc.root().get("arch").is_some() {
@@ -240,6 +252,20 @@ pub fn load_from_sources(
         ));
     }
 
+    match soc
+        .doc
+        .root()
+        .get("cpu-mpidr")
+        .map(|v| v.as_array().map(|a| a.iter().map(|x| x.as_int()).collect::<Option<Vec<u64>>>()))
+    {
+        None => platform.cpu_mpidr = (0..platform.cpus as u64).collect(),
+        Some(Some(Some(v))) if v.len() == platform.cpus as usize => platform.cpu_mpidr = v,
+        Some(_) => errs.push(diag(
+            &soc.file,
+            soc.doc.root().line_of("cpu-mpidr"),
+            "cpu-mpidr must be an array of one integer per CPU",
+        )),
+    }
     for (name, keys, origin) in sections {
         interpret_section(&name, keys, origin, &mut platform, &mut errs);
     }
@@ -253,7 +279,7 @@ pub fn load_from_sources(
 fn check_root(layer: &Layer, kind: &str, errs: &mut Vec<Diagnostic>) {
     let root: &Section = layer.doc.root();
     let allowed: &[&str] = if kind == "soc" {
-        &["fhd", "kind", "name", "arch", "cpus", "description"]
+        &["fhd", "kind", "name", "arch", "cpus", "cpu-mpidr", "description"]
     } else {
         &["fhd", "kind", "name", "soc", "description", "arch"]
     };
@@ -302,6 +328,8 @@ fn interpret_section(name: &str, mut keys: Merged, origin: Origin, p: &mut Platf
                 match (k.as_str(), v.as_str()) {
                     ("console", Some(c)) => p.console = Some(c.to_string()),
                     ("console", None) => err(&o, "chosen.console must be a node name string".into()),
+                    ("panic", Some(a)) if a == "halt" || a == "power-off" => p.panic = a.to_string(),
+                    ("panic", _) => err(&o, "chosen.panic must be \"halt\" or \"power-off\"".into()),
                     _ => err(&o, format!("unknown key '{}' in [chosen]", k)),
                 }
             }
@@ -309,6 +337,10 @@ fn interpret_section(name: &str, mut keys: Merged, origin: Origin, p: &mut Platf
         }
         "emulation" => {
             p.emulation = keys.into_iter().map(|(k, (v, _))| (k, v)).collect();
+            return;
+        }
+        "boot-image" => {
+            p.boot_image = keys.into_iter().map(|(k, (v, _))| (k, v)).collect();
             return;
         }
         _ => {}
@@ -499,12 +531,16 @@ pub fn validate(p: &Platform) -> Vec<Diagnostic> {
         }
     }
     if let Some(mib) = p.emulation_int("memory-mib") {
-        let ram: u64 = p.ram().map(|m| m.size).sum();
+        // The emulator provides one bank: from the lowest described memory
+        // to the highest, carve-outs included.
+        let lo = p.memory.iter().map(|m| m.base).min().unwrap_or(0);
+        let hi = p.memory.iter().map(|m| m.base + m.size).max().unwrap_or(0);
+        let ram = hi - lo;
         if mib * 1024 * 1024 != ram {
             let o = Origin { file: p.sources.last().cloned().unwrap_or_default(), line: 1 };
             err(
                 &o,
-                format!("emulation.memory-mib = {} disagrees with described RAM ({} MiB)", mib, ram / (1024 * 1024)),
+                format!("emulation.memory-mib = {} disagrees with described memory ({} MiB)", mib, ram / (1024 * 1024)),
             );
         }
     }
@@ -526,6 +562,8 @@ pub mod codegen {
         let _ = writeln!(s, "pub const SOC: &str = {:?};", p.soc);
         let _ = writeln!(s, "pub const ARCH: &str = {:?};", p.arch);
         let _ = writeln!(s, "pub const CPUS: u32 = {};", p.cpus);
+        let _ = writeln!(s, "pub const CPU_MPIDR: &[u64] = &{:#x?};", p.cpu_mpidr);
+        let _ = writeln!(s, "pub const PANIC_HALT: bool = {};", p.panic == "halt");
         let ranges = |it: &mut dyn Iterator<Item = &MemRegion>| {
             it.map(|m| format!("MemRange {{ base: {:#x}, size: {:#x} }}", m.base, m.size))
                 .collect::<Vec<_>>()

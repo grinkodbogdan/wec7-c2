@@ -10,6 +10,19 @@ global_asm!(
 .section .text.boot, "ax"
 .global _start
 _start:
+    // The Linux arm64 Image header, so boot loaders that boot Linux (U-Boot,
+    // Qualcomm's LK, QEMU's -kernel) load the kernel as they would Linux: at
+    // DRAM base + text_offset, entered at the first instruction with x0 =
+    // their device tree (unused: the board is described by FHD).
+    b       __boot                  // code0
+    .long   0                       // code1
+    .quad   0x80000                 // text_offset
+    .quad   __image_size            // image_size, including .bss
+    .quad   0x2                     // flags: little-endian, 4 KiB pages, placed at DRAM base + text_offset
+    .quad   0, 0, 0                 // res2..res4
+    .ascii  "ARM\x64"               // magic
+    .long   0                       // res5: no PE/COFF header
+__boot:
     // Runs at the physical load address with the MMU off: PC-relative code only.
     // Park secondary CPUs (SMP comes later).
     mrs     x1, mpidr_el1
@@ -35,26 +48,40 @@ _start:
     eret
 3:
     msr     daifset, #0xf
-    // Boot translation tables: map the 1 GiB holding the kernel both at its
-    // physical address (TTBR0, to survive turning the MMU on) and at its
-    // upper-half alias (TTBR1). kmain replaces both.
+    // Boot translation tables: map the kernel image, in 2 MiB blocks, both
+    // at its physical address (TTBR0, to survive turning the MMU on) and at
+    // its upper-half alias (TTBR1); kmain replaces both. Nothing else is
+    // mapped: on phone SoCs, firmware memory next to the kernel must not be
+    // reachable even speculatively.
     adrp    x0, __boot_l1_lo
     adrp    x1, __boot_l1_hi
+    adrp    x6, __boot_l2
     mov     x2, #512
 4:  str     xzr, [x0], #8
     str     xzr, [x1], #8
+    str     xzr, [x6], #8
     subs    x2, x2, #1
     b.ne    4b
     adrp    x0, __boot_l1_lo
     adrp    x1, __boot_l1_hi
+    adrp    x6, __boot_l2
     adrp    x2, _start
     lsr     x3, x2, #30             // L1 index of the kernel's gigabyte
-    lsl     x4, x3, #30
-    mov     x5, #0x705              // block | Normal (attr 1) | inner shareable | AF
-    orr     x4, x4, x5
+    orr     x4, x6, #3              // table descriptor -> __boot_l2
     str     x4, [x0, x3, lsl #3]
     str     x4, [x1, x3, lsl #3]
-    ldr     x2, =0xff00             // MAIR: attr0 Device-nGnRnE, attr1 Normal WB
+    lsr     x7, x2, #21             // first 2 MiB block of the image
+    lsl     x7, x7, #21
+    adrp    x8, __kernel_end
+    mov     x5, #0x705              // block | Normal (attr 1) | inner shareable | AF
+40: lsr     x9, x7, #21
+    and     x9, x9, #0x1ff
+    orr     x10, x7, x5
+    str     x10, [x6, x9, lsl #3]
+    add     x7, x7, #0x200000
+    cmp     x7, x8
+    b.lo    40b
+    ldr     x2, =0x44ff00           // MAIR: attr0 Device-nGnRnE, attr1 Normal WB, attr2 Normal NC
     msr     mair_el1, x2
     ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
     msr     tcr_el1, x2
@@ -99,7 +126,7 @@ __secondary_entry:
     mov     x19, x0
     adrp    x0, __boot_l1_lo
     adrp    x1, __boot_l1_hi
-    ldr     x2, =0xff00
+    ldr     x2, =0x44ff00
     msr     mair_el1, x2
     ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
     msr     tcr_el1, x2

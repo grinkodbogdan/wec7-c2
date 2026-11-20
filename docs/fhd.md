@@ -50,6 +50,36 @@ qemu-cpu = "cortex-a53"
 memory-mib = 256
 ```
 
+Further keys and sections:
+
+```toml
+cpu-mpidr = [0x0, 0x1, 0x100, 0x101]   # SoC layer: MPIDR of each CPU for PSCI CPU_ON
+                                       # (default 0, 1, 2, ...); CPU 0 is the boot CPU
+
+[device.fb0]                   # a framebuffer the boot loader left scanning out
+compatible = "simple-framebuffer"
+reg = [0x90001000, 0x5eec00]
+width = 1080
+height = 1920
+stride = 3240                  # bytes per row
+format = "r8g8b8"              # or x8r8g8b8, a8r8g8b8, r5g6b5, ...
+console-scale = 2              # console font scale (12x24 cells)
+
+[chosen]
+console = "fb0"                # a PL011 or a simple-framebuffer
+panic = "halt"                 # keep a panic on screen; default "power-off"
+
+[boot-image]                   # real boards: how the boot loader wants the
+format = "android-v0"          # kernel packaged (`cargo xtask image`)
+base = 0x80000000
+kernel-offset = 0x80000
+...
+```
+
+Memory regions marked `reserved = true` (firmware carve-outs) and the gaps
+between described regions are never mapped by the kernel. Describe usable
+RAM around carve-outs rather than one region covering them.
+
 A board names its SoC with `soc = "<vendor>/<soc>"`. Node classes in use:
 `intc`, `timer`, `firmware`, `device`; new classes (`clock`, `regulator`,
 `pinctrl`, `power-domain`, `iommu`, `bus`) follow the same shape.
@@ -80,6 +110,8 @@ A board names its SoC with `soc = "<vendor>/<soc>"`. Node classes in use:
 * **Driver binding** (`flare_cm::binding`) matches compatible strings to
   driver manifests.
 * **`cargo xtask run`** reads `[emulation]` to start QEMU.
+* **`cargo xtask image`** reads `[boot-image]` to package the kernel for a
+  real board's boot loader (see [ports/xiaomi-tissot.md](ports/xiaomi-tissot.md)).
 
 ## Relationship to device tree
 
@@ -95,4 +127,9 @@ importer from DTS is on the roadmap.
    devices, console.
 3. Write or reuse driver components for the enabled devices.
 4. Write a boot composition granting each driver its devices.
-5. `cargo xtask fhd <vendor>/<board>`, then build and boot.
+5. `cargo xtask fhd <vendor>/<board>`, then build and boot: `cargo xtask
+   run` for an emulated board, `cargo xtask image --system <composition>`
+   for a real one. Choose `rootfs = "minimal"` in the composition's
+   `[linux]` section if the boot loader limits the image size.
+
+Ports: [Xiaomi Mi A1](ports/xiaomi-tissot.md).

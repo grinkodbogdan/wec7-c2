@@ -6,10 +6,14 @@ cat /etc/motd
 echo "rc: uname -a: $(uname -a)"
 echo "rc: components:"; cat /proc/components
 # Hot-restart the console driver while everything keeps using it.
-echo restart uart > /dev/flarectl && cat /dev/flarectl
-echo "rc: still talking after the console driver restarted"
+if grep -qw uart /proc/components; then
+    echo restart uart > /dev/flarectl && cat /dev/flarectl
+    echo "rc: still talking after the console driver restarted"
+fi
 # Hot-restart the storage driver while storage-test is reading the disk.
-echo restart storage > /dev/flarectl && cat /dev/flarectl
+if grep -qw storage /proc/components; then
+    echo restart storage > /dev/flarectl && cat /dev/flarectl
+fi
 echo "rc: arithmetic: 6 * 7 = $((6 * 7))"
 mkdir -p /tmp/demo && echo "written by sh" > /tmp/demo/file.txt
 echo "rc: file round-trip: $(cat /tmp/demo/file.txt)"
@@ -28,14 +32,16 @@ done
 # The display: Mesa renders through /dev/dri/card0 (Flare's KMS device over
 # the panel's shared memory), first a self-check, then the Arcan phone shell.
 export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DISABLE=true
-kmstest
+[ -e /dev/dri/card0 ] && command -v kmstest > /dev/null && kmstest
 # ART, the Android runtime itself (from Android Translation Layer's standalone
 # build), running a Java program interpreted.
-art-run -cp /opt/art/tests/hello-art.jar HelloArt > /tmp/art.log 2>&1
-s=$?; grep "^art:" /tmp/art.log; echo "rc: art exit status $s"
+if command -v art-run > /dev/null; then
+    art-run -cp /opt/art/tests/hello-art.jar HelloArt > /tmp/art.log 2>&1
+    s=$?; grep "^art:" /tmp/art.log; echo "rc: art exit status $s"
+fi
 # fdb, the debug bridge (host: `cargo fdb`), and the Arcan phone shell.
-fdbd > /dev/console 2>&1 &
-flare-ui flarehome
+[ -e /dev/fdb ] && command -v fdbd > /dev/null && (fdbd > /dev/console 2>&1 &)
+[ -e /dev/dri/card0 ] && command -v arcan > /dev/null && flare-ui flarehome
 echo "rc: starting an interactive shell (type 'exit' to power off)"
 cd /root
 exec /bin/sh

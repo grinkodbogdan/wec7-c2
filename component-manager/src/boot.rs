@@ -103,6 +103,10 @@ pub struct LinuxConfig {
     /// Shared memory holding a `flare.display@1.0` framebuffer, exposed to
     /// Linux as the DRM/KMS device /dev/dri/card0.
     pub display: Option<String>,
+    /// Root filesystem profile `cargo xtask build` assembles: "full" (the
+    /// default: Arcan, ART, ATL and everything else) or "minimal" (busybox,
+    /// the Linux tests and droid) for boards whose boot image must be small.
+    pub rootfs: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +278,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control", "display"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display", "rootfs"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -283,7 +287,11 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                 Some(init) if !init.is_empty() && init[0].starts_with('/') => {
                     let control = sec.get("control").and_then(|v| v.as_bool()).unwrap_or(false);
                     let display = sec.get("display").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control, display })
+                    let rootfs = sec.get("rootfs").and_then(|v| v.as_str()).unwrap_or("full").to_string();
+                    if rootfs != "full" && rootfs != "minimal" {
+                        err(sec.line, format!("[linux] rootfs must be \"full\" or \"minimal\", not \"{}\"", rootfs));
+                    }
+                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control, display, rootfs })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
             }

@@ -17,6 +17,7 @@ Status: **M0 and M1 are done; the Linux ABI (M5) and Android apps (M6) run.**
 * Android apps written in Java and Kotlin run from their APKs, with no Android userspace.
 * Real Android apps from F-Droid (such as the Arity calculator) run on ART with Android Translation Layer's framework. They draw natively into Arcan windows in the phone shell.
 * Flare boots into a graphical phone shell: Arcan, rendering through Flare's own KMS device, with touch input from user-space drivers.
+* First hardware port: the Xiaomi Mi A1 (Snapdragon 625). `cargo xtask image --system system/xiaomi-tissot.boot.toml` builds a boot image its stock boot loader starts, with the console on the phone's screen ([docs/ports/xiaomi-tissot.md](docs/ports/xiaomi-tissot.md); untested on hardware so far).
 
 See [docs/roadmap.md](docs/roadmap.md), [docs/linux.md](docs/linux.md) and
 [docs/android.md](docs/android.md) and [docs/display.md](docs/display.md).

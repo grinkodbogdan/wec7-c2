@@ -86,7 +86,8 @@ pub fn start_secondaries() {
     let entry = mmu::virt_to_phys(unsafe { &__secondary_entry as *const u8 as u64 });
     let n = (platform::CPUS as usize).min(MAX_CPUS);
     for id in 1..n {
-        let r = psci::cpu_on(id as u64, entry, id as u64);
+        let mpidr = platform::CPU_MPIDR.get(id).copied().unwrap_or(id as u64);
+        let r = psci::cpu_on(mpidr, entry, id as u64);
         if r != 0 {
             kprintln!("smp: cpu {} did not start (PSCI {})", id, r);
         }

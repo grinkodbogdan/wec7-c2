@@ -17,7 +17,6 @@ use flare_fhd::Platform;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-const GIB: u64 = 1 << 30;
 
 fn fail(msg: &str) -> ! {
     eprintln!("\nerror: {}\n", msg);
@@ -58,7 +57,7 @@ fn main() {
     std::fs::write(out.join("platform_gen.rs"), flare_fhd::codegen::kernel_platform_rs(&platform)).unwrap();
 
     // Linker script: load the kernel 512 KiB into the first RAM region.
-    let ram = platform.ram().next().unwrap();
+    let ram = platform.ram().min_by_key(|m| m.base).unwrap();
     let base = ram.base + 0x8_0000;
     let ld = include_str!("kernel.ld.in").replace("@KERNEL_BASE@", &format!("{:#x}", base));
     std::fs::write(out.join("kernel.ld"), ld).unwrap();
@@ -247,29 +246,24 @@ fn pack_dir(root: &Path, dir: &Path, out: &mut Vec<u8>, count: &mut usize) {
 
 /// Constraints of the kernel's direct map (1 GiB blocks, 39-bit window).
 fn check_kernel_constraints(p: &Platform) {
-    let user: u64 = 1 << 39;
-    let mut ram_blocks = Vec::new();
-    for m in p.ram() {
-        if m.base + m.size > user {
-            fail(&format!("memory.{} extends above {:#x}, beyond the kernel's direct map", m.name, user));
+    let top: u64 = 1 << 39;
+    for m in &p.memory {
+        if m.base + m.size > top {
+            fail(&format!("memory.{} extends above {:#x}, beyond the kernel's direct map", m.name, top));
         }
-        ram_blocks.extend((m.base / GIB)..=((m.base + m.size - 1) / GIB));
     }
     for n in p.enabled_nodes() {
         for r in &n.regs {
-            let (first, last) = (r.base / GIB, (r.base + r.size - 1) / GIB);
-            if r.base + r.size > user {
-                fail(&format!("{}.{} is above {:#x}; not yet supported by the M1 kernel", n.class, n.name, user));
-            }
-            if (first..=last).any(|b| ram_blocks.contains(&b)) {
-                fail(&format!(
-                    "{}.{} shares a 1 GiB block with RAM; the M1 kernel maps memory with 1 GiB blocks",
-                    n.class, n.name
-                ));
+            if r.base + r.size > top {
+                fail(&format!("{}.{} is above {:#x}, beyond the kernel's direct map", n.class, n.name, top));
             }
         }
     }
+    let first = p.ram().map(|m| m.base).min().unwrap_or(0);
+    if first % (2 << 20) != 0 {
+        fail("the lowest RAM region must start on a 2 MiB boundary (the kernel loads at its base + 512 KiB)");
+    }
     if !p.enabled_nodes().any(|n| n.class == "intc" && n.is_compatible("arm,gic-v2")) {
-        fail("the M1 kernel needs an arm,gic-v2 interrupt controller");
+        fail("the kernel needs an arm,gic-v2 interrupt controller");
     }
 }

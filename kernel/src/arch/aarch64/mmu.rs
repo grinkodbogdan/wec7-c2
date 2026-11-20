@@ -3,8 +3,12 @@
 //! 4 KiB granule, 39-bit virtual addresses in both halves.
 //!
 //! * **TTBR1 (upper half)** belongs to the kernel: a direct map of RAM and
-//!   device windows at `KVA + physical`, in 1 GiB blocks, global and
-//!   inaccessible to EL0. The kernel image runs inside it.
+//!   device windows at `KVA + physical`, global and inaccessible to EL0.
+//!   The kernel image runs inside it. Only what the board describes is
+//!   mapped, in 2 MiB blocks where alignment allows and 4 KiB pages
+//!   elsewhere: firmware carve-outs between RAM regions (TrustZone, modem
+//!   and DSP memory on phone SoCs) are never mapped, not even for
+//!   speculative accesses.
 //! * **TTBR0 (lower half)** belongs entirely to the running component or
 //!   process, with 4 KiB pages tagged by its ASID. Linux binaries can use
 //!   their conventional low addresses.
@@ -17,6 +21,8 @@ pub const KVA: u64 = 0xffff_ff80_0000_0000;
 
 pub const ATTR_DEVICE: u64 = 0;
 pub const ATTR_NORMAL: u64 = 1;
+/// Normal, non-cacheable (framebuffers): MAIR attr2 = 0x44.
+pub const ATTR_NORMAL_NC: u64 = 2;
 
 pub const VALID: u64 = 1 << 0;
 pub const TABLE: u64 = 1 << 1; // table (L1/L2) or page (L3) descriptor
@@ -50,7 +56,60 @@ pub struct Table(pub [u64; 512]);
 
 static KERNEL_L1: Global<Table> = Global::new(Table([0; 512]));
 static EMPTY_L1: Global<Table> = Global::new(Table([0; 512]));
-const GIB: u64 = 1 << 30;
+const MIB2: u64 = 2 << 20;
+const PAGE: u64 = 4096;
+
+/// Second- and third-level tables of the direct map.
+const POOL: usize = 160;
+static TABLES: Global<[Table; POOL]> = Global::new([const { Table([0; 512]) }; POOL]);
+static TABLES_USED: Global<usize> = Global::new(0);
+
+fn new_table() -> u64 {
+    // SAFETY: boot-time, single-threaded.
+    let used = unsafe { TABLES_USED.get() };
+    assert!(*used < POOL, "mmu: direct map needs more than {} tables", POOL);
+    // SAFETY: as above; the pool is zeroed .bss.
+    let t = unsafe { &mut TABLES.get()[*used] };
+    *used += 1;
+    virt_to_phys(t.0.as_ptr() as u64)
+}
+
+fn table_at(desc: u64) -> &'static mut [u64; 512] {
+    // SAFETY: `desc` is a table descriptor this module created, pointing
+    // into the static pool.
+    unsafe { &mut *(phys_to_virt(desc & ADDR_MASK) as *mut [u64; 512]) }
+}
+
+/// The next-level table under `*e`, creating it (an entry must not
+/// already be a block: described regions do not overlap).
+fn next_level(e: &mut u64) -> &'static mut [u64; 512] {
+    if *e == 0 {
+        *e = new_table() | VALID | TABLE;
+    }
+    assert!(*e & TABLE != 0, "mmu: overlapping mappings");
+    table_at(*e)
+}
+
+/// Map physical `[base, base + size)` at `KVA + base` with `attrs`.
+fn map(l1: &mut [u64; 512], base: u64, size: u64, attrs: u64) {
+    let mut pa = base & !(PAGE - 1);
+    let end = (base + size + PAGE - 1) & !(PAGE - 1);
+    while pa < end {
+        let l2 = next_level(&mut l1[((pa >> 30) & 0x1ff) as usize]);
+        let i2 = ((pa >> 21) & 0x1ff) as usize;
+        if pa % MIB2 == 0 && end - pa >= MIB2 && l2[i2] == 0 {
+            l2[i2] = pa | VALID | attrs;
+            pa += MIB2;
+            continue;
+        }
+        let l3 = next_level(&mut l2[i2]);
+        let i3 = ((pa >> 12) & 0x1ff) as usize;
+        if l3[i3] == 0 {
+            l3[i3] = pa | VALID | TABLE | attrs;
+        }
+        pa += PAGE;
+    }
+}
 
 /// Build the kernel's direct map from the board description and drop the
 /// boot identity map.
@@ -60,18 +119,13 @@ const GIB: u64 = 1 << 30;
 pub unsafe fn init() {
     let l1 = &mut KERNEL_L1.get().0;
     for r in platform::RAM {
-        for gib in (r.base / GIB)..=((r.base + r.size - 1) / GIB) {
-            l1[gib as usize] = (gib * GIB) | VALID | attr(ATTR_NORMAL) | AF | SH_INNER | UXN;
-        }
+        map(l1, r.base, r.size, attr(ATTR_NORMAL) | AF | SH_INNER | UXN);
     }
     for d in platform::DEVICES {
+        let fb = d.is_compatible("simple-framebuffer");
         for r in d.regs {
-            for gib in (r.base / GIB)..=((r.base + r.size - 1) / GIB) {
-                let e = &mut l1[gib as usize];
-                if *e == 0 {
-                    *e = (gib * GIB) | VALID | attr(ATTR_DEVICE) | AF | UXN | PXN;
-                }
-            }
+            let attrs = if fb { attr(ATTR_NORMAL_NC) | AF | SH_INNER } else { attr(ATTR_DEVICE) | AF };
+            map(l1, r.base, r.size, attrs | UXN | PXN);
         }
     }
     let ttbr1 = virt_to_phys(l1.as_ptr() as u64);

@@ -1,4 +1,4 @@
-//! Kernel heap: size-class free lists over a static arena.
+//! Kernel heap: size-class free lists over an arena of RAM.
 //!
 //! Small blocks (16 B .. 4 KiB, powers of two) come from per-class free
 //! lists; larger blocks are page multiples kept on a best-fit list, split
@@ -8,16 +8,11 @@
 
 use crate::global::Global;
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::{self, addr_of_mut};
+use core::ptr;
 
 const HEAP_SIZE: usize = 64 << 20;
 const CLASSES: usize = 9; // 16 << 0 ..= 16 << 8 (4096)
 const PAGE: usize = 4096;
-
-#[repr(C, align(4096))]
-struct Arena([u8; HEAP_SIZE]);
-
-static mut ARENA: Arena = Arena([0; HEAP_SIZE]);
 
 struct State {
     next: usize,
@@ -29,12 +24,24 @@ struct State {
 
 static STATE: Global<State> = Global::new(State { next: 0, end: 0, small: [0; CLASSES], large: 0 });
 
-pub fn init() {
-    // SAFETY: boot-time, single reference.
+/// The arena: the top of the largest RAM region, kept out of the kernel
+/// image so the image stays small (boot loaders place it in a fixed,
+/// sometimes narrow, window). Returns its physical range for the frame
+/// allocator to exclude.
+pub fn init() -> (u64, u64) {
+    let r = crate::platform::RAM.iter().max_by_key(|r| r.size).expect("no RAM");
+    let size = (HEAP_SIZE as u64).min(r.size / 4) & !(PAGE as u64 - 1);
+    let end = (r.base + r.size) & !(PAGE as u64 - 1);
+    let start = end - size;
+    // SAFETY: boot-time, single reference; the range is RAM, direct-mapped,
+    // and excluded from the frame allocator by the caller.
     let s = unsafe { STATE.get() };
-    let start = addr_of_mut!(ARENA) as usize;
-    s.next = start;
-    s.end = start + HEAP_SIZE;
+    s.next = crate::arch::mmu::phys_to_virt(start) as usize;
+    s.end = crate::arch::mmu::phys_to_virt(end) as usize;
+    // The arena is not zero-initialised memory any more: clear it once.
+    // SAFETY: as above.
+    unsafe { ptr::write_bytes(s.next as *mut u8, 0, size as usize) };
+    (start, end)
 }
 
 fn class_of(size: usize) -> usize {

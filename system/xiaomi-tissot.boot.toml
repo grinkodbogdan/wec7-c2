@@ -1,0 +1,17 @@
+# Flare boot composition for the Xiaomi Mi A1 (tissot): the first hardware
+# port. What runs:
+#   * the framekernel on all 8 cores, its console drawn on the panel (the
+#     boot loader's splash framebuffer, see hardware/boards/xiaomi/tissot);
+#   * the Linux personality with a small root filesystem: busybox, the
+#     Linux ABI tests and droid's Android apps, all printing to the panel.
+# No drivers for the phone's own peripherals yet (touch, keys, storage,
+# USB): nothing here powers the phone off; hold the power key to turn it off.
+
+name = "xiaomi-tissot"
+board = "xiaomi/tissot"
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+control = true
+rootfs = "minimal"

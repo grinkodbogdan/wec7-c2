@@ -32,6 +32,8 @@ SECTIONS
         . = . + 4096;
         __boot_l1_hi = .;
         . = . + 4096;
+        __boot_l2 = .;
+        . = . + 4096;
     }
 
     . = ALIGN(16);
@@ -53,6 +55,7 @@ SECTIONS
     __kernel_end = .;
 
     _start_phys = _start - KVA;
+    __image_size = __kernel_end - __kernel_start;
 
     /DISCARD/ : {
         *(.eh_frame*)

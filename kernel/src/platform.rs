@@ -22,6 +22,9 @@ impl DeviceDesc {
     pub fn is_compatible(&self, c: &str) -> bool {
         self.compatible.contains(&c)
     }
+    pub fn int_prop(&self, key: &str) -> Option<u64> {
+        self.int_props.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+    }
     pub fn str_prop(&self, key: &str) -> Option<&'static str> {
         self.str_props.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
     }

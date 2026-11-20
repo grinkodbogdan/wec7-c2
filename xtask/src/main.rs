@@ -5,6 +5,8 @@
 //!   cargo xtask test                                  host tests + QEMU boot test
 //!   cargo xtask qemu-test [--system <file>]           QEMU boot test only
 //!   cargo xtask fhd <vendor>/<board>                  validate and show a board
+//!   cargo xtask image   --system <file>               flashable boot image for a real board
+//!   cargo xtask fbcon-test                            phone-port test double: framebuffer console
 //!   cargo xtask cm resolve [--system <file>]          interface wiring + start order
 //!   cargo xtask cm swap <instance> <manifest-dir> [--system <file>]
 //!                                                     plan a hot-swap
@@ -306,7 +308,7 @@ fn load_manifest(dir: &str) -> Manifest {
 
 /// Build the components named by the composition, then the kernel.
 fn build(o: &Opts) -> PathBuf {
-    let (_, manifests) = load_composition(&o.system);
+    let (comp, manifests) = load_composition(&o.system);
     let profile = if o.release { "release" } else { "debug" };
     let mut c = cargo();
     c.args(["build", "--target", TARGET]);
@@ -318,9 +320,11 @@ fn build(o: &Opts) -> PathBuf {
     for n in &names {
         c.args(["-p", n]);
     }
-    run(c);
+    if !names.is_empty() {
+        run(c);
+    }
     let out = root().join("target").join(TARGET).join(profile);
-    let rootfs = assemble_rootfs();
+    let rootfs = assemble_rootfs(comp.linux.as_ref().map(|l| l.rootfs != "minimal").unwrap_or(true));
     let mut k = cargo();
     k.args(["build", "--target", TARGET, "-p", "flare-kernel"]);
     if o.release {
@@ -673,8 +677,9 @@ fn linux_sdk() -> PathBuf {
 }
 
 /// Assemble the Linux root filesystem: compat/linux/rootfs, busybox with
-/// applet links, and the Linux test programs.
-fn assemble_rootfs() -> PathBuf {
+/// applet links, and the Linux test programs. `full` adds Arcan, ART, ATL
+/// and fdbd; boards with a small boot image use the minimal profile.
+fn assemble_rootfs(full: bool) -> PathBuf {
     use std::os::unix::fs::{symlink, PermissionsExt};
     let rootfs = root().join("target").join("flare-rootfs");
     let _ = std::fs::remove_dir_all(&rootfs);
@@ -696,32 +701,38 @@ fn assemble_rootfs() -> PathBuf {
     run(c);
     let dst = rootfs.join("usr/bin/std-test");
     std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/std-test"), &dst).unwrap();
-    // Arcan, Mesa and their libraries (built by compat/arcan/build.sh).
-    let arcan = arcan_stage();
-    copy_tree(&arcan, &rootfs);
-    symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
-    // ART, the Android runtime (/opt/art, art-run).
-    copy_tree(&art_stage(), &rootfs);
-    // Android Translation Layer with Flare's native display backend
-    // (/opt/atl, atl-run) and its test app.
-    copy_tree(&atl_stage(), &rootfs);
-    let views = root().join("target/atl/apks/views.apk");
-    let fresh = views
-        .metadata()
-        .and_then(|m| m.modified())
-        .map(|t| t > newest_mtime(&root().join("compat/android/atl/apps/views")))
-        .unwrap_or(false);
-    if !fresh {
-        std::fs::create_dir_all(views.parent().unwrap()).unwrap();
-        build_apk(&root().join("compat/android/atl/apps/views"), &views);
+    if !full {
+        symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
     }
-    std::fs::create_dir_all(rootfs.join("data/local/tmp")).unwrap();
-    std::fs::copy(&views, rootfs.join("data/local/tmp/views.apk")).unwrap();
-    // fdbd, the device end of the debug bridge.
-    let mut c = cargo();
-    c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);
-    run(c);
-    std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/fdbd"), rootfs.join("usr/bin/fdbd")).unwrap();
+    if full {
+        // Arcan, Mesa and their libraries (built by compat/arcan/build.sh).
+        let arcan = arcan_stage();
+        copy_tree(&arcan, &rootfs);
+        symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
+        // ART, the Android runtime (/opt/art, art-run).
+        copy_tree(&art_stage(), &rootfs);
+        // Android Translation Layer with Flare's native display backend
+        // (/opt/atl, atl-run) and its test app.
+        copy_tree(&atl_stage(), &rootfs);
+        let views = root().join("target/atl/apks/views.apk");
+        let fresh = views
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t > newest_mtime(&root().join("compat/android/atl/apps/views")))
+            .unwrap_or(false);
+        if !fresh {
+            std::fs::create_dir_all(views.parent().unwrap()).unwrap();
+            build_apk(&root().join("compat/android/atl/apps/views"), &views);
+        }
+        std::fs::create_dir_all(rootfs.join("data/local/tmp")).unwrap();
+        std::fs::copy(&views, rootfs.join("data/local/tmp/views.apk")).unwrap();
+        // fdbd, the device end of the debug bridge.
+        let mut c = cargo();
+        c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);
+        run(c);
+        std::fs::copy(root().join("target").join(LINUX_TARGET).join("release/fdbd"), rootfs.join("usr/bin/fdbd"))
+            .unwrap();
+    }
     // Android apps: the droid runtime and the APKs it runs.
     let mut c = cargo();
     c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "droid"]);
@@ -762,6 +773,118 @@ fn assemble_rootfs() -> PathBuf {
     c.arg("-L").arg(&lib).args(["-lgreet", "-Wl,-rpath,/usr/lib"]);
     run(c);
     rootfs
+}
+
+/// Boot the phone-port test double (a phone-style memory map and the
+/// console on a framebuffer, as on the Xiaomi Mi A1) and read the screen
+/// back as text until the Linux personality has run its tests.
+fn fbcon_test(o: &Opts) -> bool {
+    let mut o2 = Opts { system: "system/qemu-virt-fbcon.boot.toml".into(), release: o.release, rest: Vec::new() };
+    if o.system != DEFAULT_SYSTEM {
+        o2.system = o.system.clone();
+    }
+    let (comp, _) = load_composition(&o2.system);
+    let p = flare_fhd::load_board(&root().join("hardware"), &comp.board).unwrap_or_else(|_| exit(1));
+    let fb = p.nodes.iter().find(|n| n.is_compatible("simple-framebuffer")).unwrap_or_else(|| die("no framebuffer"));
+    let int = |k: &str| fb.props.get(k).and_then(|v| v.as_int()).unwrap_or(0);
+    let (w, h, stride, scale) = (int("width"), int("height"), int("stride"), int("console-scale").max(1));
+    let base = fb.regs[0].base;
+    let kernel = build(&o2);
+    // Boot it as a phone's boot loader would: the raw Linux Image.
+    let image = root().join("target/fbcon-test.Image");
+    let mut c = Command::new("llvm-objcopy");
+    c.args(["-O", "binary"]).arg(&kernel).arg(&image);
+    run(c);
+    let qmp = root().join("target/fbcon-qmp.sock");
+    let _ = std::fs::remove_file(&qmp);
+    let mut child = qemu_command(&o2, &image)
+        .arg("-qmp")
+        .arg(format!("unix:{},server=on,wait=off", qmp.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| die(&format!("cannot start qemu-system-aarch64: {}", e)));
+    let mut q = None;
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(200));
+        q = Qmp::connect(&qmp);
+        if q.is_some() {
+            break;
+        }
+    }
+    let Some(mut q) = q else {
+        let _ = child.kill();
+        die("no QMP connection")
+    };
+    let dump = root().join("target/fbcon-test.raw");
+    let png = root().join("target/screenshots/fbcon.png");
+    let _ = std::fs::create_dir_all(png.parent().unwrap());
+    let mut text = String::new();
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let done = "rc: starting an interactive shell";
+    while Instant::now() < deadline && !text.contains(done) && !text.contains("KERNEL PANIC") {
+        std::thread::sleep(Duration::from_secs(5));
+        q.cmd(&format!(
+            "{{\"execute\":\"pmemsave\",\"arguments\":{{\"val\":{},\"size\":{},\"filename\":\"{}\"}}}}",
+            base,
+            stride * h,
+            dump.display()
+        ));
+        let out = Command::new("python3")
+            .arg(root().join("tools/bootimg/fbtext.py"))
+            .arg(&dump)
+            .args([w, h, stride, 3, scale].iter().map(|v| v.to_string()))
+            .arg(&png)
+            .output()
+            .unwrap_or_else(|e| die(&format!("fbtext.py: {}", e)));
+        text = String::from_utf8_lossy(&out.stdout).into_owned();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    println!("---- screen ({}) ----\n{}", png.display(), text);
+    let ok = text.contains(done) && !text.contains("KERNEL PANIC");
+    println!("{}", if ok { "PASS: the console reached the shell on the framebuffer" } else { "FAIL" });
+    ok
+}
+
+/// Build the composition and package the kernel the way the board's boot
+/// loader wants it (`[boot-image]` in its FHD), in target/images/<board>.
+fn image(o: &Opts) {
+    let (comp, _) = load_composition(&o.system);
+    let p = flare_fhd::load_board(&root().join("hardware"), &comp.board).unwrap_or_else(|errs| {
+        for e in errs {
+            eprintln!("{}", e);
+        }
+        exit(1)
+    });
+    if p.boot_image.is_empty() {
+        die(&format!("board {} has no [boot-image] section (a virtual board? use `cargo xtask run`)", comp.board));
+    }
+    let kernel = build(o);
+    let out = root().join("target/images").join(&p.board);
+    std::fs::create_dir_all(&out).unwrap();
+    let image = out.join("Image");
+    let mut c = Command::new("llvm-objcopy");
+    c.args(["-O", "binary"]).arg(&kernel).arg(&image);
+    run(c);
+    fn json(v: &flare_config::Value) -> String {
+        match v {
+            flare_config::Value::Str(s) => format!("{:?}", s),
+            flare_config::Value::Int(i) => i.to_string(),
+            flare_config::Value::Bool(b) => b.to_string(),
+            flare_config::Value::Array(a) => format!("[{}]", a.iter().map(json).collect::<Vec<_>>().join(", ")),
+        }
+    }
+    let spec = format!(
+        "{{{}}}",
+        p.boot_image.iter().map(|(k, v)| format!("{:?}: {}", k, json(v))).collect::<Vec<_>>().join(", ")
+    );
+    let spec_path = out.join("boot-image.json");
+    std::fs::write(&spec_path, spec).unwrap();
+    let mut c = Command::new("python3");
+    c.arg(root().join("tools/bootimg/mkimage.py")).arg(&spec_path).arg(&image).arg(&out);
+    run(c);
+    println!("image: {}", out.join("boot.img").display());
 }
 
 fn qemu_command(o: &Opts, kernel: &Path) -> Command {
@@ -1284,7 +1407,7 @@ fn cm(o: &Opts) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = args.first().cloned() else {
-        eprintln!("usage: cargo xtask <build|run|test|qemu-test|fhd|cm> [options]");
+        eprintln!("usage: cargo xtask <build|run|test|qemu-test|image|fhd|cm> [options]");
         exit(2)
     };
     let o = parse_opts(&args[1..]);
@@ -1299,6 +1422,8 @@ fn main() {
             exit(status.code().unwrap_or(1));
         }
         "qemu-test" => exit(if qemu_test(&o) { 0 } else { 1 }),
+        "image" => image(&o),
+        "fbcon-test" => exit(if fbcon_test(&o) { 0 } else { 1 }),
         "test" => {
             let mut c = cargo();
             c.arg("test");

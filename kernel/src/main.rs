@@ -21,6 +21,7 @@ mod arch;
 mod boot;
 mod console;
 mod elf;
+mod font;
 mod global;
 mod heap;
 mod kernel;
@@ -36,7 +37,7 @@ pub extern "C" fn kmain() -> ! {
     smp::init_boot_cpu();
     // SAFETY: called exactly once, first thing, on the boot CPU.
     unsafe { arch::mmu::init() };
-    heap::init();
+    let heap = heap::init();
     console::init();
     kprintln!();
     kprintln!("Flare OS framekernel {} (arm64)", env!("CARGO_PKG_VERSION"));
@@ -47,7 +48,7 @@ pub extern "C" fn kmain() -> ! {
         platform::RAM.len(),
         platform::DEVICES.len()
     );
-    mm::frame::init();
+    mm::frame::init(heap);
     arch::exceptions::init();
     arch::enable_fp();
     arch::gic::init();
@@ -59,5 +60,12 @@ pub extern "C" fn kmain() -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     console::emergency(format_args!("\nKERNEL PANIC: {}\n", info));
+    if platform::PANIC_HALT {
+        // Keep the message on the board's console (a phone's screen).
+        loop {
+            // SAFETY: idle forever with interrupts masked.
+            unsafe { core::arch::asm!("msr daifset, #0xf", "wfe", options(nomem, nostack)) };
+        }
+    }
     arch::psci::system_off()
 }

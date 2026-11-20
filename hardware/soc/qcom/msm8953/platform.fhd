@@ -1,0 +1,46 @@
+# Flare Hardware Description — SoC layer
+#
+# Qualcomm MSM8953 (Snapdragon 625): 8 Cortex-A53 in two clusters, GICv2
+# (qcom,msm-qgic2), the arm64 generic timer, PSCI through TrustZone (SMC).
+# Facts from mainline Linux's arch/arm64/boot/dts/qcom/msm8953.dtsi.
+# Interrupt numbers are GIC INTIDs (SPI n = 32 + n, PPI n = 16 + n).
+#
+# DRAM starts at 0x80000000; how much is fitted and which parts firmware
+# owns (TrustZone, modem, DSPs) is board-specific: see the board layer.
+
+fhd = 0
+kind = "soc"
+name = "qcom-msm8953"
+arch = "arm64"
+cpus = 8
+# Cluster 0 is Aff1 = 0, cluster 1 is Aff1 = 1. The boot loader starts CPU 0.
+cpu-mpidr = [0x000, 0x001, 0x002, 0x003, 0x100, 0x101, 0x102, 0x103]
+description = "Qualcomm MSM8953 / Snapdragon 625 (8x Cortex-A53, GICv2)"
+
+[intc.gic]
+compatible = ["arm,gic-v2", "qcom,msm-qgic2"]
+reg = [[0x0b000000, 0x1000],       # distributor
+       [0x0b002000, 0x1000]]       # CPU interface
+
+[timer.arch-timer]
+compatible = "arm,armv8-timer"
+interrupts = [20]          # EL1 virtual timer: PPI 4 on this SoC
+
+[firmware.psci]
+compatible = "arm,psci-1.0"
+method = "smc"             # TrustZone
+
+# BLSP1 UART1 (uart_0 in mainline): the debug UART phones wire to test pads.
+# No Flare driver yet; boards leave it disabled.
+[device.uart0]
+compatible = ["qcom,msm-uartdm-v1.4", "qcom,msm-uartdm"]
+reg = [0x078af000, 0x200]
+interrupts = [139]         # SPI 107
+status = "disabled"
+
+# Top-level mode multiplexer and GPIO controller (keys, hall sensor).
+[device.tlmm]
+compatible = "qcom,msm8953-pinctrl"
+reg = [0x01000000, 0x300000]
+interrupts = [240]         # SPI 208
+status = "disabled"

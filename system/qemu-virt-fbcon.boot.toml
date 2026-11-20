@@ -1,0 +1,12 @@
+# Test double of the Xiaomi Mi A1 port (system/xiaomi-tissot.boot.toml) on
+# QEMU: the same composition on a board with a phone-style memory map and a
+# framebuffer console. `cargo xtask fbcon-test` boots it.
+
+name = "qemu-virt-fbcon"
+board = "qemu/virt-fbcon"
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+control = true
+rootfs = "minimal"
