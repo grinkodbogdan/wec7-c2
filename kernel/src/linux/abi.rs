@@ -202,6 +202,9 @@ pub mod nr {
     pub const MKDIRAT: u64 = 34;
     pub const UNLINKAT: u64 = 35;
     pub const SYMLINKAT: u64 = 36;
+    pub const LINKAT: u64 = 37;
+    pub const STATFS: u64 = 43;
+    pub const FSTATFS: u64 = 44;
     pub const RENAMEAT: u64 = 38;
     pub const FTRUNCATE: u64 = 46;
     pub const FACCESSAT: u64 = 48;

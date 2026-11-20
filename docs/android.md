@@ -135,12 +135,107 @@ check program lives at `/opt/art/tests/hello-art.jar`. Debugging this used
 `fdb ctl trace <program>`, which prints a program's system calls, periodic
 stack samples and an abort backtrace to the console.
 
-Next: ATL itself (the framework, `android.*` in Java with JNI natives). It
-then needs a display path: either upstream ATL's GTK4 over Wayland into
-Arcan, or a native backend as Vinix did. After that, run the unmodified
-APKs Vinix verified: Arity calculator, Editor and Open Sudoku.
+## Real Android apps: ART + ATL with a native Arcan display
 
-## Limits and next steps
+On top of ART, Flare runs Android Translation Layer's framework (the
+`android.*` classes in Java, with JNI natives), and draws apps **natively
+into Arcan windows**, without GTK. This is the same split Vinix made: keep
+the framework, replace the toolkit. Unmodified APKs from F-Droid run in the
+phone shell.
+
+![Arity on Flare](img/android-arity.png) ![The views test app](img/android-views.png)
+
+*Left: Arity 1.27, unmodified from F-Droid, after typing 7×8 on its own
+keypad. Right: `views`, Flare's test app. Both are full-screen Arcan
+windows in flarehome.*
+
+```sh
+atl-run /data/local/tmp/views.apk      # in the shell; or from the host:
+cargo fdb push arity.apk /data/local/tmp/ && cargo fdb shell 'atl-run /data/local/tmp/arity.apk &'
+```
+
+### How it works
+
+| Piece | Where | What it does |
+| --- | --- | --- |
+| Framework | ATL's `src/api-impl`, compiled with javac and d8 into `/opt/atl/api-impl.jar` | Activities, resources, layout inflation, `View`/`ViewGroup` measure and layout, LinearLayout, FrameLayout, ListView, Canvas, Paint, ... |
+| Resources | ATL's `framework-res.apk`; `libandroidfw` | Themes and styles, `resources.arsc`, binary XML layouts, `res/layout-port` and the other qualifiers |
+| Reused natives | 17 of ATL's JNI sources | Assets, XML blocks, SQLite, Looper/MessageQueue (on a GLib main loop), logging, `Process`, `SystemClock` |
+| **Flare backend** | `compat/android/atl/flare/` (new, about 3,700 lines of C) | Everything ATL did with GTK: view nodes, drawing, text, bitmaps, input and the window |
+| Stubs | `gen_stubs.py` | Every other native (media, GL, WebView, ...) logs `atl: stub <name>` once and returns null, so missing pieces are visible and nothing crashes on a missing symbol |
+| Launcher | `flare/main.c`, `atl-run` | Starts ART with ATL's class path, creates the Application and the launcher Activity, and runs the main loop |
+
+The native backend replaces ATL's GTK widgets with a small node per view:
+* **Layout stays in Java.** `View.measure` and `onLayout` run as in Android.
+  The native side stores each view's box, and measures text (Pango) and
+  images for the natively backed widgets.
+* **Drawing walks the tree through `View.draw(canvas)`.** Framework views
+  and apps that override `onDraw` take the same path. A `GskCanvas` handle
+  is a cairo context, so these all map to cairo:
+  * Canvas, Paint, Path and Matrix;
+  * Bitmap, BitmapFactory (PNG) and nine-patches;
+  * `RenderNode` display lists (cairo recording surfaces);
+  * `SurfaceView.lockCanvas`.
+* **TextView, Button, EditText and ImageView** are drawn natively: text with
+  Pango and DejaVu Sans; buttons as Flare-style rounded slabs unless the app
+  sets a background.
+* **The window** is an Arcan shmif segment on the `android` connection
+  point:
+  * flarehome shows it as an app under the status bar, with the same
+    zoom-in, edge-swipe minimise and open-applications thumbnail as its
+    own apps;
+  * touches and keys go to the app; the decor view dispatches them in Java
+    (`dispatchTouchEvent`) to custom views such as Arity's keypad;
+  * buttons and text fields are hit-tested natively, which gives
+    `performClick`, focus and typing;
+  * without `ARCAN_CONNPATH`, `atl-run` renders headless, and
+    `ATL_SNAPSHOT=file.png` saves every frame.
+* **Configuration** comes from the window: size in dp, orientation and
+  density. That makes `layout-port` resources resolve.
+
+The first frame of the test app is drawn about 13 s after `atl-run`
+starts, with ART interpreting everything under QEMU's emulation.
+
+### Fixes to ATL
+
+ATL is built from a pinned upstream commit with four small patches
+(`compat/android/atl/patches`), found by running Arity:
+
+* `Canvas.drawArc` honours `useCenter` (pie slices).
+* `Canvas.drawText(char[], index, count, ...)` takes a count, not an end
+  index.
+* `ZoomButtonsController` has its real API.
+* TextView `gravity` works: the XML attribute, `setGravity`, and Android's
+  TOP|START default (buttons centre).
+* EditText's `getText()` is a live `Editable`: `insert`/`delete` reach the
+  field, with selection and `KEYCODE_DEL`. This is how Arity's keypad types.
+
+On Flare's side, the Linux personality gained:
+* hard links (`linkat`), which musl's `sem_open`, and with it Arcan's
+  external-client support, needs;
+* `statfs`/`fstatfs`.
+
+### Licensing
+
+ATL is GPL-3.0. It is built from its upstream sources as a separate
+component (`/opt/atl`), and the Flare backend in `compat/android/atl/flare`
+is derived from ATL and GPL-3.0 as well. ART is Apache-2.0. No Vinix code
+is used; Vinix was only a reference for the approach.
+
+### Not there yet
+
+* Apps' own native libraries (`lib/arm64-v8a`), which need ATL's bionic
+  translation.
+* OpenGL ES (`GLSurfaceView` gets no surface), WebView, media and audio.
+* Popup windows and dialogs: they are created, but overlay windows are not
+  shown yet.
+* Real text editing: the caret is always at the end, and there is no
+  on-screen keyboard.
+* ScrollView scrolling.
+* JPEG and WebP images (PNG only).
+* No dex2oat: ART interprets everything.
+
+## Limits of droid
 
 * **No display or input yet.** After `onResume` the activity is paused and
   stopped. `setContentView` is accepted and reported as missing. Next: a

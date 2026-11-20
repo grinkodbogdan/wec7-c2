@@ -159,7 +159,13 @@ Running Arcan and Mesa surfaced gaps that any large Linux program would hit:
   * no blending on opaque layers;
   * the wallpaper shader is rendered once into a texture.
 * **No audio.** The Arcan build uses its stub audio platform.
-* **Single process.** Arcan's frameservers (external clients) are built but
-  not used by the shell. Apps in the launcher are placeholders drawn by
-  the shell. Running Android apps from `droid` in a window is the obvious
-  next step.
+* **External app windows.** Native clients connect to the `android`
+  connection point (`ARCAN_CONNPATH=android`, in `XDG_RUNTIME_DIR=/tmp`).
+  flarehome shows each one as a full-screen app below the status bar, with
+  the shell's zoom, edge-swipe minimise and open-applications thumbnail. It
+  forwards touches (as Arcan touch events, in window coordinates) and keys
+  to the app; edge swipes stay with the shell. Android apps use this through
+  `atl-run` (see [android.md](android.md)). Arcan's GLES2 build reads client
+  buffers as RGBA bytes, so clients drawing native-endian ARGB swap red and
+  blue before signalling a frame. `flare-ui flarehome unlocked` starts the
+  shell without the lock screen, for scripted runs.

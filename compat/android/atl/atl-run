@@ -1,0 +1,13 @@
+#!/bin/sh
+# atl-run [-l ACTIVITY] [-w W] [-h H] APP.apk: run an Android app on ART
+# (/opt/art) with Android Translation Layer's framework (/opt/atl), in an
+# Arcan window (ARCAN_CONNPATH, default "android"; without a display
+# server the app runs headless).
+A=/opt/art L=/opt/atl
+export ANDROID_ROOT=$A ANDROID_ART_ROOT=$A ANDROID_I18N_ROOT=$A ANDROID_TZDATA_ROOT=$A
+export ANDROID_DATA=${ANDROID_DATA:-/data/art} ICU_DATA=$A/icu/78.3
+export FONTCONFIG_FILE=$L/fonts.conf ARCAN_CONNPATH=${ARCAN_CONNPATH-android} XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/tmp}
+mkdir -p $ANDROID_DATA/dalvik-cache/arm64
+F=$A/framework
+export ATL_BOOTCLASSPATH=$F/core-oj-hostdex.jar:$F/core-libart-hostdex.jar:$F/okhttp-hostdex.jar:$F/bouncycastle-hostdex.jar:$F/apache-xml-hostdex.jar
+exec $A/lib/ld-musl-aarch64.so.1 --library-path $L/lib:$A/lib:/usr/lib $L/bin/atl-run "$@"

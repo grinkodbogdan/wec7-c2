@@ -903,6 +903,14 @@ impl Kernel {
         self.lx().vfs.rename(&ob, &o, &to).map(|_| 0)
     }
 
+    pub(crate) fn sys_link(&mut self, c: usize, ofd: u64, op: u64, nfd: u64, np: u64, flags: u64) -> Result<i64, i64> {
+        let (o, n) = (self.ustr(c, op)?, self.ustr(c, np)?);
+        let (ob, nb) = (self.base_dir(c, ofd)?, self.base_dir(c, nfd)?);
+        let to = vfs::absolute(&nb, &n);
+        let follow = flags & 0x400 != 0; // AT_SYMLINK_FOLLOW
+        self.lx().vfs.link(&ob, &o, &to, follow).map(|_| 0)
+    }
+
     pub(crate) fn sys_ftruncate(&mut self, c: usize, fd: u64, len: u64) -> Result<i64, i64> {
         let file = self.proc(c).file(fd)?;
         let f = file.borrow();

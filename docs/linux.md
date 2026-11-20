@@ -35,6 +35,11 @@ Verified on every `cargo xtask test`:
   * `procs` — fork, execve, wait, pipes, dup2, `posix_spawn`, `popen`,
     `O_CLOEXEC`, kill.
 
+* **ART with Android Translation Layer** (`atl-run`): an Android app's
+  activity starts, draws into an Arcan window and handles a tap. This
+  needed hard links (`linkat`, for musl's `sem_open` and Arcan's external
+  clients) and `statfs`/`fstatfs`. See [android.md](android.md).
+
 ## How it fits Flare
 
 * A Linux process is a Flare component with a Linux `Process` attached and

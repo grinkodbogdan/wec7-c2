@@ -15,6 +15,7 @@ Status: **M0 and M1 are done; the Linux ABI (M5) and Android apps (M6) run.**
 
 * Unmodified Linux arm64 binaries run on Flare's own kernel, with no Linux kernel underneath. That covers busybox, Rust `std`, dynamic linking and Binder.
 * Android apps written in Java and Kotlin run from their APKs, with no Android userspace.
+* Real Android apps from F-Droid (such as the Arity calculator) run on ART with Android Translation Layer's framework. They draw natively into Arcan windows in the phone shell.
 * Flare boots into a graphical phone shell: Arcan, rendering through Flare's own KMS device, with touch input from user-space drivers.
 
 See [docs/roadmap.md](docs/roadmap.md), [docs/linux.md](docs/linux.md) and
@@ -85,6 +86,14 @@ flare: system halted after 197 ticks (9 capabilities live, 38 frames in use)
 * **Android apps (Java and Kotlin) run from their APKs** under `droid`, which has
   its own DEX interpreter and natively implemented Java core and Android API.
   No Android userspace is involved. See [docs/android.md](docs/android.md).
+* **Real Android apps, in windows.**
+  * ART (the Android runtime) runs with
+    [Android Translation Layer](https://gitlab.com/android_translation_layer/android_translation_layer)'s
+    framework.
+  * A native backend replaces ATL's GTK with cairo, Pango and an Arcan
+    window, so unmodified APKs draw in the phone shell and take its touch
+    and key input.
+  * `atl-run app.apk` starts one. See [docs/android.md](docs/android.md).
 * The **Linux personality** boots busybox as pid 1 from an initramfs: shell
   scripts, pipes, fork/exec/wait, files, `/proc`, an interactive shell on the
   console, and a Rust `std` program (heap, files, time, FP, `Command`).
@@ -120,7 +129,7 @@ Follows the illustrative layout of the project specification (§7):
 | `compat/linux/` | Linux root filesystem content and Linux test programs |
 | `compat/arcan/` | Arcan + Mesa build for Flare, the `flarehome` phone shell, `kmstest` |
 | `drivers/display/` | Display drivers (today: `ramfb`) |
-| `compat/android/` | `droid` (runs APKs without Android userspace) and test apps in Java and Kotlin |
+| `compat/android/` | `droid` (runs APKs without Android userspace), test apps in Java and Kotlin, ART (`art/`), and ATL with Flare's native Arcan backend (`atl/`) |
 | `system/` | Boot compositions: which components start, with exactly which capabilities |
 | `xtask/` | `cargo xtask` build/run/test driver |
 | `docs/` | Architecture contracts and decisions |

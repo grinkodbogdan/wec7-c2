@@ -1,0 +1,101 @@
+diff --git a/src/api-impl/android/widget/EditText.java b/src/api-impl/android/widget/EditText.java
+index 763c2ea..c769f91 100644
+--- a/src/api-impl/android/widget/EditText.java
++++ b/src/api-impl/android/widget/EditText.java
+@@ -6,6 +6,7 @@ import android.text.Editable;
+ import android.text.SpannableStringBuilder;
+ import android.text.TextWatcher;
+ import android.util.AttributeSet;
++import android.view.KeyEvent;
+ import android.view.MotionEvent;
+ 
+ public class EditText extends TextView {
+@@ -36,17 +37,85 @@ public class EditText extends TextView {
+ 		return native_gtkEventPropagation();
+ 	}
+ 
++	/* The text as a live Editable: changes made through it (insert, delete,
++	 * replace) reach the native field, as on Android. Keys typed into the
++	 * native field are picked up again in getText(). */
++	private class LiveEditable extends SpannableStringBuilder {
++		boolean syncing;
++
++		@Override
++		public SpannableStringBuilder replace(int start, int end, CharSequence tb, int tbstart, int tbend) {
++			super.replace(start, end, tb, tbstart, tbend);
++			if (!syncing) {
++				selection = Math.min(start + (tbend - tbstart), length());
++				native_setText(widget, toString());
++			}
++			return this;
++		}
++	}
++
++	private LiveEditable editable;
++	private int selection = -1;
++
++	private LiveEditable editable() {
++		if (editable == null)
++			editable = new LiveEditable();
++		String now = native_getText(widget);
++		if (!now.contentEquals(editable)) {
++			editable.syncing = true;
++			editable.replace(0, editable.length(), now, 0, now.length());
++			editable.syncing = false;
++			selection = now.length();
++		}
++		return editable;
++	}
++
+ 	public Editable getText() {
+-		return new SpannableStringBuilder(native_getText(widget));
++		return editable();
+ 	}
+ 
+ 	public Editable getEditableText() {
+-		return new SpannableStringBuilder(native_getText(widget));
++		return editable();
+ 	}
+ 
+ 	@Override
+ 	public void setText(CharSequence text) {
+-		native_setText(widget, text == null ? "" : text.toString());
++		String t = text == null ? "" : text.toString();
++		selection = t.length();
++		native_setText(widget, t);
++	}
++
++	@Override
++	public int getSelectionStart() {
++		int len = editable().length();
++		return selection < 0 || selection > len ? len : selection;
++	}
++
++	@Override
++	public int getSelectionEnd() {
++		return getSelectionStart();
++	}
++
++	@Override
++	public void setSelection(int index) {
++		selection = index;
++	}
++
++	@Override
++	public void setSelection(int start, int stop) {
++		selection = stop;
++	}
++
++	@Override
++	public boolean dispatchKeyEvent(KeyEvent event) {
++		if (event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
++			Editable e = editable();
++			int at = getSelectionStart();
++			if (at > 0)
++				e.delete(at - 1, at);
++			return true;
++		}
++		return super.dispatchKeyEvent(event);
+ 	}
+ 	@Override
+ 	public void setTextSize(float size) {}

@@ -1,0 +1,39 @@
+diff --git a/src/api-impl/android/widget/ZoomButtonsController.java b/src/api-impl/android/widget/ZoomButtonsController.java
+index ec3c7d1..58636ed 100644
+--- a/src/api-impl/android/widget/ZoomButtonsController.java
++++ b/src/api-impl/android/widget/ZoomButtonsController.java
+@@ -1,6 +1,32 @@
+ package android.widget;
+ 
+-public class ZoomButtonsController {
++import android.view.MotionEvent;
++import android.view.View;
++import android.view.ViewGroup;
+ 
+-	public interface OnZoomListener {}
++/* The on-screen zoom buttons of old map and graph apps. There is no zoom
++ * overlay: the controller exists and stays invisible. */
++public class ZoomButtonsController implements View.OnTouchListener {
++	private boolean visible;
++	private OnZoomListener listener;
++
++	public interface OnZoomListener {
++		void onVisibilityChanged(boolean visible);
++		void onZoom(boolean zoomIn);
++	}
++
++	public ZoomButtonsController(View ownerView) {}
++
++	public void setOnZoomListener(OnZoomListener listener) { this.listener = listener; }
++	public void setVisible(boolean visible) { this.visible = visible; }
++	public boolean isVisible() { return visible; }
++	public void setZoomInEnabled(boolean enabled) {}
++	public void setZoomOutEnabled(boolean enabled) {}
++	public void setZoomSpeed(long speed) {}
++	public void setAutoDismissed(boolean autoDismiss) {}
++	public boolean isAutoDismissed() { return true; }
++	public void setFocusable(boolean focusable) {}
++	public ViewGroup getContainer() { return null; }
++	public View getZoomControls() { return null; }
++	public boolean onTouch(View v, MotionEvent event) { return false; }
+ }

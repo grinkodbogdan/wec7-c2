@@ -1,0 +1,30 @@
+diff --git a/src/api-impl/android/graphics/Canvas.java b/src/api-impl/android/graphics/Canvas.java
+index 2e67a5b..ac43613 100644
+--- a/src/api-impl/android/graphics/Canvas.java
++++ b/src/api-impl/android/graphics/Canvas.java
+@@ -185,8 +185,8 @@ public class Canvas {
+ 		}*/
+ 	}
+ 
+-	public void drawText(char text[], int start, int end, float x, float y, Paint paint) {
+-		drawText(new String(text), start, end, x, y, paint);
++	public void drawText(char text[], int index, int count, float x, float y, Paint paint) {
++		drawText(new String(text, index, count), x, y, paint);
+ 	}
+ 
+ 	public void drawTextOnPath(String text, Path path, float x_offset, float y_offset, Paint paint) {
+@@ -621,7 +621,13 @@ public class Canvas {
+ 
+ 	public void drawArc(float left, float top, float right, float bottom, float startAngle, float sweepAngle, boolean includeCenter, Paint paint) {
+ 		Path path = new Path();
+-		path.addArc(left, top, right, bottom, startAngle, sweepAngle);
++		if (includeCenter) {
++			path.moveTo((left + right) / 2, (top + bottom) / 2);
++			path.arcTo(left, top, right, bottom, startAngle, sweepAngle, false);
++			path.close();
++		} else {
++			path.addArc(left, top, right, bottom, startAngle, sweepAngle);
++		}
+ 		drawPath(path, paint);
+ 		path.reset();
+ 	}

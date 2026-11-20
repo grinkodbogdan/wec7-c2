@@ -10,7 +10,7 @@ Milestones from the project specification (§11), with status.
 | M3 — First hardware services | **Done on QEMU** | User-space drivers for every device on the reference board: UART console, PL031 RTC, PL061 power key, virtio-blk storage with DMA, ramfb display (shared memory, KMS for Linux) and virtio-input touch and keys (evdev). The Arcan phone shell runs on them ([display.md](display.md)) |
 | M4 — First phone port | | One well-understood phone/SoC |
 | **M5 — Linux ABI baseline** | **Running** | busybox, Rust `std`, and QRT's Linux conformance suite (threads, signals, memory, events/Unix sockets, processes) pass; checked by `cargo xtask test`. Gaps: dynamic linking, internet sockets ([linux.md](linux.md)) |
-| M6 — Android baseline | **Apps running** | ART (the Android runtime) runs on Flare; Java and Kotlin apps run from their APKs under `droid` (APK, binary manifest and DEX loader, Dalvik interpreter, native Java core and Android API) with no Android userspace ([android.md](android.md)); dynamic linking and Binder are also in place. Next: display, input and `View`s |
+| M6 — Android baseline | **Apps running, with UI** | Unmodified APKs (Arity from F-Droid) run on ART with Android Translation Layer's framework and draw natively into Arcan windows in the phone shell, with touch and keys ([android.md](android.md)); simple Java and Kotlin apps also run under `droid`, Flare's own DEX interpreter; dynamic linking and Binder are in place. Next: apps' native libraries, GL, dialogs, dex2oat |
 | M7 — Portability validation | | Second, materially different phone |
 
 ## Next steps (M2)

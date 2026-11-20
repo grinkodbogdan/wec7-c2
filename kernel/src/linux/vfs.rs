@@ -403,6 +403,25 @@ impl Vfs {
         Ok(())
     }
 
+    /// A hard link: the node gets a second directory entry.
+    pub fn link(&mut self, cwd: &str, from: &str, to: &str, follow: bool) -> Result<(), i64> {
+        let node = self.lookup(cwd, from, follow)?.node;
+        if node.borrow().is_dir() {
+            return Err(EPERM);
+        }
+        if self.lookup(cwd, to, false).is_ok() {
+            return Err(EEXIST);
+        }
+        let ta = absolute(cwd, to);
+        let (tp, tname) = split_parent(&ta);
+        let tdir = self.lookup("/", tp, true)?;
+        if !tdir.node.borrow().is_dir() {
+            return Err(ENOTDIR);
+        }
+        tdir.node.borrow_mut().children.insert(tname.to_string(), node);
+        Ok(())
+    }
+
     pub fn rename(&mut self, cwd: &str, from: &str, to: &str) -> Result<(), i64> {
         let (fa, ta) = (absolute(cwd, from), absolute(cwd, to));
         let (fp, fname) = split_parent(&fa);

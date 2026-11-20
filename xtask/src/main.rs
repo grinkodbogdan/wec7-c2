@@ -217,6 +217,8 @@ const EXPECTED: &[&str] = &[
     "art: hello from Thread-0",
     "art: 4 processors, pi = 3.14159",
     "rc: art exit status 0",
+    "flarehome: android window",
+    "flarehome: android window closed",
     "fdbd: serving fdb on /dev/fdb",
     "shell-42",
     "linux: init exited (status 0)",
@@ -621,6 +623,43 @@ fn art_stage() -> PathBuf {
     out.join("stage")
 }
 
+/// Build and stage (when its inputs change) Android Translation Layer
+/// with Flare's native backend as /opt/atl.
+fn atl_stage() -> PathBuf {
+    let dir = root().join("compat/android/atl");
+    let out = root().join("target").join("atl");
+    let mut files = vec![
+        dir.join("build.sh"),
+        dir.join("stage.py"),
+        dir.join("gen_stubs.py"),
+        dir.join("alpine.lock"),
+        dir.join("atl-run"),
+        root().join("compat/arcan/alpine.py"),
+    ];
+    for sub in ["flare", "patches"] {
+        let mut v: Vec<PathBuf> =
+            std::fs::read_dir(dir.join(sub)).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        v.sort();
+        files.extend(v);
+    }
+    let inputs = inputs_hash(&files);
+    let stamp = out.join("stage/.stamp");
+    if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) {
+        println!("xtask: building Android Translation Layer (Flare backend)");
+        let bt = only_subdir(&unpacked(ANDROID_BUILD_TOOLS));
+        let arcan = arcan_stage();
+        let art = art_stage();
+        let mut c = Command::new(dir.join("build.sh"));
+        c.arg(&out)
+            .env("D8", bt.join("d8"))
+            .env("ARCAN_ROOT", arcan.parent().unwrap().join("arcan-root"))
+            .env("ART_STAGE", &art);
+        run(c);
+        std::fs::write(&stamp, &inputs).unwrap();
+    }
+    out.join("stage")
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -663,6 +702,21 @@ fn assemble_rootfs() -> PathBuf {
     symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
     // ART, the Android runtime (/opt/art, art-run).
     copy_tree(&art_stage(), &rootfs);
+    // Android Translation Layer with Flare's native display backend
+    // (/opt/atl, atl-run) and its test app.
+    copy_tree(&atl_stage(), &rootfs);
+    let views = root().join("target/atl/apks/views.apk");
+    let fresh = views
+        .metadata()
+        .and_then(|m| m.modified())
+        .map(|t| t > newest_mtime(&root().join("compat/android/atl/apps/views")))
+        .unwrap_or(false);
+    if !fresh {
+        std::fs::create_dir_all(views.parent().unwrap()).unwrap();
+        build_apk(&root().join("compat/android/atl/apps/views"), &views);
+    }
+    std::fs::create_dir_all(rootfs.join("data/local/tmp")).unwrap();
+    std::fs::copy(&views, rootfs.join("data/local/tmp/views.apk")).unwrap();
     // fdbd, the device end of the debug bridge.
     let mut c = cargo();
     c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);
@@ -960,6 +1014,51 @@ fn fdb_checks() -> Vec<String> {
     fails
 }
 
+/// Run an Android app on ART and ATL in the phone shell, as a user would:
+/// start it over fdb, wait for its window, tap a button and check that
+/// the app's click listener ran; returns what failed.
+fn android_app_check(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) -> Vec<String> {
+    let mut fails = Vec::new();
+    let sock = root().join("target/fdb.sock");
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(&sock) else {
+        return vec!["android: no fdb connection".into()];
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let mut c = fdb::Client::new(stream);
+    let mut check = |what: &str, ok: bool| {
+        println!("xtask: android {}: {}", what, if ok { "ok" } else { "FAILED" });
+        if !ok {
+            fails.push(format!("android {}", what));
+        }
+    };
+    let log_has = |c: &mut fdb::Client<std::os::unix::net::UnixStream>, text: &str, secs: u64| {
+        let until = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < until {
+            if c.exec(&format!("grep -q '{}' /tmp/atl.log", text)).map(|o| o.status == 0).unwrap_or(false) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        false
+    };
+    let started = c.exec("atl-run /data/local/tmp/views.apk > /tmp/atl.log 2>&1 &").map(|o| o.status == 0);
+    check("launch", started.unwrap_or(false));
+    check("window", wait_output(output, "flarehome: android window", 120));
+    check("first frame", log_has(&mut c, "atl: first frame drawn", 120));
+    std::thread::sleep(Duration::from_secs(3)); // the zoom-in animation
+    let dir = root().join("target/screenshots");
+    qmp.screenshot(&dir.join("6-android-app.png"));
+    // the app's "Turn" button: tapped through the shell, which forwards
+    // the touch to the app's window
+    qmp.tap(132.0, 452.0);
+    check("click", log_has(&mut c, "FlareViews.*click 1", 60));
+    std::thread::sleep(Duration::from_secs(3));
+    qmp.screenshot(&dir.join("7-android-app-clicked.png"));
+    let _ = c.exec("killall ld-musl-aarch64.so.1");
+    check("close", wait_output(output, "flarehome: android window closed", 60));
+    fails
+}
+
 /// Press the board's power key through QEMU's QMP socket.
 fn qmp_powerdown(sock: &Path) -> bool {
     use std::io::{BufRead, BufReader};
@@ -1024,8 +1123,11 @@ fn qemu_test(o: &Opts) -> bool {
         if !ui_done && seen.contains("flarehome: ready") {
             if let Some(mut q) = Qmp::connect(&qmp) {
                 ui_script(&mut q, &output);
+                fdb_fails = fdb_checks();
+                fdb_fails.extend(android_app_check(&mut q, &output));
+            } else {
+                fdb_fails = fdb_checks();
             }
-            fdb_fails = fdb_checks();
             ui_done = true;
         }
         if !pressed && ui_done && seen.contains("flare:~# ") {

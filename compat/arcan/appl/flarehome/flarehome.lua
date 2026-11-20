@@ -499,8 +499,8 @@ function restore_app(o)
 	order_image(o.rt, ORDER_APP)
 	image_texfilter(o.rt, FILTER_NONE)
 	move_image(o.rt, x, y)
-	move_image(o.rt, 0, 0, 10)
-	resize_image(o.rt, W, H, 10)
+	move_image(o.rt, 0, o.fy or 0, 10)
+	resize_image(o.rt, W, o.fh or H, 10)
 	current_app = o
 	later(11, function()
 		if current_app == o then
@@ -518,6 +518,107 @@ function restore_app(o)
 	log("restored " .. o.app.name)
 end
 
+
+-- ---------------------------------------------------------------------
+-- External application windows: native clients (Android apps through
+-- atl-run, ...) connect to the "android" connection point and become
+-- full-screen apps below the status bar, with the same zoom, minimize
+-- and open-apps behaviour as the built-in ones. Touch and keys go to the
+-- app, except edge swipes, which stay with the shell.
+-- ---------------------------------------------------------------------
+
+local CONNPATH = "android"
+local windows = {}
+
+local function listen()
+	target_alloc(CONNPATH, function(source, status)
+		app_window(source, status)
+	end)
+end
+
+local function android_icon()
+	for _, a in ipairs(apps) do
+		if a.name == "Android" then
+			return a
+		end
+	end
+	return apps[1]
+end
+
+local function show_window(o)
+	local a = o.app
+	order_image(o.rt, ORDER_APP)
+	force_image_blend(o.rt, BLEND_NONE)
+	move_image(o.rt, a.x, a.y)
+	resize_image(o.rt, a.w, a.h)
+	show_image(o.rt)
+	move_image(o.rt, 0, o.fy, 12)
+	resize_image(o.rt, W, o.fh, 12)
+	current_app = o
+	later(13, function()
+		if current_app == o then
+			hide_image(home.strip)
+		end
+	end)
+	go_page(2, true)
+end
+
+function app_window(source, status)
+	local o = windows[source]
+	if status.kind == "connected" then
+		listen() -- the next app gets a fresh connection point
+	elseif status.kind == "registered" or status.kind == "preroll" then
+		target_displayhint(source, W, H - STATUS_H)
+	elseif status.kind == "ident" and o then
+		o.app.name = status.message
+	elseif status.kind == "resized" then
+		if not o then
+			local icon = android_icon()
+			o = {app = {name = "Android app", x = icon.x, y = icon.y, w = icon.w, h = icon.h},
+				rt = source, external = true, fy = STATUS_H, fh = H - STATUS_H}
+			windows[source] = o
+			if current_app then
+				table.insert(open_apps, o)
+				layout_open()
+			else
+				show_window(o)
+			end
+			log("android window " .. status.width .. "x" .. status.height)
+		end
+	elseif status.kind == "terminated" then
+		if o then
+			windows[source] = nil
+			if current_app == o then
+				current_app = nil
+				show_image(home.strip)
+			end
+			for i, x in ipairs(open_apps) do
+				if x == o then
+					table.remove(open_apps, i)
+					if x.label then
+						delete_image(x.label)
+					end
+					break
+				end
+			end
+			layout_open()
+			log("android window closed")
+		end
+		delete_image(source)
+	end
+end
+
+-- forward a touch to the current external app; true if it took it
+local function forward_touch(active)
+	local o = current_app
+	if not (o and o.external) or touch.edge then
+		return false
+	end
+	target_input(o.rt, {kind = "touch", devid = 0, subid = 0, active = active and 1 or 0,
+		x = touch.x, y = touch.y - o.fy})
+	return true
+end
+
 -- ---------------------------------------------------------------------
 -- Touch
 -- ---------------------------------------------------------------------
@@ -532,6 +633,11 @@ local function on_tap(x, y)
 	if home.page == 2 then
 		for _, a in ipairs(apps) do
 			if x >= a.x and x < a.x + a.w and y >= a.y and y < a.y + a.h + 30 then
+				for _, o in ipairs(open_apps) do
+					if o.external and a.name == "Android" then
+						return restore_app(o)
+					end
+				end
 				open_app(a)
 				return
 			end
@@ -555,8 +661,9 @@ local function on_drag(dx, dy)
 		if touch.edge then
 			instant_image_transform(current_app.rt)
 			local s = math.max(0.5, 1.0 - math.abs(dx) / (W * 1.5))
-			resize_image(current_app.rt, W * s, H * s)
-			move_image(current_app.rt, dx + W * (1 - s) / 2, H * (1 - s) / 2)
+			local fy, fh = current_app.fy or 0, current_app.fh or H
+			resize_image(current_app.rt, W * s, fh * s)
+			move_image(current_app.rt, dx + W * (1 - s) / 2, fy + fh * (1 - s) / 2)
 		end
 	else
 		instant_image_transform(home.strip)
@@ -578,8 +685,8 @@ local function on_release(dx, dy)
 				minimize_app(dx > 0 and 1 or -1)
 			else
 				instant_image_transform(current_app.rt)
-				move_image(current_app.rt, 0, 0, 8)
-				resize_image(current_app.rt, W, H, 8)
+				move_image(current_app.rt, 0, current_app.fy or 0, 8)
+				resize_image(current_app.rt, W, current_app.fh or H, 8)
 			end
 		end
 	else
@@ -618,6 +725,10 @@ function flarehome_input(iotbl)
 		touch_point(iotbl)
 	end
 	if iotbl.digital and iotbl.translated then
+		if current_app and current_app.external then
+			target_input(current_app.rt, iotbl)
+			return
+		end
 		-- hardware keys: arrows switch views, Escape minimizes
 		if iotbl.active then
 			local sym = iotbl.keysym
@@ -639,8 +750,14 @@ function flarehome_input(iotbl)
 			touch.sx, touch.sy = touch.x, touch.y
 			touch.moved = false
 			touch.edge = touch.sx < 28 or touch.sx > W - 28
+			touch.app = forward_touch(true)
 		elseif not iotbl.active and touch.down then
 			touch.down = false
+			if touch.app then
+				touch.app = false
+				forward_touch(false)
+				return
+			end
 			local dx, dy = touch.x - touch.sx, touch.y - touch.sy
 			if math.abs(dx) < 12 and math.abs(dy) < 12 then
 				on_tap(touch.x, touch.y)
@@ -650,7 +767,9 @@ function flarehome_input(iotbl)
 		end
 		return
 	end
-	if touch.down then
+	if touch.down and touch.app then
+		forward_touch(true)
+	elseif touch.down then
 		local dx, dy = touch.x - touch.sx, touch.y - touch.sy
 		if math.abs(dx) > 6 or math.abs(dy) > 6 then
 			touch.moved = true
@@ -663,7 +782,7 @@ end
 -- Entry points
 -- ---------------------------------------------------------------------
 
-function flarehome()
+function flarehome(argv)
 	W, H = VRESW, VRESH
 	-- Software rendering budget: almost everything is drawn 1:1, so
 	-- nearest-neighbour sampling looks the same as bilinear and is far
@@ -681,6 +800,15 @@ function flarehome()
 	update_status()
 	update_dots()
 	hide_image(home.strip) -- under the lock screen
+	listen()
+	-- `flare-ui flarehome unlocked`: start on the home screen (scripted runs)
+	for _, a in ipairs(argv or {}) do
+		if a == "unlocked" then
+			lock.locked = false
+			hide_image(lock.root)
+			show_image(home.strip)
+		end
+	end
 	log(string.format("ready on a %dx%d panel, %d apps, %d events", W, H, #APPS, #EVENTS))
 end
 

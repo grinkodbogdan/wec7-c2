@@ -1217,7 +1217,23 @@ impl Kernel {
                 Err(e) => Err(e),
             },
             nr::RENAMEAT | nr::RENAMEAT2 => self.sys_rename(c, a[0], a[1], a[2], a[3]),
+            nr::LINKAT => self.sys_link(c, a[0], a[1], a[2], a[3], a[4]),
             nr::FTRUNCATE => self.sys_ftruncate(c, a[0], a[1]),
+            nr::STATFS | nr::FSTATFS => {
+                // Everything is one tmpfs: struct statfs for it.
+                let mut b = [0u8; 120];
+                let put = |b: &mut [u8; 120], off: usize, v: u64| b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+                put(&mut b, 0, 0x0102_1994); // f_type: TMPFS_MAGIC
+                put(&mut b, 8, 4096); // f_bsize
+                put(&mut b, 16, 262_144); // f_blocks
+                put(&mut b, 24, 131_072); // f_bfree
+                put(&mut b, 32, 131_072); // f_bavail
+                put(&mut b, 40, 65_536); // f_files
+                put(&mut b, 48, 32_768); // f_ffree
+                put(&mut b, 64, 255); // f_namelen
+                put(&mut b, 72, 4096); // f_frsize
+                self.uwrite(c, a[1], &b).map(|_| 0)
+            }
             nr::FCHMOD => self.sys_fchmod(c, a[0], a[1] as u32),
             nr::FCHMODAT => self.sys_fchmodat(c, a[0], a[1], a[2] as u32),
             nr::FCHOWNAT | nr::FCHOWN | nr::UTIMENSAT => Ok(0),
