@@ -107,6 +107,12 @@ pub struct LinuxConfig {
     /// default: Arcan, ART, ATL and everything else) or "minimal" (busybox,
     /// the Linux tests and droid) for boards whose boot image must be small.
     pub rootfs: String,
+    /// Devices a Linux driver host (`/dev/flarehw`) may claim: their register
+    /// windows and interrupts, exclusively (no component may also get them).
+    pub hardware: Vec<String>,
+    /// Firmware calls (SMC function ids, inclusive ranges) Linux may make
+    /// through `/dev/flarehw`.
+    pub smc: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,7 +284,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control", "display", "rootfs"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display", "rootfs", "hardware", "smc"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -291,7 +297,27 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                     if rootfs != "full" && rootfs != "minimal" {
                         err(sec.line, format!("[linux] rootfs must be \"full\" or \"minimal\", not \"{}\"", rootfs));
                     }
-                    linux = Some(LinuxConfig { init, env: list("env").unwrap_or_default(), control, display, rootfs })
+                    let mut smc = Vec::new();
+                    for r in list("smc").unwrap_or_default() {
+                        let parse = |t: &str| u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok();
+                        match r.split_once("..").map(|(a, b)| (parse(a), parse(b))) {
+                            Some((Some(a), Some(b))) if a <= b => smc.push((a, b)),
+                            _ => match parse(&r) {
+                                Some(a) => smc.push((a, a)),
+                                None => err(sec.line, format!("[linux] smc entry '{}' is not 0xA or 0xA..0xB", r)),
+                            },
+                        }
+                    }
+                    let hardware = list("hardware").unwrap_or_default();
+                    linux = Some(LinuxConfig {
+                        init,
+                        env: list("env").unwrap_or_default(),
+                        control,
+                        display,
+                        rootfs,
+                        hardware,
+                        smc,
+                    })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
             }
@@ -546,6 +572,30 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     if let Err(rs) = resolve::resolve(&unique) {
         for r in rs {
             errs.push(format!("{}", r));
+        }
+    }
+    // Hardware for the Linux driver host: described, enabled, and nobody else's.
+    for d in comp.linux.iter().flat_map(|l| l.hardware.iter()) {
+        match devices.iter().find(|v| &v.name == d) {
+            None => errs.push(format!("[linux] hardware names unknown or disabled device '{}'", d)),
+            Some(v) => {
+                for reg in 0..v.regs {
+                    if let Some(owner) = mmio_owner.get(&(d.clone(), reg)) {
+                        errs.push(format!(
+                            "device '{}' is given to Linux and its registers to '{}'; hardware access is exclusive",
+                            d, owner
+                        ));
+                    }
+                }
+                for irq in 0..v.irqs {
+                    if let Some(owner) = irq_owner.get(&(d.clone(), irq)) {
+                        errs.push(format!(
+                            "device '{}' is given to Linux and its interrupt to '{}'; hardware access is exclusive",
+                            d, owner
+                        ));
+                    }
+                }
+            }
         }
     }
     errs

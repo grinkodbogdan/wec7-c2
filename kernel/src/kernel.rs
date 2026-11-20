@@ -174,6 +174,8 @@ pub struct Kernel {
     cdt: Cdt<KCap>,
     roots: BTreeMap<Object, CapId>,
     irqs: BTreeMap<u32, IrqBinding>,
+    /// One-shot notifications (NOTIFY_AFTER): deadline (ns), endpoint, bit.
+    alarms: Vec<(u64, usize, u32)>,
     klog_reader: Option<KlogReader>,
     ready: VecDeque<usize>,
     /// Per CPU: the component running there.
@@ -223,6 +225,7 @@ pub fn start() -> ! {
         cdt: Cdt::new(),
         roots: BTreeMap::new(),
         irqs: BTreeMap::new(),
+        alarms: Vec::new(),
         klog_reader: None,
         ready: VecDeque::new(),
         current: [None; MAX_CPUS],
@@ -469,8 +472,11 @@ impl Kernel {
                 timer::rearm();
                 if smp::cpu() == 0 {
                     self.ticks += 1;
+                    self.fire_alarms();
                 }
                 self.need_resched[smp::cpu()] = true;
+            } else if self.linux.is_some() && crate::linux::flarehw::granted_irq(id) {
+                self.flarehw_irq_fired(id);
             } else if let Some(b) = self.irqs.get_mut(&id) {
                 // Level-triggered lines stay masked until the driver acks.
                 gic::disable(id);
@@ -482,6 +488,25 @@ impl Kernel {
                 kprintln!("kernel: interrupt {} has no bound handler; masked", id);
             }
             gic::eoi(iar);
+        }
+    }
+
+    fn fire_alarms(&mut self) {
+        if self.alarms.is_empty() {
+            return;
+        }
+        let now = timer::now_ns();
+        let mut due = Vec::new();
+        self.alarms.retain(|&(t, ep, bit)| {
+            if t <= now {
+                due.push((ep, bit));
+                false
+            } else {
+                true
+            }
+        });
+        for (ep, bit) in due {
+            self.notify(ep, bit);
         }
     }
 
@@ -1027,6 +1052,7 @@ impl Kernel {
             nr::DMA_PADDR => self.sys_dma_paddr(c, a[0], a[1]),
             nr::INPUT_REPORT => self.sys_input_report(c, a[0], a[1], a[2], a[3]),
             nr::SERIAL_IO => self.sys_serial_io(c, a[0], a[1], a[2], a[3]),
+            nr::NOTIFY_AFTER => self.sys_notify_after(c, a[0], a[1], a[2]),
             nr::EXIT => {
                 self.exit(c, a[0] as i64);
                 return;
@@ -1239,6 +1265,16 @@ impl Kernel {
         }
         self.irqs.insert(n, IrqBinding { ep, bit: bit as u32, cap: irq_id, masked: false });
         gic::enable(n);
+        self.ret(c, &[]);
+        Ok(())
+    }
+
+    fn sys_notify_after(&mut self, c: usize, ep_slot: u64, bit: u64, ns: u64) -> SysResult {
+        let (ep, _) = self.endpoint(c, ep_slot, Rights::RECV)?;
+        if bit >= 64 || self.alarms.len() >= 256 {
+            return Err(Error::InvalidArg);
+        }
+        self.alarms.push((timer::now_ns().saturating_add(ns), ep, bit as u32));
         self.ret(c, &[]);
         Ok(())
     }

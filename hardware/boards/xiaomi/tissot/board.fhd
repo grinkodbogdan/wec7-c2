@@ -72,17 +72,47 @@ base = 0xf3000000
 size = 0x0d000000
 
 # The panel, as the boot loader left it: its continuous-splash buffer,
-# scanned out by the display engine (MDP) in video mode. Flare draws its
-# console into it. 1080x1920, 24-bit RGB, rows of 1080 * 3 bytes.
+# scanned out by the display engine (MDP). Flare draws its console into it.
+# The console reads the real buffer address, size and pixel layout from the
+# MDP's source pipe (device.mdp); these values are the fallback: 1080x1920,
+# 24-bit RGB, rows of 1080 * 3 bytes. The window is the whole splash
+# carve-out, so any buffer the boot loader placed there can be used.
 [device.fb0]
 compatible = "simple-framebuffer"
-reg = [0x90001000, 0x005eec00]
+reg = [0x90001000, 0x013ff000]
 width = 1080
 height = 1920
 stride = 3240
 format = "r8g8b8"
 console-scale = 2
 role = "display"
+status = "okay"
+
+# The debug UART (BLSP1 UART1, on test pads), as the boot loader set it up.
+[device.uart0]
+status = "okay"
+role = "debug-console"
+
+# GPIO keys: one TLMM pin block (4 KiB at 0x01000000 + pin * 0x1000) each,
+# so a driver gets exactly its pins. Pins from mainline's tissot device tree.
+[device.volume-up]
+compatible = "flare,tlmm-gpio-key"
+reg = [0x01055000, 0x1000] # GPIO 85, active low
+within = "tlmm"
+status = "okay"
+role = "keys"
+
+[device.hall-sensor]
+compatible = "flare,tlmm-gpio-key"
+reg = [0x0102c000, 0x1000] # GPIO 44, active low: the flip cover's magnet
+within = "tlmm"
+status = "okay"
+role = "keys"
+
+# MSM8953's display engine (MDP 1.16): read at boot to find the splash.
+[device.mdp]
+compatible = "qcom,mdp5"
+reg = [0x01a00000, 0x00090000]
 status = "okay"
 
 [chosen]
@@ -109,3 +139,38 @@ dtb-compatible = ["xiaomi,tissot", "qcom,msm8953"]
 qcom-msm-id = [293, 0]
 qcom-board-id = [0x1000b, 0]
 max-kernel-end = 0x81800000
+
+# For Linux's own drivers (system/xiaomi-tissot-linuxdrv.boot.toml): the
+# eMMC, the SD card, the touch screen's bus, and what they depend on.
+[device.tlmm]
+status = "okay"
+
+[device.rpm]
+status = "okay"
+
+[device.gcc]
+status = "okay"
+
+[device.tcsr]
+status = "okay"
+
+[device.apcs]
+status = "okay"
+
+[device.spmi]
+status = "okay"
+
+[device.sdhc1]
+status = "okay"
+
+[device.sdhc2]
+status = "okay"
+
+[device.blsp1-dma]
+status = "okay"
+
+[device.blsp1-i2c3]
+status = "okay"
+
+[device.smem]
+status = "okay"

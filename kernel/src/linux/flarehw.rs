@@ -1,0 +1,195 @@
+//! `/dev/flarehw`: hardware for a Linux driver host.
+//!
+//! Flare's own drivers are components holding capabilities. A driver host
+//! (Linux's own drivers in a process: LKL, see compat/linux/linuxdrv) is a
+//! Linux program and holds no capabilities, so the composition names the
+//! devices it may claim (`[linux] hardware = [...]`) and the firmware calls
+//! it may make (`[linux] smc = [...]`), and this device gives exactly that:
+//!
+//! * `ioctl(FLAREHW_INFO)`: the granted devices: name, register windows,
+//!   interrupts;
+//! * `mmap(offset = physical address)`: a granted register window (Device
+//!   memory; Normal non-cacheable for a device described with
+//!   `mapping = "memory"`, such as memory shared with firmware), or DMA memory this process allocated (cached; bit 62 of the
+//!   offset: non-cacheable). Nothing else is reachable;
+//! * `ioctl(FLAREHW_DMA_ALLOC)`: physically contiguous memory, and its
+//!   physical address (what the device is told);
+//! * `ioctl(FLAREHW_IRQ)`: unmask, mask or set the trigger of a granted
+//!   interrupt; `read()` returns the ids of interrupts that fired (4 bytes
+//!   each), each masked until unmasked again;
+//! * `ioctl(FLAREHW_SMC)`: an allowed SMC Calling Convention call.
+
+use super::abi::*;
+use super::Kernel;
+use crate::arch::{gic, psci};
+use crate::mm::{frame, PAGE_SIZE};
+use crate::{boot, platform};
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+
+pub const FLAREHW_INFO: u64 = 0x4600;
+pub const FLAREHW_DMA_ALLOC: u64 = 0x4601;
+pub const FLAREHW_IRQ: u64 = 0x4602;
+pub const FLAREHW_SMC: u64 = 0x4603;
+/// mmap offset bit: map DMA memory non-cacheable.
+pub const NOCACHE: u64 = 1 << 62;
+
+#[derive(Default)]
+pub struct FlareHw {
+    pub fired: VecDeque<u32>,
+    /// DMA blocks handed out: (physical base, size).
+    pub dma: Vec<(u64, u64)>,
+}
+
+/// The devices given to Linux, from the composition.
+fn devices() -> impl Iterator<Item = &'static platform::DeviceDesc> {
+    boot::LINUX_HARDWARE.iter().filter_map(|n| platform::DEVICES.iter().find(|d| d.name == *n))
+}
+
+/// An interrupt line given to Linux.
+pub fn granted_irq(intid: u32) -> bool {
+    devices().any(|d| d.irqs.contains(&intid))
+}
+
+impl Kernel {
+    /// What may be mapped at physical `[pa, pa + len)`: the memory attribute,
+    /// or `None` when the range is not this host's.
+    pub(crate) fn flarehw_window(&self, pa: u64, len: u64) -> Option<u64> {
+        let nc = pa & NOCACHE != 0;
+        let pa = pa & !NOCACHE;
+        let end = pa.checked_add(len)?;
+        for d in devices() {
+            for r in d.regs {
+                let (b, e) = (r.base & !(PAGE_SIZE - 1), (r.base + r.size).div_ceil(PAGE_SIZE) * PAGE_SIZE);
+                if pa >= b && end <= e {
+                    // Shared memory with firmware (Qualcomm's SMEM) rather
+                    // than registers: unaligned accesses must work.
+                    if d.str_props.contains(&("mapping", "memory")) {
+                        return Some(crate::arch::mmu::ATTR_NORMAL_NC);
+                    }
+                    return Some(crate::arch::mmu::ATTR_DEVICE);
+                }
+            }
+        }
+        let lx = self.linux.as_ref()?;
+        if lx.hw.dma.iter().any(|&(b, s)| pa >= b && end <= b + s) {
+            return Some(if nc { crate::arch::mmu::ATTR_NORMAL_NC } else { crate::arch::mmu::ATTR_NORMAL });
+        }
+        None
+    }
+
+    /// An interrupt for the driver host: masked until it unmasks it again.
+    pub(crate) fn flarehw_irq_fired(&mut self, intid: u32) {
+        gic::disable(intid);
+        if let Some(lx) = self.linux.as_mut() {
+            if lx.hw.fired.len() < 1024 {
+                lx.hw.fired.push_back(intid);
+            }
+        }
+    }
+
+    pub(crate) fn flarehw_read(&mut self, max: usize) -> Result<Option<Vec<u8>>, i64> {
+        if max < 4 {
+            return Err(EINVAL);
+        }
+        let q = &mut self.lx().hw.fired;
+        if q.is_empty() {
+            return Ok(None);
+        }
+        let mut out = Vec::new();
+        while out.len() + 4 <= max {
+            match q.pop_front() {
+                Some(i) => out.extend_from_slice(&i.to_le_bytes()),
+                None => break,
+            }
+        }
+        Ok(Some(out))
+    }
+
+    pub(crate) fn flarehw_readable(&self) -> bool {
+        self.linux.as_ref().is_some_and(|l| !l.hw.fired.is_empty())
+    }
+
+    pub(crate) fn flarehw_ioctl(&mut self, c: usize, req: u64, arg: u64) -> Result<i64, i64> {
+        match req {
+            FLAREHW_INFO => {
+                // in: u32 index; out: u32 index, u32 nregs, u32 nirqs,
+                // name[32], 4 bytes of padding (C alignment), regs[8]
+                // (u64 base, u64 size), irqs[8] (u32)
+                let idx = u32::from_le_bytes(self.uread(c, arg, 4)?.try_into().unwrap()) as usize;
+                let d = devices().nth(idx).ok_or(ENOENT)?;
+                let mut b = Vec::with_capacity(12 + 32 + 4 + 128 + 32);
+                b.extend_from_slice(&(idx as u32).to_le_bytes());
+                b.extend_from_slice(&(d.regs.len().min(8) as u32).to_le_bytes());
+                b.extend_from_slice(&(d.irqs.len().min(8) as u32).to_le_bytes());
+                let mut name = [0u8; 32];
+                let n = d.name.len().min(31);
+                name[..n].copy_from_slice(&d.name.as_bytes()[..n]);
+                b.extend_from_slice(&name);
+                b.extend_from_slice(&[0; 4]);
+                for i in 0..8 {
+                    let (base, size) = d.regs.get(i).map(|r| (r.base, r.size)).unwrap_or((0, 0));
+                    b.extend_from_slice(&base.to_le_bytes());
+                    b.extend_from_slice(&size.to_le_bytes());
+                }
+                for i in 0..8 {
+                    b.extend_from_slice(&d.irqs.get(i).copied().unwrap_or(0).to_le_bytes());
+                }
+                self.uwrite(c, arg, &b).map(|_| 0)
+            }
+            FLAREHW_DMA_ALLOC => {
+                // in: u64 size; out: u64 size, u64 physical address
+                let size = u64::from_le_bytes(self.uread(c, arg, 8)?.try_into().unwrap());
+                if size == 0 || size > 512 << 20 {
+                    return Err(EINVAL);
+                }
+                let size = size.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+                let pa = frame::alloc_contiguous(size / PAGE_SIZE).ok_or(ENOMEM)?;
+                self.lx().hw.dma.push((pa, size));
+                let mut b = size.to_le_bytes().to_vec();
+                b.extend_from_slice(&pa.to_le_bytes());
+                self.uwrite(c, arg, &b).map(|_| 0)
+            }
+            FLAREHW_IRQ => {
+                // in: u32 intid, u32 op (0 lines, 1 unmask, 2 mask, 3 trigger), u32 arg (edge)
+                let v = self.uread(c, arg, 12)?;
+                let w = |i: usize| u32::from_le_bytes(v[i * 4..i * 4 + 4].try_into().unwrap());
+                let (intid, op, edge) = (w(0), w(1), w(2));
+                if op == 0 {
+                    return Ok(gic::lines() as i64);
+                }
+                if !granted_irq(intid) {
+                    return Err(EPERM);
+                }
+                match op {
+                    1 => gic::enable(intid),
+                    2 => gic::disable(intid),
+                    3 => gic::set_edge(intid, edge != 0),
+                    _ => return Err(EINVAL),
+                }
+                Ok(0)
+            }
+            FLAREHW_SMC => {
+                let v = self.uread(c, arg, 64)?;
+                let mut r = [0u64; 8];
+                for (i, x) in r.iter_mut().enumerate() {
+                    *x = u64::from_le_bytes(v[i * 8..i * 8 + 8].try_into().unwrap());
+                }
+                let fid = r[0] as u32;
+                if !boot::LINUX_SMC.iter().any(|&(a, b)| fid >= a && fid <= b) {
+                    kprintln!("flarehw: SMC function {:#x} refused (not in the composition's [linux] smc)", fid);
+                    return Err(EPERM);
+                }
+                if !psci::smccc(&mut r) {
+                    return Err(ENOSYS);
+                }
+                let mut b = Vec::with_capacity(64);
+                for x in r {
+                    b.extend_from_slice(&x.to_le_bytes());
+                }
+                self.uwrite(c, arg, &b).map(|_| 0)
+            }
+            _ => Err(ENOTTY),
+        }
+    }
+}

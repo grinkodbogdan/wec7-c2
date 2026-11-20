@@ -14,8 +14,9 @@ dump, width, height, stride, bpp, scale = sys.argv[1], *map(int, sys.argv[2:7])
 font_rs = open(os.path.join(os.path.dirname(__file__), "../../kernel/src/font.rs")).read()
 fw, fh = int(re.search(r"WIDTH: usize = (\d+)", font_rs).group(1)), int(re.search(r"HEIGHT: usize = (\d+)", font_rs).group(1))
 glyphs = {}
-for i, row in enumerate(re.findall(r"\[(0x[0-9a-f, x]*)\],", font_rs)):
-    glyphs[tuple(int(v, 16) for v in row.split(", "))] = chr(32 + i)
+values = [int(v, 16) for v in re.findall(r"0x[0-9a-f]+", font_rs[font_rs.index("GLYPHS"):])]
+for i in range(len(values) // fh):
+    glyphs[tuple(values[i * fh:(i + 1) * fh])] = chr(32 + i)
 data = open(dump, "rb").read()
 cw, ch = fw * scale, fh * scale
 cols, rows = width // cw, height // ch

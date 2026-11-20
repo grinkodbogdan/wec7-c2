@@ -4,11 +4,32 @@
 #     boot loader's splash framebuffer, see hardware/boards/xiaomi/tissot);
 #   * the Linux personality with a small root filesystem: busybox, the
 #     Linux ABI tests and droid's Android apps, all printing to the panel.
-# No drivers for the phone's own peripherals yet (touch, keys, storage,
-# USB): nothing here powers the phone off; hold the power key to turn it off.
+#   * native drivers for what is easy (after QRT's, which runs on this
+#     phone): the volume-up key and hall sensor (TLMM pins, polled) as
+#     /dev/input/event0, and the debug UART as a second console.
+# Nothing here powers the phone off; hold the power key to turn it off.
 
 name = "xiaomi-tissot"
 board = "xiaomi/tissot"
+
+# The debug UART: the console service and the kernel log (also kept on
+# the screen). Without a cable on the test pads it writes to nobody.
+[component.uart]
+manifest = "drivers/qcom/uart-msm"
+grants = ["uart=mmio:uart0", "console=endpoint:console:recv", "klog=klog:read+write"]
+restart = "on-failure"
+max-restarts = 2
+
+[component.keys]
+manifest = "drivers/qcom/gpio-keys-tlmm"
+grants = [
+    "key-115=mmio:volume-up",    # KEY_VOLUMEUP
+    "switch-0=mmio:hall-sensor", # SW_LID
+    "events=endpoint:keys:recv",
+    "input=input:keys",
+    "console=endpoint:console:send:badge=2",
+]
+restart = "on-failure"
 
 [linux]
 init = ["/bin/sh", "/etc/rc"]

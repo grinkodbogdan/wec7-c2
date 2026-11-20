@@ -63,8 +63,9 @@ fn panic(info: &PanicInfo) -> ! {
     if platform::PANIC_HALT {
         // Keep the message on the board's console (a phone's screen).
         loop {
-            // SAFETY: idle forever with interrupts masked.
-            unsafe { core::arch::asm!("msr daifset, #0xf", "wfe", options(nomem, nostack)) };
+            // SAFETY: idle forever with IRQs masked; FIQs stay on (the
+            // secure world's watchdog on Qualcomm SoCs, see arch::wait_for_interrupt).
+            unsafe { core::arch::asm!("msr daifset, #2", "msr daifclr, #1", "wfe", options(nomem, nostack)) };
         }
     }
     arch::psci::system_off()

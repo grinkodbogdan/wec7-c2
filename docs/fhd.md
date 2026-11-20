@@ -90,7 +90,11 @@ A board names its SoC with `soc = "<vendor>/<soc>"`. Node classes in use:
 
 * unsupported format version or architecture; unknown keys; wrong kinds
 * empty or overflowing register windows; **overlapping** register windows
-  or memory regions
+  or memory regions. Two overlaps are allowed:
+  * a device declared `within = "<device>"`, which must lie inside that
+    device (one key's pin block inside the GPIO controller);
+  * a device with `mapping = "memory"` (memory shared with firmware, such
+    as Qualcomm's SMEM) inside a `reserved` memory region.
 * not exactly one enabled interrupt controller; no timer with an interrupt
 * an interrupt used by two enabled nodes (unless `shared-irq = true`)
 * `requires` naming unknown or disabled nodes; `chosen.console` naming an

@@ -87,6 +87,10 @@ blocks); a deliverable signal interrupts them with `EINTR` or restarts them
 Unimplemented calls return `ENOSYS` and are logged once
 (`linux: unimplemented system call N`); the boot test fails if any appear.
 
+* `/dev/flarehw`: the hardware the composition gives Linux (`[linux]
+  hardware`), for the Linux driver host that runs Linux's own drivers
+  ([linux-drivers.md](linux-drivers.md)).
+
 ## Not yet
 
 * **Dynamic linking** — `PT_INTERP` executables are refused.

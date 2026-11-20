@@ -145,5 +145,7 @@ Follows the illustrative layout of the project specification (§7):
 * [Android apps](docs/android.md) — how APKs run without Android userspace
 * [Display and the phone shell](docs/display.md) — KMS, touch, Arcan and `flarehome`
 * [fdb](docs/fdb.md) — the debug bridge: shell, files, apps, screenshots, UI reload
+* [Drivers: native and Linux's own](docs/linux-drivers.md) — small native drivers, and the
+  driver host that runs Linux's drivers (LKL) for hard hardware
 * [Decisions](docs/decisions.md) — positions taken on the spec's open questions
 * [Roadmap](docs/roadmap.md) — milestone status and next steps

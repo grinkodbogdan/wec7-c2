@@ -1,0 +1,15 @@
+[component]
+name = "uart-msm"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # stateless: the boot loader left the UART configured
+
+[binds]
+compatible = ["qcom,msm-uartdm-v1.4", "qcom,msm-uartdm"]
+
+[provides]
+interfaces = ["flare.console@1.0"]
+
+[lifecycle]
+quiesce = false
+checkpoint = false

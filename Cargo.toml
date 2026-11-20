@@ -11,6 +11,8 @@ members = [
     "drivers/common/uart-pl011",
     "drivers/common/rtc-pl031",
     "drivers/common/gpio-keys-pl061",
+    "drivers/qcom/gpio-keys-tlmm",
+    "drivers/qcom/uart-msm",
     "drivers/virtio/blk",
     "drivers/virtio/input",
     "drivers/virtio/console",

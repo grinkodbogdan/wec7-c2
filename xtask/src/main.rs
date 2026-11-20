@@ -325,6 +325,9 @@ fn build(o: &Opts) -> PathBuf {
     }
     let out = root().join("target").join(TARGET).join(profile);
     let rootfs = assemble_rootfs(comp.linux.as_ref().map(|l| l.rootfs != "minimal").unwrap_or(true));
+    if comp.linux.as_ref().is_some_and(|l| !l.hardware.is_empty()) {
+        stage_linuxdrv(&comp, &rootfs);
+    }
     let mut k = cargo();
     k.args(["build", "--target", TARGET, "-p", "flare-kernel"]);
     if o.release {
@@ -664,6 +667,104 @@ fn atl_stage() -> PathBuf {
     out.join("stage")
 }
 
+/// The Linux driver host (compat/linux/linuxdrv): Linux's own drivers, as a
+/// library, in a Linux process. Built when its inputs change.
+fn linuxdrv_build() -> PathBuf {
+    let dir = root().join("compat/linux/linuxdrv");
+    let out = root().join("target/linuxdrv");
+    let inputs = inputs_hash(&[
+        dir.join("build.sh"),
+        dir.join("linuxdrv.c"),
+        dir.join("lkl/qrt.patch"),
+        dir.join("lkl/flare.patch"),
+        dir.join("lkl/config-arm64"),
+        dir.join("lkl/config-flare"),
+    ]);
+    let stamp = out.join(".stamp");
+    if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) || !out.join("linuxdrv").exists() {
+        println!("xtask: building the Linux driver host (LKL; the first time takes about 25 minutes)");
+        let sysroot = atl_stage().parent().unwrap().join("sysroot");
+        let mut c = Command::new(dir.join("build.sh"));
+        c.arg(&out).arg(&sysroot);
+        run(c);
+        std::fs::write(&stamp, &inputs).unwrap();
+    }
+    out.join("linuxdrv")
+}
+
+/// Put the driver host and its device tree into the root filesystem: the
+/// board's own tree (hardware/boards/<board>/linux.dtb, e.g. the mainline
+/// one of a phone) or one made from the FHD for the devices given to Linux.
+fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
+    let p = flare_fhd::load_board(&root().join("hardware"), &comp.board).unwrap_or_else(|_| exit(1));
+    let dir = rootfs.join("etc/linuxdrv");
+    std::fs::create_dir_all(&dir).unwrap();
+    let board_dir = root().join("hardware/boards").join(&comp.board);
+    let own = board_dir.join("linux.dtb");
+    let hw = &comp.linux.as_ref().unwrap().hardware;
+    if own.exists() {
+        // The board's own (mainline) tree, with everything Linux was not
+        // given disabled, and the board's notes for Linux (linux.txt).
+        let (mut drop, mut cmdline) = (Vec::new(), Vec::new());
+        if let Ok(text) = std::fs::read_to_string(board_dir.join("linux.txt")) {
+            for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                match l.split_once(' ') {
+                    Some(("drop", p)) => drop.push(p.trim().to_string()),
+                    Some(("cmdline", a)) => cmdline.push(a.trim().to_string()),
+                    _ => die(&format!("{}/linux.txt: cannot read '{}'", comp.board, l)),
+                }
+            }
+        }
+        let mut c = Command::new("python3");
+        c.arg("-I").arg(root().join("tools/bootimg/dtb.py")).arg("trim").arg(&own).arg(dir.join("board.dtb"));
+        c.arg("--allow");
+        for name in hw {
+            for r in p.node(name).map(|n| n.regs.clone()).unwrap_or_default() {
+                c.arg(format!("{:#x}+{:#x}", r.base, r.size));
+            }
+        }
+        if !drop.is_empty() {
+            c.arg("--drop").args(&drop);
+        }
+        c.stdout(Stdio::null());
+        run(c);
+        std::fs::write(dir.join("cmdline"), cmdline.join(" ") + "\n").unwrap();
+    } else {
+        let regs = |n: &flare_fhd::Node| {
+            n.regs.iter().map(|r| format!("[{}, {}]", r.base, r.size)).collect::<Vec<_>>().join(", ")
+        };
+        let strs = |v: &[String]| v.iter().map(|c| format!("{:?}", c)).collect::<Vec<_>>().join(", ");
+        let intc = p.enabled_nodes().find(|n| n.class == "intc").unwrap_or_else(|| die("no interrupt controller"));
+        let devices: Vec<String> = hw
+            .iter()
+            .filter_map(|name| p.node(name))
+            .map(|n| {
+                format!(
+                    "{{\"name\": {:?}, \"compatible\": [{}], \"regs\": [{}], \"irqs\": {:?}}}",
+                    n.name,
+                    strs(&n.compatible),
+                    regs(n),
+                    n.irqs
+                )
+            })
+            .collect();
+        let spec = format!(
+            "{{\"model\": {:?}, \"intc\": {{\"compatible\": [{}], \"regs\": [{}]}}, \"devices\": [{}]}}",
+            p.board,
+            strs(&intc.compatible),
+            regs(intc),
+            devices.join(", ")
+        );
+        let spec_path = root().join("target/linuxdrv-board.json");
+        std::fs::write(&spec_path, spec).unwrap();
+        let mut c = Command::new("python3");
+        c.arg(root().join("tools/bootimg/fhd2dtb.py")).arg(&spec_path).arg(dir.join("board.dtb"));
+        run(c);
+    }
+    std::fs::create_dir_all(rootfs.join("usr/bin")).unwrap();
+    std::fs::copy(linuxdrv_build(), rootfs.join("usr/bin/linuxdrv")).unwrap();
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -820,10 +921,11 @@ fn fbcon_test(o: &Opts) -> bool {
     let png = root().join("target/screenshots/fbcon.png");
     let _ = std::fs::create_dir_all(png.parent().unwrap());
     let mut text = String::new();
+    let mut seen = String::new(); // every screen decoded: lines scroll off
     let deadline = Instant::now() + Duration::from_secs(300);
     let done = "rc: starting an interactive shell";
     while Instant::now() < deadline && !text.contains(done) && !text.contains("KERNEL PANIC") {
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(Duration::from_secs(2));
         q.cmd(&format!(
             "{{\"execute\":\"pmemsave\",\"arguments\":{{\"val\":{},\"size\":{},\"filename\":\"{}\"}}}}",
             base,
@@ -838,17 +940,30 @@ fn fbcon_test(o: &Opts) -> bool {
             .output()
             .unwrap_or_else(|e| die(&format!("fbtext.py: {}", e)));
         text = String::from_utf8_lossy(&out.stdout).into_owned();
+        seen.push_str(&text);
     }
     let _ = child.kill();
     let _ = child.wait();
     println!("---- screen ({}) ----\n{}", png.display(), text);
-    let ok = text.contains(done) && !text.contains("KERNEL PANIC");
+    let flat = seen.replace('\n', "");
+    let mut ok = text.contains(done) && !seen.contains("KERNEL PANIC");
+    for want in ["rc: input devices: event0", "keys waiting"] {
+        let found = flat.split_whitespace().collect::<Vec<_>>().join(" ").contains(want);
+        println!("{}: {}", want, if found { "seen" } else { "MISSING" });
+        ok &= found;
+    }
+    for bad in ["' faulted:", "kernel: restarting", "cannot start"] {
+        if flat.contains(bad) {
+            println!("unexpected: {}", bad);
+            ok = false;
+        }
+    }
     println!("{}", if ok { "PASS: the console reached the shell on the framebuffer" } else { "FAIL" });
     ok
 }
 
 /// Build the composition and package the kernel the way the board's boot
-/// loader wants it (`[boot-image]` in its FHD), in target/images/<board>.
+/// loader wants it (`[boot-image]` in its FHD), in target/images/<composition name>.
 fn image(o: &Opts) {
     let (comp, _) = load_composition(&o.system);
     let p = flare_fhd::load_board(&root().join("hardware"), &comp.board).unwrap_or_else(|errs| {
@@ -861,7 +976,7 @@ fn image(o: &Opts) {
         die(&format!("board {} has no [boot-image] section (a virtual board? use `cargo xtask run`)", comp.board));
     }
     let kernel = build(o);
-    let out = root().join("target/images").join(&p.board);
+    let out = root().join("target/images").join(&comp.name);
     std::fs::create_dir_all(&out).unwrap();
     let image = out.join("Image");
     let mut c = Command::new("llvm-objcopy");
@@ -1056,6 +1171,65 @@ fn wait_output(output: &Mutex<Vec<u8>>, text: &str, secs: u64) -> bool {
         std::thread::sleep(Duration::from_millis(200));
     }
     false
+}
+
+/// Boot a composition that gives hardware to Linux and check that Linux's
+/// own drivers, running in the driver host, reached it.
+fn linuxdrv_test(o: &Opts) -> bool {
+    let mut o2 = Opts { system: "system/qemu-virt-linuxdrv.boot.toml".into(), release: o.release, rest: Vec::new() };
+    if o.system != DEFAULT_SYSTEM {
+        o2.system = o.system.clone();
+    }
+    let kernel = build(&o2);
+    let mut child = qemu_command(&o2, &kernel)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap_or_else(|e| die(&format!("cannot start qemu-system-aarch64: {}", e)));
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let mut stdout = child.stdout.take().unwrap();
+    let sink = output.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let _ = std::io::stdout().write_all(&buf[..n]);
+            let _ = std::io::stdout().flush();
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let expected = [
+        "linuxdrv: Linux is up",
+        "linuxdrv: virtio31: 0xa003e00+0x200 irq 79",
+        "linuxdrv: block devices: vda",
+        // The userdata disk starts with "FLAR".
+        "linuxdrv: vda: first sector read through Linux's driver: 46 4c 41 52",
+        "linuxdrv: rtc0 (Linux's driver): 20",
+    ];
+    let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let ok = loop {
+        let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+        if expected.iter().all(|e| seen.contains(e)) {
+            break true;
+        }
+        if fatal.iter().any(|f| seen.contains(f)) || Instant::now() > deadline || child.try_wait().unwrap().is_some() {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+    println!();
+    for e in expected {
+        println!("linuxdrv-test: {} {:?}", if seen.contains(e) { "ok     " } else { "MISSING" }, e);
+    }
+    println!("linuxdrv-test: {}", if ok { "PASS" } else { "FAIL" });
+    ok
 }
 
 /// Drive the phone shell through the touchscreen, as a user would, and
@@ -1424,6 +1598,7 @@ fn main() {
         "qemu-test" => exit(if qemu_test(&o) { 0 } else { 1 }),
         "image" => image(&o),
         "fbcon-test" => exit(if fbcon_test(&o) { 0 } else { 1 }),
+        "linuxdrv-test" => exit(if linuxdrv_test(&o) { 0 } else { 1 }),
         "test" => {
             let mut c = cargo();
             c.arg("test");

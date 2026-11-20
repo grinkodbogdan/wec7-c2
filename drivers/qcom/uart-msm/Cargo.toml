@@ -1,0 +1,15 @@
+[package]
+name = "uart-msm"
+description = "Qualcomm MSM UARTDM driver component: the console service on a phone's debug UART"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "uart-msm"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

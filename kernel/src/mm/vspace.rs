@@ -144,6 +144,26 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Map one page of physical memory the caller vouches for (a granted
+    /// device window or DMA memory) with memory attribute `attr`
+    /// (mmu::ATTR_*), not owned.
+    pub fn map_phys(&mut self, va: u64, pa: u64, prot: Prot, attr_idx: u64) -> Result<(), MapError> {
+        if !Self::in_user_range(va) || !va.is_multiple_of(PAGE_SIZE) || !pa.is_multiple_of(PAGE_SIZE) {
+            return Err(MapError::OutOfRange);
+        }
+        let entry = self.leaf_mut(va, true).ok_or(MapError::NoMemory)?;
+        if *entry & VALID != 0 {
+            return Err(MapError::AlreadyMapped);
+        }
+        let mut f = flags(prot, attr_idx == ATTR_DEVICE);
+        if attr_idx == mmu::ATTR_NORMAL_NC {
+            f = (f & !(7 << 2)) | attr(mmu::ATTR_NORMAL_NC);
+        }
+        *entry = pa | f;
+        mmu::table_barrier();
+        Ok(())
+    }
+
     /// Allocate a zeroed frame and map it. Returns the physical address.
     pub fn map_new(&mut self, va: u64, prot: Prot) -> Result<u64, MapError> {
         let pa = frame::alloc().ok_or(MapError::NoMemory)?;

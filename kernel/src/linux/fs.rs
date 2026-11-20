@@ -86,6 +86,8 @@ pub enum FileKind {
     Serial(usize),
     /// /dev/fb0: the display's pixels.
     Fb,
+    /// /dev/flarehw: hardware for a Linux driver host.
+    FlareHw,
 }
 
 pub struct OpenFile {
@@ -198,6 +200,13 @@ impl Kernel {
             FileKind::Epoll(_) => 0,
             FileKind::Drm(d) => self.drm_poll(d),
             FileKind::Evdev(e) => self.evdev_poll(e),
+            FileKind::FlareHw => {
+                if self.flarehw_readable() {
+                    EPOLLIN
+                } else {
+                    0
+                }
+            }
             FileKind::Serial(d) => {
                 let p = &self.serials[*d];
                 (if p.rx.is_empty() { 0 } else { EPOLLIN })
@@ -308,6 +317,10 @@ impl Kernel {
                 let e = e.clone();
                 drop(f);
                 self.evdev_read(&e, max)
+            }
+            FileKind::FlareHw => {
+                drop(f);
+                self.flarehw_read(max)
             }
             FileKind::Serial(d) => {
                 let d = *d;
@@ -642,6 +655,7 @@ impl Kernel {
             match n.rdev {
                 vfs::DEV_FLARECTL => FileKind::FlareCtl,
                 vfs::DEV_FB0 => FileKind::Fb,
+                vfs::DEV_FLAREHW => FileKind::FlareHw,
                 d if (vfs::DEV_SERIAL0..vfs::DEV_SERIAL0 + 16).contains(&d) => {
                     FileKind::Serial((d - vfs::DEV_SERIAL0) as usize)
                 }
@@ -979,6 +993,9 @@ impl Kernel {
                 _ => 0,
             };
             return self.uwrite(c, arg, &n.to_le_bytes()).map(|_| 0);
+        }
+        if matches!(file.borrow().kind, FileKind::FlareHw) {
+            return self.flarehw_ioctl(c, req, arg);
         }
         if matches!(file.borrow().kind, FileKind::Fb) {
             return self.fb_ioctl(c, req, arg);

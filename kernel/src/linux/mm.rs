@@ -127,6 +127,9 @@ pub enum Backing {
     File(Cow<'static, [u8]>, u64),
     /// Private mapping of a page-backed file: pages copied on first touch.
     Private(MemRef, u64),
+    /// Physical memory (/dev/flarehw): the VMA's start is physical `base`,
+    /// mapped with memory attribute `attr`.
+    Phys(u64, u64),
 }
 
 #[derive(Clone)]
@@ -145,6 +148,7 @@ impl Vma {
             Backing::Shared(o, off) => Backing::Shared(o.clone(), off + delta),
             Backing::File(d, off) => Backing::File(d.clone(), off + delta),
             Backing::Private(o, off) => Backing::Private(o.clone(), off + delta),
+            Backing::Phys(base, attr) => Backing::Phys(base + delta, *attr),
         };
         Vma { start, end, prot: self.prot, backing }
     }
@@ -293,6 +297,7 @@ impl Kernel {
                 let Some(pa) = obj.borrow_mut().page(idx) else { return false };
                 vs.map_page(page, pa, prot, false, false).is_ok()
             }
+            Backing::Phys(base, attr) => vs.map_phys(page, base + (page - vma.start), prot, *attr).is_ok(),
         }
     }
 
@@ -388,6 +393,11 @@ impl Kernel {
                 (super::fs::FileKind::Drm(d), _) => {
                     drm = Some(d.clone());
                     Backing::Anon
+                }
+                (super::fs::FileKind::FlareHw, _) => {
+                    drop(f);
+                    let attr = self.flarehw_window(off, len).ok_or(EPERM)?;
+                    Backing::Phys(off & !super::flarehw::NOCACHE, attr)
                 }
                 _ => return Err(EACCES),
             }

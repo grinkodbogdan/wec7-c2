@@ -67,6 +67,10 @@ pub mod syscall {
     /// wrote into `a` (count in `x1`); op 2 binds notification bit `b` on
     /// receive endpoint slot `a`, raised when Linux writes.
     pub const SERIAL_IO: u64 = 17;
+    /// `notify_after(endpoint, bit, ns)`: one notification `bit` on an
+    /// endpoint the caller may receive from, `ns` nanoseconds from now
+    /// (to the scheduler tick's resolution). For drivers that poll.
+    pub const NOTIFY_AFTER: u64 = 18;
 }
 
 /// Error codes returned in `x0`.

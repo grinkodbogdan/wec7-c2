@@ -35,6 +35,10 @@ pub fn write(bytes: &[u8]) {
         console::write_bytes(bytes);
         return;
     }
+    // A screen keeps showing the log when a driver (a UART) reads it too.
+    if console::is_screen() {
+        console::write_bytes(bytes);
+    }
     for &b in bytes {
         if k.len == SIZE {
             k.dropped += 1;

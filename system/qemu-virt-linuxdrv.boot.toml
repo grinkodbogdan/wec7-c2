@@ -1,0 +1,27 @@
+# Linux's own drivers in a Flare process: the reference phone board, with its
+# storage (virtio-blk) and real-time clock (PL031) given to Linux instead of
+# Flare's native drivers. /etc/rc starts the driver host (linuxdrv), which
+# runs Linux's virtio-blk and rtc-pl031 drivers as a library.
+# `cargo xtask linuxdrv-test` boots it.
+
+name = "qemu-virt-linuxdrv"
+board = "qemu/virt-phone"
+
+[component.uart]
+manifest = "drivers/common/uart-pl011"
+grants = [
+    "uart=mmio:uart0",
+    "uart-irq=irq:uart0",
+    "console=endpoint:console:recv",
+    "klog=klog:read+write",
+]
+restart = "on-failure"
+max-restarts = 3
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+control = true
+rootfs = "minimal"
+# Devices whose registers and interrupts only the Linux driver host may use.
+hardware = ["virtio31", "rtc0"]

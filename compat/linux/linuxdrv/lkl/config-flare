@@ -1,0 +1,12 @@
+# Flare's additions to QRT's config-arm64: the QEMU virt board's devices,
+# for checking the driver host there (virtio-mmio block devices, the PL031
+# RTC, the PL061 GPIO), and devtmpfs for the device nodes the host opens.
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_PL031=y
+CONFIG_GPIO_PL061=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+# the PMIC's real-time clock (PM8953 over SPMI)
+CONFIG_RTC_DRV_PM8XXX=y

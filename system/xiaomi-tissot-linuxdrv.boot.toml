@@ -1,0 +1,31 @@
+# The Xiaomi Mi A1 with Linux's own drivers for the hard hardware: what
+# system/xiaomi-tissot.boot.toml runs, plus the Linux driver host
+# (docs/linux-drivers.md) given the eMMC, the SD card, the touch screen's
+# I2C bus and what those need: the clock controller, the pin controller, the
+# RPM co-processor (power rails), SMEM and the PMICs. Linux probes them with
+# mainline's device tree for this phone, trimmed to exactly that.
+#
+# The pin controller goes to Linux as a whole, so the volume and power keys
+# are Linux's (gpio-keys, pm8941-pwrkey) here, not the native TLMM driver's.
+#
+# Untested on hardware. Linux's drivers see only what is granted below; the
+# panel, the UART and the CPUs stay Flare's.
+
+name = "xiaomi-tissot-linuxdrv"
+board = "xiaomi/tissot"
+
+[component.uart]
+manifest = "drivers/qcom/uart-msm"
+grants = ["uart=mmio:uart0", "console=endpoint:console:recv", "klog=klog:read+write"]
+restart = "on-failure"
+max-restarts = 2
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+control = true
+rootfs = "minimal"
+hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3"]
+# Linux's Qualcomm drivers make no firmware calls in this configuration
+# (QCOM_SCM is off); none are allowed.
+smc = []

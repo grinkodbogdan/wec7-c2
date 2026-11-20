@@ -1,0 +1,139 @@
+diff --git a/arch/lkl/drivers/qrt-gic.c b/arch/lkl/drivers/qrt-gic.c
+index a84735768..0e1512636 100644
+--- a/arch/lkl/drivers/qrt-gic.c
++++ b/arch/lkl/drivers/qrt-gic.c
+@@ -15,6 +15,7 @@
+ #include <linux/irqdomain.h>
+ #include <linux/of.h>
+ #include <linux/of_address.h>
++#include <asm/host_ops.h>
+ 
+ #define QRT_GIC_VIRQ_BASE 1024
+ #define QRT_GIC_NR 1020
+@@ -29,6 +30,10 @@ static void qrt_gic_mask(struct irq_data *d)
+ {
+ 	unsigned long hw = irqd_to_hwirq(d);
+ 
++	if (lkl_ops->irq_ctl) {
++		lkl_ops->irq_ctl(hw, 2, 0);
++		return;
++	}
+ 	writel_relaxed(BIT(hw % 32), dist + 0x180 + 4 * (hw / 32));
+ }
+ 
+@@ -36,6 +41,10 @@ static void qrt_gic_unmask(struct irq_data *d)
+ {
+ 	unsigned long hw = irqd_to_hwirq(d);
+ 
++	if (lkl_ops->irq_ctl) {
++		lkl_ops->irq_ctl(hw, 1, 0);
++		return;
++	}
+ 	writel_relaxed(BIT(hw % 32), dist + 0x100 + 4 * (hw / 32));
+ }
+ 
+@@ -50,7 +59,9 @@ static int qrt_gic_set_type(struct irq_data *d, unsigned int type)
+ 	u32 off = 0xc00 + 4 * (hw / 16), bit = BIT((hw % 16) * 2 + 1), v;
+ 	bool edge = type & IRQ_TYPE_EDGE_BOTH;
+ 
+-	if (hw >= 32) {
++	if (lkl_ops->irq_ctl)
++		lkl_ops->irq_ctl(hw, 3, edge);
++	else if (hw >= 32) {
+ 		v = readl_relaxed(dist + off);
+ 		writel_relaxed(edge ? v | bit : v & ~bit, dist + off);
+ 	}
+@@ -96,6 +107,17 @@ static int __init qrt_gic_init(struct device_node *node,
+ {
+ 	u32 lines, i;
+ 
++	if (lkl_ops->irq_ctl) {
++		/* Flare: the host's kernel owns the distributor */
++		lines = min_t(u32, lkl_ops->irq_ctl(0, 0, 0), QRT_GIC_NR);
++		qrt_gic_lines = lines;
++		if (!irq_domain_add_legacy(node, lines, QRT_GIC_VIRQ_BASE, 0,
++					   &qrt_gic_ops, NULL))
++			return -ENOMEM;
++		pr_info("flare-gic: %u interrupt lines through the host, Linux irqs %d..\n",
++			lines, QRT_GIC_VIRQ_BASE);
++		return 0;
++	}
+ 	dist = of_iomap(node, 0);
+ 	if (!dist)
+ 		return -ENOMEM;
+@@ -120,3 +142,4 @@ IRQCHIP_DECLARE(qrt_gic400, "arm,gic-400", qrt_gic_init);
+ IRQCHIP_DECLARE(qrt_a15, "arm,cortex-a15-gic", qrt_gic_init);
+ IRQCHIP_DECLARE(qrt_a7, "arm,cortex-a7-gic", qrt_gic_init);
+ IRQCHIP_DECLARE(qrt_qgic2, "qcom,msm-qgic2", qrt_gic_init);
++IRQCHIP_DECLARE(qrt_gic2, "arm,gic-v2", qrt_gic_init);
+diff --git a/arch/lkl/include/uapi/asm/host_ops.h b/arch/lkl/include/uapi/asm/host_ops.h
+index 9d4e389e2..8918d1046 100644
+--- a/arch/lkl/include/uapi/asm/host_ops.h
++++ b/arch/lkl/include/uapi/asm/host_ops.h
+@@ -207,6 +207,16 @@ struct lkl_host_operations {
+ 				enum lkl_prot prot);
+ 
+ 	struct lkl_dev_pci_ops *pci_ops;
++
++	/*
++	 * Flare: a host process owns neither the interrupt controller nor the
++	 * secure monitor; its kernel brokers both.  irq_ctl: op 0 returns the
++	 * number of interrupt lines, op 1 unmasks hwirq, op 2 masks it, op 3
++	 * sets its trigger (arg 1 = edge).  smc: x0..x7 in regs[0..7], results
++	 * in regs[0..3].  NULL: the QRT behaviour (direct GIC access, smc).
++	 */
++	long (*irq_ctl)(int hwirq, int op, int arg);
++	void (*smc)(unsigned long *regs);
+ };
+ 
+ /**
+diff --git a/arch/lkl/kernel/qrt_soc.c b/arch/lkl/kernel/qrt_soc.c
+index 1127c0551..b354be981 100644
+--- a/arch/lkl/kernel/qrt_soc.c
++++ b/arch/lkl/kernel/qrt_soc.c
+@@ -12,6 +12,7 @@
+ #include <linux/of_fdt.h>
+ #include <linux/dma-map-ops.h>
+ #include <linux/arm-smccc.h>
++#include <asm/host_ops.h>
+ 
+ void *lkl_qrt_fdt;
+ unsigned long lkl_qrt_dma_base, lkl_qrt_dma_size;
+@@ -115,6 +116,18 @@ void __arm_smccc_smc(unsigned long a0, unsigned long a1, unsigned long a2,
+ 		     unsigned long a6, unsigned long a7,
+ 		     struct arm_smccc_res *res, struct arm_smccc_quirk *quirk)
+ {
++	if (lkl_ops->smc) {		/* Flare: the host's kernel makes the call */
++		unsigned long r[8] = { a0, a1, a2, a3, a4, a5, a6, a7 };
++
++		lkl_ops->smc(r);
++		if (res) {
++			res->a0 = r[0];
++			res->a1 = r[1];
++			res->a2 = r[2];
++			res->a3 = r[3];
++		}
++		return;
++	}
+ 	register unsigned long x0 asm("x0") = a0, x1 asm("x1") = a1,
+ 		x2 asm("x2") = a2, x3 asm("x3") = a3, x4 asm("x4") = a4,
+ 		x5 asm("x5") = a5, x6 asm("x6") = a6, x7 asm("x7") = a7;
+@@ -140,6 +153,18 @@ void __arm_smccc_hvc(unsigned long a0, unsigned long a1, unsigned long a2,
+ 		     unsigned long a6, unsigned long a7,
+ 		     struct arm_smccc_res *res, struct arm_smccc_quirk *quirk)
+ {
++	if (lkl_ops->smc) {		/* Flare: the host's kernel makes the call */
++		unsigned long r[8] = { a0, a1, a2, a3, a4, a5, a6, a7 };
++
++		lkl_ops->smc(r);
++		if (res) {
++			res->a0 = r[0];
++			res->a1 = r[1];
++			res->a2 = r[2];
++			res->a3 = r[3];
++		}
++		return;
++	}
+ 	register unsigned long x0 asm("x0") = a0, x1 asm("x1") = a1,
+ 		x2 asm("x2") = a2, x3 asm("x3") = a3, x4 asm("x4") = a4,
+ 		x5 asm("x5") = a5, x6 asm("x6") = a6, x7 asm("x7") = a7;

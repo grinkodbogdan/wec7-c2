@@ -44,3 +44,78 @@ compatible = "qcom,msm8953-pinctrl"
 reg = [0x01000000, 0x300000]
 interrupts = [240]         # SPI 208
 status = "disabled"
+
+# ---------------------------------------------------------------------------
+# Blocks for Linux's own drivers (the driver host, docs/linux-drivers.md):
+# what mainline's msm8953.dtsi says the SoC's clock, power, storage and
+# touch drivers touch. Interrupts are GIC INTIDs (SPI + 32). Boards enable
+# them; a composition gives them to Linux with `[linux] hardware`.
+
+# The RPM co-processor's message RAM and its SMD edge interrupt (power
+# rails, the bus and crystal clocks are requests to the RPM).
+[device.rpm]
+compatible = "qcom,rpm-msg-ram"
+reg = [0x00060000, 0x8000]
+interrupts = [200]         # SPI 168, the RPM's SMD edge
+status = "disabled"
+
+# Global clock controller (and its GDSC power domains and resets).
+[device.gcc]
+compatible = "qcom,gcc-msm8953"
+reg = [0x01800000, 0x80000]
+status = "disabled"
+
+# TCSR: the hardware mutexes SMEM is locked with, and SoC configuration.
+[device.tcsr]
+compatible = ["qcom,tcsr-mutex", "qcom,tcsr-msm8953"]
+reg = [[0x01905000, 0x20000], [0x01937000, 0x30000]]
+status = "disabled"
+
+# APCS global: the mailbox to the RPM (one register). Its page also holds the
+# CPU clock mux, which Linux's driver for it is never given (disabled in the
+# tree it gets).
+[device.apcs]
+compatible = "qcom,msm8953-apcs-kpss-global"
+reg = [0x0b011000, 0x50]
+status = "disabled"
+
+# SPMI PMIC arbiter: the PM8953/PMI8950 PMICs (power key, PMIC GPIOs, the
+# real-time clock, charger, backlight).
+[device.spmi]
+compatible = "qcom,spmi-pmic-arb"
+reg = [[0x0200f000, 0x1000], [0x02400000, 0x800000], [0x02c00000, 0x800000], [0x03800000, 0x200000], [0x0200a000, 0x2100]]
+interrupts = [222]         # SPI 190
+status = "disabled"
+
+# SDHC1 (eMMC) and SDHC2 (SD card): the SDHCI core and its vendor registers.
+[device.sdhc1]
+compatible = ["qcom,msm8953-sdhci", "qcom,sdhci-msm-v4"]
+reg = [0x07824000, 0x1000]
+interrupts = [155, 170]    # SPI 123 (hc), 138 (pwr)
+status = "disabled"
+
+[device.sdhc2]
+compatible = ["qcom,msm8953-sdhci", "qcom,sdhci-msm-v4"]
+reg = [0x07864000, 0x1000]
+interrupts = [157, 253]    # SPI 125, 221
+status = "disabled"
+
+# BLSP1: its DMA engine and QUP I2C 3 (the touch screen's bus).
+[device.blsp1-dma]
+compatible = "qcom,bam-v1.7.0"
+reg = [0x07884000, 0x1f000]
+interrupts = [270]         # SPI 238
+status = "disabled"
+
+[device.blsp1-i2c3]
+compatible = "qcom,i2c-qup-v2.2.1"
+reg = [0x078b7000, 0x600]
+interrupts = [129]         # SPI 97
+status = "disabled"
+
+# Shared memory with the RPM and the modem (SMEM), in a firmware carve-out.
+[device.smem]
+compatible = "qcom,smem"
+reg = [0x86300000, 0x100000]
+mapping = "memory"
+status = "disabled"

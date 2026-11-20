@@ -18,6 +18,7 @@
 pub mod abi;
 pub mod binder;
 pub mod drm;
+pub mod flarehw;
 pub mod fs;
 pub mod input;
 pub mod mm;
@@ -148,6 +149,8 @@ pub struct Personality {
     pub trace: Option<String>,
     /// /dev/dri/card0 (when the composition gives Linux a display).
     pub drm: drm::Drm,
+    /// /dev/flarehw: hardware for a Linux driver host.
+    pub hw: flarehw::FlareHw,
     /// /dev/input/eventN, as `boot::INPUT_DEVICES`.
     pub inputs: Vec<input::InputDev>,
 }
@@ -200,6 +203,9 @@ impl Personality {
         if boot::LINUX_DISPLAY.is_some() {
             vfs.add_device("fb0", vfs::DEV_FB0, 0o660);
         }
+        if !boot::LINUX_HARDWARE.is_empty() {
+            vfs.add_device("flarehw", vfs::DEV_FLAREHW, 0o600);
+        }
         for (i, _) in boot::INPUT_DEVICES.iter().enumerate() {
             vfs.add_device_at("/dev/input", &format!("event{}", i), vfs::DEV_INPUT_EVENT0 + i as u64, 0o660);
         }
@@ -221,6 +227,7 @@ impl Personality {
             trace: None,
             drm: drm::Drm::default(),
             inputs: boot::INPUT_DEVICES.iter().map(|_| input::InputDev::new()).collect(),
+            hw: flarehw::FlareHw::default(),
         }
     }
 

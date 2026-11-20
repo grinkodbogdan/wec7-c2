@@ -57,6 +57,7 @@ status (0 = success, else an error code).
 | 15 | `DMA_PADDR` | dma slot, offset | `x1` physical address |
 | 16 | `INPUT_REPORT` | input slot, op (0 describe, 1 events), ptr, len | |
 | 17 | `SERIAL_IO` | serial slot, op (0 push, 1 pull, 2 bind ep+bit), a, b | `x1` bytes moved |
+| 18 | `NOTIFY_AFTER` | endpoint slot (recv), bit, nanoseconds | one-shot: sets the notification bit after the delay (polled drivers) |
 
 Errors: `E_NO_CAP` 1, `E_WRONG_TYPE` 2, `E_RIGHTS` 3, `E_INVALID_ARG` 4,
 `E_NO_MEMORY` 5, `E_NO_SLOT` 6, `E_PEER_DIED` 7, `E_BAD_ADDRESS` 8,

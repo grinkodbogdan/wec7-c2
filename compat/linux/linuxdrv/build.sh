@@ -1,0 +1,58 @@
+#!/bin/sh
+# compat/linux/linuxdrv/build.sh OUT SYSROOT - the Linux driver host.
+#
+# Linux as a library (LKL, github.com/lkl/linux) at the commit QRT's ports use,
+# with QRT's patches (lkl/qrt.patch: device trees, the GIC, non-coherent DMA,
+# SMC calls, and its fixes to Qualcomm drivers for the Xiaomi Mi A1) and
+# Flare's (lkl/flare.patch: interrupts and SMC calls through the host, as a
+# user process cannot own either), configured with QRT's arm64 config plus
+# lkl/config-flare, then linuxdrv.c linked with it into one static musl
+# program: OUT/linuxdrv. About 25 minutes on 4 cores the first time.
+#
+# Needs: git, aarch64-linux-gnu-gcc and binutils, flex, bison, bc, clang, lld;
+# SYSROOT: an aarch64 musl sysroot with libgcc (compat/android/atl's).
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+mkdir -p "$1"
+out=$(cd "$1" && pwd)
+sys=$2
+COMMIT=d0f76a77e8c2ca68bd7d96190b8da09040eab072
+X=aarch64-linux-gnu-
+src="$out/lkl-src"
+if [ ! -d "$src/.git" ]; then
+    git init -q "$src"
+    git -C "$src" remote add origin https://github.com/lkl/linux.git
+fi
+if [ "$(git -C "$src" rev-parse HEAD 2>/dev/null)" != "$COMMIT" ]; then
+    git -C "$src" fetch -q --depth 1 origin "$COMMIT"
+    git -C "$src" -c advice.detachedHead=false checkout -q FETCH_HEAD
+fi
+cd "$src"
+# The patches, once: a rebuild then only compiles what changed. When a patch
+# changes, start again from the pristine tree.
+want=$(cat "$here/lkl/qrt.patch" "$here/lkl/flare.patch" | sha256sum | cut -d' ' -f1)
+if [ "$(cat .flare-patched 2>/dev/null)" != "$want" ]; then
+    git reset -q --hard "$COMMIT"
+    git clean -qfdx
+    git apply "$here/lkl/qrt.patch"
+    git apply "$here/lkl/flare.patch"
+    echo "$want" > .flare-patched
+fi
+echo "linuxdrv/build.sh: configuring LKL"
+make ARCH=lkl CROSS_COMPILE=$X defconfig >/dev/null
+# tools/lkl rewrites .config the first time it runs (as QRT's ports/lkl.sh
+# notes): let it, then put QRT's and Flare's options on top
+make -C tools/lkl CROSS_COMPILE=$X "$src/.config" >/dev/null 2>&1 || true
+cat "$here/lkl/config-arm64" "$here/lkl/config-flare" >> .config
+make ARCH=lkl CROSS_COMPILE=$X olddefconfig >/dev/null 2>&1
+grep -q '^CONFIG_LKL_QRT_SOC=y' .config || { echo "linuxdrv/build.sh: LKL_QRT_SOC is not set" >&2; exit 1; }
+echo "linuxdrv/build.sh: building LKL (Linux $(make -s kernelversion))"
+make -C tools/lkl CROSS_COMPILE=$X -j"$(nproc)" "$src/tools/lkl/lib/lkl.o" >"$out/lkl-build.log" 2>&1 \
+    || { tail -30 "$out/lkl-build.log"; exit 1; }
+${X}objcopy --strip-debug tools/lkl/lib/lkl.o "$out/lkl.o"
+gcclib=$(dirname "$(ls "$sys"/usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a | head -1)")
+clang --target=aarch64-alpine-linux-musl --sysroot="$sys" --gcc-toolchain="$sys/usr" -fuse-ld=lld -static -O2 \
+    -Wall -Wno-unused-function -I tools/lkl/include -o "$out/linuxdrv" "$here/linuxdrv.c" "$out/lkl.o" \
+    -lpthread -L"$gcclib" -lgcc
+llvm-strip "$out/linuxdrv"
+echo "linuxdrv/build.sh: $out/linuxdrv ($(du -h "$out/linuxdrv" | cut -f1))"

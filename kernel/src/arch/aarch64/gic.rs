@@ -21,9 +21,10 @@ const GICC_EOIR: usize = 0x010;
 struct Gic {
     dist: usize,
     cpu: usize,
+    lines: usize,
 }
 
-static GIC: Global<Gic> = Global::new(Gic { dist: 0, cpu: 0 });
+static GIC: Global<Gic> = Global::new(Gic { dist: 0, cpu: 0, lines: 0 });
 
 fn gic() -> &'static Gic {
     // SAFETY: written once in init.
@@ -51,6 +52,7 @@ pub fn init() {
     g.dist = super::mmu::phys_to_virt(dev.regs[0].base) as usize;
     g.cpu = super::mmu::phys_to_virt(dev.regs[1].base) as usize;
     let lines = ((r32(g.dist + GICD_TYPER) & 0x1f) as usize + 1) * 32;
+    g.lines = lines;
     w32(g.dist + GICD_CTLR, 0);
     for i in (0..lines).step_by(32) {
         w32(g.dist + GICD_ICENABLER + i / 8, !0);
@@ -85,6 +87,22 @@ pub fn send_sgi(targets: u32, id: u32) {
 
 pub fn enable(intid: u32) {
     w32(gic().dist + GICD_ISENABLER + (intid as usize / 32) * 4, 1 << (intid % 32));
+}
+
+/// Number of interrupt lines (INTIDs) the distributor implements.
+pub fn lines() -> usize {
+    gic().lines
+}
+
+/// Edge- (true) or level-triggered (false) shared interrupt.
+pub fn set_edge(intid: u32, edge: bool) {
+    if intid < 32 {
+        return;
+    }
+    let reg = gic().dist + 0xc00 + (intid as usize / 16) * 4;
+    let bit = 1 << ((intid % 16) * 2 + 1);
+    let v = r32(reg);
+    w32(reg, if edge { v | bit } else { v & !bit });
 }
 
 pub fn disable(intid: u32) {

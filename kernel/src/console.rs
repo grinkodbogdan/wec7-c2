@@ -27,9 +27,10 @@ struct Fb {
     base: usize,
     stride: usize,
     bpp: usize,
-    /// Byte order of one pixel, lowest address first: 0 = blue first
-    /// (r8g8b8 / x8r8g8b8 in little-endian memory), 1 = red first.
-    red_first: bool,
+    /// Where red, green and blue go within a pixel (byte offsets).
+    byte_of: [usize; 3],
+    /// A command-mode panel's CTL START register (written after drawing).
+    kick: usize,
     scale: usize,
     cols: usize,
     rows: usize,
@@ -41,6 +42,8 @@ struct Fb {
 }
 
 static CONSOLE: Global<Backend> = Global::new(Backend::None);
+/// What MDP5 discovery found, reported once the console is up.
+static FOUND: Global<Option<(u64, usize, usize, u64, usize, bool)>> = Global::new(None);
 
 pub fn init() {
     let Some(dev) = platform::CONSOLE.map(|i| &platform::DEVICES[i]) else { return };
@@ -48,22 +51,36 @@ pub fn init() {
     let backend = if dev.is_compatible("arm,pl011") {
         Backend::Pl011(base)
     } else if dev.is_compatible("simple-framebuffer") {
-        let width = dev.int_prop("width").unwrap_or(0) as usize;
-        let height = dev.int_prop("height").unwrap_or(0) as usize;
+        let mut width = dev.int_prop("width").unwrap_or(0) as usize;
+        let mut height = dev.int_prop("height").unwrap_or(0) as usize;
         let format = dev.str_prop("format").unwrap_or("r8g8b8");
-        let bpp = match format {
+        let mut bpp = match format {
             "a8r8g8b8" | "x8r8g8b8" | "a8b8g8r8" | "x8b8g8r8" => 4,
             "r5g6b5" => 2,
             _ => 3,
         };
-        let stride = dev.int_prop("stride").map(|s| s as usize).unwrap_or(width * bpp);
+        let mut stride = dev.int_prop("stride").map(|s| s as usize).unwrap_or(width * bpp);
+        let red_first = format.starts_with("a8b8") || format.starts_with("x8b8") || format == "b8g8r8";
+        let mut byte_of = if red_first { [0, 1, 2] } else { [2, 1, 0] };
+        let mut base = base;
+        let mut kick = 0;
+        // The boot loader's real setup, where the display engine can say.
+        let window = (dev.regs[0].base, dev.regs[0].size);
+        let found = mdp5_splash(window);
+        if let Some(m) = &found {
+            base = crate::arch::mmu::phys_to_virt(m.addr) as usize;
+            (width, height, stride, bpp, byte_of, kick) = (m.width, m.height, m.stride, m.bpp, m.byte_of, m.kick);
+        }
+        // SAFETY: single-threaded boot.
+        unsafe { *FOUND.get() = found.map(|m| (m.pipe, m.width, m.height, m.addr, m.bpp, m.video)) };
         let scale = dev.int_prop("console-scale").unwrap_or(1).max(1) as usize;
         let (cw, ch) = (font::WIDTH * scale, font::HEIGHT * scale);
         let fb = Fb {
             base,
             stride,
             bpp,
-            red_first: format.starts_with("a8b8") || format.starts_with("x8b8") || format == "b8g8r8",
+            byte_of,
+            kick,
             scale,
             cols: (width / cw).max(1),
             rows: (height / ch).max(1),
@@ -78,12 +95,25 @@ pub fn init() {
             // SAFETY: inside the framebuffer, mapped write-combining.
             unsafe { core::ptr::write_bytes((base + y * stride) as *mut u8, 0, width * bpp) };
         }
+        fb.flush();
         Backend::Fb(fb)
     } else {
         Backend::None
     };
     // SAFETY: single-threaded boot.
     unsafe { *CONSOLE.get() = backend };
+    // SAFETY: as above.
+    if let Some((pipe, w, h, addr, bpp, video)) = unsafe { *FOUND.get() } {
+        kprintln!(
+            "console: the boot loader's splash: MDP5 pipe {:#x}, {}x{} at {:#x}, {}-byte pixels, {} mode",
+            pipe,
+            w,
+            h,
+            addr,
+            bpp,
+            if video { "video" } else { "command" }
+        );
+    }
 }
 
 fn putc(base: usize, c: u8) {
@@ -105,13 +135,12 @@ impl Fb {
                 out[..2].copy_from_slice(&v.to_le_bytes());
             }
             _ => {
-                let (first, last) = if self.red_first { (r, b) } else { (b, r) };
-                out[0] = first;
-                out[1] = g;
-                out[2] = last;
                 if self.bpp == 4 {
                     out[3] = 0xff;
                 }
+                out[self.byte_of[0]] = r;
+                out[self.byte_of[1]] = g;
+                out[self.byte_of[2]] = b;
             }
         }
     }
@@ -136,6 +165,14 @@ impl Fb {
                 // SAFETY: inside the framebuffer (cols/rows fit its size).
                 unsafe { core::ptr::copy_nonoverlapping(line.as_ptr(), dst as *mut u8, w.min(line.len())) };
             }
+        }
+    }
+
+    /// A command-mode panel shows memory only when told.
+    fn flush(&self) {
+        if self.kick != 0 {
+            // SAFETY: the MDP's CTL0 START register, mapped as device memory.
+            unsafe { write_volatile(self.kick as *mut u32, 1) };
         }
     }
 
@@ -191,6 +228,13 @@ impl Fb {
     }
 }
 
+/// The console is a screen (drawn by the kernel even when a user-space
+/// console driver reads the log).
+pub fn is_screen() -> bool {
+    // SAFETY: read of a value set at boot.
+    matches!(unsafe { CONSOLE.get() }, Backend::Fb(_))
+}
+
 pub fn write_bytes(bytes: &[u8]) {
     // SAFETY: the console is set up at boot; after that, callers hold the
     // kernel lock (or are panicking).
@@ -212,8 +256,70 @@ pub fn write_bytes(bytes: &[u8]) {
                     fb.write(b);
                 }
             }
+            fb.flush();
         }
     }
+}
+
+/// What a Qualcomm MDP5 source pipe scans out (the boot loader's splash).
+struct Mdp5Splash {
+    addr: u64,
+    width: usize,
+    height: usize,
+    stride: usize,
+    bpp: usize,
+    byte_of: [usize; 3],
+    kick: usize,
+    pipe: u64,
+    video: bool,
+}
+
+/// Find the source pipe the boot loader's continuous splash uses, from the
+/// display engine's registers; only a buffer inside `window` (the board's
+/// splash memory) is accepted. After QRT's fb.c (pipe offsets from Linux's
+/// mdp5_cfg.c, msm8x53_config).
+fn mdp5_splash(window: (u64, u64)) -> Option<Mdp5Splash> {
+    let mdp = platform::find("device", &["qcom,mdp5"])?;
+    let r32 = |pa: u64| -> u32 {
+        // SAFETY: inside the MDP's described register window, mapped as device memory.
+        unsafe { read_volatile(crate::arch::mmu::phys_to_virt(pa) as *const u32) }
+    };
+    let (mbase, msize) = (mdp.regs[0].base, mdp.regs[0].size);
+    for b in [mbase + 0x1000, mbase] {
+        for pipe in [0x04000u64, 0x14000, 0x16000, 0x24000, 0x34000] {
+            let p = b + pipe;
+            if p + 0x40 > mbase + msize {
+                continue;
+            }
+            let (size, addr, stride, format) = (r32(p), r32(p + 0x14) as u64, (r32(p + 0x24) & 0xffff) as usize, r32(p + 0x30));
+            let (w, h, cpp) = ((size & 0xffff) as usize, (size >> 16) as usize, (((format >> 9) & 3) + 1) as usize);
+            if !(320..=4096).contains(&w) || !(320..=4096).contains(&h) || addr == 0 || cpp < 3 || stride < w * cpp {
+                continue;
+            }
+            if addr < window.0 || addr + (stride * h) as u64 > window.0 + window.1 {
+                continue; // never draw outside the described memory
+            }
+            // byte i of a pixel holds channel unpack[i]: 0 G, 1 B, 2 R
+            let unpack = r32(p + 0x34);
+            let mut byte_of = [usize::MAX; 3];
+            for i in 0..cpp {
+                match (unpack >> (8 * i)) & 3 {
+                    2 => byte_of[0] = i,
+                    0 => byte_of[1] = i,
+                    1 => byte_of[2] = i,
+                    _ => {}
+                }
+            }
+            if byte_of.contains(&usize::MAX) {
+                byte_of = [2, 1, 0];
+            }
+            // no interface timing engine running: a command-mode panel
+            let video = [0x6a000u64, 0x6a800, 0x6b000, 0x6b800].iter().any(|&i| b + i < mbase + msize && r32(b + i) & 1 != 0);
+            let kick = if video { 0 } else { crate::arch::mmu::phys_to_virt(b + 0x1000 + 0x1c) as usize };
+            return Some(Mdp5Splash { addr, width: w, height: h, stride, bpp: cpp, byte_of, kick, pipe, video });
+        }
+    }
+    None
 }
 
 struct Direct;

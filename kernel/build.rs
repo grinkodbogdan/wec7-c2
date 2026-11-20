@@ -91,7 +91,31 @@ fn main() {
             irqs: n.irqs.len(),
         })
         .collect();
-    let errs = boot::validate(&comp, &manifests, &views);
+    let mut errs = boot::validate(&comp, &manifests, &views);
+    // Linux's hardware must not share a page with registers granted to a
+    // component, even when the description splits a block into devices (a
+    // GPIO controller and the pins of one key).
+    let page = |b: u64, s: u64| (b & !0xfff, (b + s.max(1) + 0xfff) & !0xfff);
+    for d in comp.linux.iter().flat_map(|l| l.hardware.iter()) {
+        let Some(n) = enabled.iter().find(|n| &n.name == d) else { continue };
+        for c in &comp.components {
+            for gr in &c.grants {
+                let GrantKind::Mmio { device, reg } = &gr.kind else { continue };
+                let Some(o) = enabled.iter().find(|n| &n.name == device) else { continue };
+                let Some(r) = o.regs.get(*reg) else { continue };
+                let (a0, a1) = page(r.base, r.size);
+                for lr in &n.regs {
+                    let (b0, b1) = page(lr.base, lr.size);
+                    if a0 < b1 && b0 < a1 {
+                        errs.push(format!(
+                            "'{}' (given to Linux) overlaps '{}', whose registers '{}' has; hardware access is exclusive",
+                            d, device, c.instance
+                        ));
+                    }
+                }
+            }
+        }
+    }
     if !errs.is_empty() {
         fail(&format!("invalid boot composition {}:\n  {}", system_path.display(), errs.join("\n  ")));
     }
@@ -136,6 +160,8 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = Some(&{:?});", l.init);
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &{:?};", l.env);
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = {};", l.control);
+            let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &{:?};", l.hardware);
+            let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &{:?};", l.smc);
             let _ = writeln!(
                 g,
                 "pub static INITRAMFS: &[u8] = include_bytes!({:?});",
@@ -152,6 +178,8 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = None;");
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &[];");
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = false;");
+            let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &[];");
+            let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &[];");
             let _ = writeln!(g, "pub static INITRAMFS: &[u8] = &[];");
         }
     }

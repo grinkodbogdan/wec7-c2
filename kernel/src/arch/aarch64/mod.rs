@@ -14,8 +14,12 @@ pub use exceptions::TrapFrame;
 /// Wait for an interrupt with interrupts masked; the pending interrupt is
 /// then taken by polling the GIC.
 pub fn wait_for_interrupt() {
-    // SAFETY: `wfi` has no memory effects.
-    unsafe { core::arch::asm!("dsb sy", "wfi", options(nomem, nostack)) };
+    // FIQs stay unmasked while idle: on Qualcomm SoCs the secure world
+    // services its watchdog with FIQs, and a CPU sleeping with them masked
+    // gets the phone reset (QRT found this on the Xiaomi Mi A1). They never
+    // reach non-secure EL1 itself.
+    // SAFETY: `wfi` has no memory effects; F is masked again afterwards.
+    unsafe { core::arch::asm!("dsb sy", "msr daifclr, #1", "wfi", "msr daifset, #1", options(nomem, nostack)) };
 }
 
 /// Make freshly written instructions visible to instruction fetch.

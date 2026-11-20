@@ -31,7 +31,7 @@ with open(sys.argv[2] if len(sys.argv) > 2 else "src/font.rs", "w") as f:
     f.write("//! Console font: printable ASCII, 12x24 one-bit cells, rendered from\n"
             "//! DejaVu Sans Mono by tools/make_font.py. Row bit 11 is the leftmost pixel.\n\n")
     f.write(f"pub const WIDTH: usize = {W};\npub const HEIGHT: usize = {H};\n\n")
-    f.write("pub static GLYPHS: [[u16; %d]; 95] = [\n" % H)
+    f.write("#[rustfmt::skip]\npub static GLYPHS: [[u16; %d]; 95] = [\n" % H)
     for i, g in enumerate(rows):
         f.write("    [" + ", ".join("0x%03x" % b for b in g) + "], // %r\n" % chr(32 + i))
     f.write("];\n")

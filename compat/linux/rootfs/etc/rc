@@ -24,6 +24,12 @@ echo "rc: memory: $(grep MemTotal /proc/meminfo)"
 echo "rc: std-test exit status $?"
 sleep 1 && echo "rc: slept 1 second"
 /etc/run-tests
+# Linux's own drivers for the hardware the composition gives Linux (a phone's
+# eMMC, USB, touch screen...): the driver host, in the background.
+if [ -e /dev/flarehw ] && [ -x /usr/bin/linuxdrv ]; then
+    (linuxdrv /etc/linuxdrv/board.dtb $(cat /etc/linuxdrv/cmdline 2>/dev/null) loglevel=4 \
+        > /dev/console 2>&1 &)
+fi
 # Android apps, straight from their APKs: no init, zygote or system_server.
 for apk in /data/app/*.apk; do
     /usr/bin/droid $apk
@@ -42,6 +48,9 @@ fi
 # fdb, the debug bridge (host: `cargo fdb`), and the Arcan phone shell.
 [ -e /dev/fdb ] && command -v fdbd > /dev/null && (fdbd > /dev/console 2>&1 &)
 [ -e /dev/dri/card0 ] && command -v arcan > /dev/null && flare-ui flarehome
+# What is running now (on a phone this is the last screenful).
+echo "rc: running components:"; cat /proc/components
+[ -d /dev/input ] && echo "rc: input devices: $(ls /dev/input | tr '\n' ' ')"
 echo "rc: starting an interactive shell (type 'exit' to power off)"
 cd /root
 exec /bin/sh

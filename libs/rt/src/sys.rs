@@ -134,6 +134,12 @@ pub fn serial_bind(serial: Slot, ep: Slot, bit: u32) -> Result<(), Error> {
     status(raw(nr::SERIAL_IO, [serial, 2, ep, bit as u64, 0, 0, 0, 0])[0])
 }
 
+/// Ask for notification `bit` on `ep` (which this component receives
+/// from) `ns` nanoseconds from now.
+pub fn notify_after(ep: Slot, bit: u32, ns: u64) -> Result<(), Error> {
+    status(raw(nr::NOTIFY_AFTER, [ep, bit as u64, ns, 0, 0, 0, 0, 0])[0])
+}
+
 pub fn exit(code: i32) -> ! {
     raw(nr::EXIT, [code as i64 as u64, 0, 0, 0, 0, 0, 0, 0]);
     loop {

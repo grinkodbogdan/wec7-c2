@@ -1,0 +1,14 @@
+[component]
+name = "gpio-keys-tlmm"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # stateless: the next poll reports the keys again
+
+[binds]
+compatible = ["flare,tlmm-gpio-key"]
+
+[provides]
+interfaces = []
+
+[requires]
+interfaces = []

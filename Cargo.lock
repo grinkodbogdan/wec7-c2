@@ -81,6 +81,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpio-keys-tlmm"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
 name = "hello"
 version = "0.1.0"
 dependencies = [
@@ -130,6 +137,13 @@ version = "0.1.0"
 
 [[package]]
 name = "storage-test"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
+name = "uart-msm"
 version = "0.1.0"
 dependencies = [
  "flare-rt",

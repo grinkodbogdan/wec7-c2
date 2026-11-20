@@ -479,7 +479,29 @@ pub fn validate(p: &Platform) -> Vec<Diagnostic> {
                 );
                 continue;
             }
-            if let Some((other, _, _)) = claimed.iter().find(|(_, c, _)| c.overlaps(r)) {
+            // Two exceptions: a device that is part of another (`within =
+            // "tlmm"`: the pins of one key in a GPIO controller) lies inside
+            // it, and memory shared with firmware (`mapping = "memory"`) lies
+            // in a reserved region.
+            let within = n.props.get("within").and_then(|v| v.as_str());
+            if let Some(w) = within {
+                match p.node(w) {
+                    Some(o) if o.regs.iter().any(|c| c.base <= r.base && r.end() <= c.end()) => {}
+                    _ => err(&n.origin, format!("{}.{}: 'within' names '{}', which does not contain {:#x}+{:#x}", n.class, n.name, w, r.base, r.size)),
+                }
+            }
+            let shared = n.props.get("mapping").and_then(|v| v.as_str()) == Some("memory");
+            let excused = |name: &str| {
+                within.is_some_and(|w| name.ends_with(&format!(".{}", w)))
+                    || name
+                        .split_once('.')
+                        .and_then(|(_, o)| p.node(o))
+                        .and_then(|o| o.props.get("within"))
+                        .and_then(|v| v.as_str())
+                        == Some(n.name.as_str())
+                    || (shared && p.memory.iter().any(|m| m.reserved && name == format!("memory.{}", m.name)))
+            };
+            if let Some((other, _, _)) = claimed.iter().find(|(o, c, _)| c.overlaps(r) && !excused(o)) {
                 err(
                     &n.origin,
                     format!("{}.{}: register window {:#x}+{:#x} overlaps {}", n.class, n.name, r.base, r.size, other),
@@ -668,6 +690,25 @@ status = "disabled"
         let code = codegen::kernel_platform_rs(&p);
         assert!(code.contains("pub const CONSOLE: Option<usize> = Some(2);"), "{}", code);
         assert!(code.contains("(\"panel\", \"example,panel\")"));
+    }
+
+    #[test]
+    fn parts_of_devices_and_firmware_shared_memory_may_overlap() {
+        let ok = load(
+            "[memory.fw]\nbase = 0x90000000\nsize = 0x100000\nreserved = true\n\
+             [device.pin3]\ncompatible = \"x\"\nreg = [0x09000000, 0x100]\nwithin = \"uart0\"\n\
+             [device.shm]\ncompatible = \"y\"\nreg = [0x90000000, 0x1000]\nmapping = \"memory\"\n",
+        )
+        .unwrap();
+        assert!(validate(&ok).is_empty(), "{:?}", validate(&ok));
+        let bad = load(
+            "[device.pin3]\ncompatible = \"x\"\nreg = [0x09000800, 0x1000]\nwithin = \"uart0\"\n\
+             [device.shm]\ncompatible = \"y\"\nreg = [0x40000000, 0x1000]\nmapping = \"memory\"\n",
+        )
+        .unwrap();
+        let msgs: Vec<String> = validate(&bad).into_iter().map(|d| d.message).collect();
+        assert!(msgs.iter().any(|m| m.contains("does not contain")), "{:?}", msgs);
+        assert!(msgs.iter().any(|m| m.contains("device.shm") && m.contains("overlaps memory.dram")), "{:?}", msgs);
     }
 
     #[test]

@@ -1,0 +1,15 @@
+[package]
+name = "gpio-keys-tlmm"
+description = "Qualcomm TLMM GPIO keys and switches, polled, as a Linux evdev device"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "gpio-keys-tlmm"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+flare-rt = { path = "../../../libs/rt" }

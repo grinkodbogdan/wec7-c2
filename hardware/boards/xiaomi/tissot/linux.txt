@@ -1,0 +1,32 @@
+# The Linux driver host on this board (docs/linux-drivers.md).
+#
+# linux.dtb is the Mi A1's mainline device tree: postmarketOS's
+# msm8953-mainline (Linux 6.12) msm8953-xiaomi-tissot.dts, compiled, as QRT
+# ships it (src/arch/arm64/dts/; its Makefile's dts-tissot target rebuilds it). At build
+# time every device whose registers the composition does not give Linux is
+# disabled in it, and so are the nodes below, which have no registers.
+
+# Linux talks to the modem, ADSP and Wi-Fi firmware only through these; Flare
+# does not start that firmware.
+drop /smp2p-adsp
+drop /smp2p-modem
+drop /smp2p-wcnss
+drop /smsm
+drop /memshare
+# The CPUs' timer, PMU and power states are Flare's.
+drop /timer
+drop /pmu
+drop /psci
+drop /thermal-zones
+# Sensors on bit-banged I2C and the speaker amplifier: not given yet.
+drop /i2c-sensors
+drop /analog-amplifier
+# The panel's backlight (WLED) and bias rails (LAB/IBB) stay as the boot
+# loader set them: the panel is Flare's.
+drop /soc@0/spmi@200f000/pmic@3/leds@d800
+drop /soc@0/spmi@200f000/pmic@3/labibb
+
+# Linux must not switch off what it does not know is in use: the panel's
+# clocks and power domain and the UART's clock (Flare's console), and the
+# rails the boot loader left on.
+cmdline clk_ignore_unused pd_ignore_unused regulator_ignore_unused

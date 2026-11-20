@@ -49,3 +49,10 @@ panic = "halt"
 qemu-machine = "virt"
 qemu-cpu = "cortex-a53"
 memory-mib = 1024
+
+# A stand-in for a phone's TLMM key pin (its IN_OUT word reads 0: "pressed"),
+# so the polled key driver and its timer run here too.
+[device.test-pin]
+compatible = "flare,tlmm-gpio-key"
+reg = [0x09010000, 0x1000]
+status = "okay"

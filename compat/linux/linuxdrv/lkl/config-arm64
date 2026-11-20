@@ -1,0 +1,91 @@
+# Linux options for the driver host on 64-bit ARM phones. Derived from QRT's
+# ports/lkl-arm64.sh additions (lkl/config-arm64 there), keeping only what
+# Flare gives to Linux: the SoC's clocks, pins, RPM and regulators, input,
+# storage, and QEMU virt's devices for testing the same path. Not QRT's
+# "every postmarketOS MSM8953 driver" set or the display (Flare keeps the
+# panel), which would make the program too big for a phone's boot image.
+CONFIG_LKL_QRT_SOC=y
+CONFIG_PCI=n
+CONFIG_COMPILE_TEST=y
+CONFIG_PM=y
+CONFIG_PM_GENERIC_DOMAINS=y
+CONFIG_DEVTMPFS=y
+CONFIG_FW_LOADER=y
+CONFIG_FW_LOADER_USER_HELPER=y
+CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
+CONFIG_PRINTK_TIME=y
+# devices_deferred (linux.c's summary: what each waiting device waits for)
+CONFIG_DEBUG_FS=y
+# the SoC: clocks, pins, interrupts, the RPM co-processor and its regulators
+CONFIG_COMMON_CLK=y
+CONFIG_COMMON_CLK_QCOM=y
+CONFIG_MSM_GCC_8953=y
+CONFIG_QCOM_CLK_SMD_RPM=y
+CONFIG_QCOM_A53PLL=n
+CONFIG_RESET_CONTROLLER=y
+CONFIG_PINCTRL=y
+CONFIG_PINCTRL_MSM=y
+CONFIG_PINCTRL_MSM8953=y
+CONFIG_GPIOLIB=y
+CONFIG_QCOM_SMEM=y
+CONFIG_HWSPINLOCK=y
+CONFIG_HWSPINLOCK_QCOM=y
+CONFIG_MAILBOX=y
+CONFIG_QCOM_APCS_IPC=y
+CONFIG_RPMSG=y
+CONFIG_RPMSG_QCOM_SMD=y
+CONFIG_QCOM_SMD_RPM=y
+CONFIG_QCOM_RPMPD=y
+CONFIG_PM_GENERIC_DOMAINS_OF=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_REGULATOR_QCOM_SMD_RPM=y
+CONFIG_SPMI=y
+CONFIG_SPMI_MSM_PMIC_ARB=y
+CONFIG_MFD_SPMI_PMIC=y
+CONFIG_QCOM_SCM=n
+# input: the touch screen (FocalTech FT5x06 on I2C), the power and volume keys
+CONFIG_I2C=y
+CONFIG_I2C_QUP=y
+CONFIG_DMADEVICES=y
+CONFIG_QCOM_BAM_DMA=y
+CONFIG_INPUT=y
+CONFIG_INPUT_EVDEV=y
+CONFIG_INPUT_TOUCHSCREEN=y
+CONFIG_TOUCHSCREEN_EDT_FT5X06=y
+CONFIG_INPUT_KEYBOARD=y
+CONFIG_KEYBOARD_GPIO=y
+CONFIG_INPUT_MISC=y
+CONFIG_INPUT_PM8941_PWRKEY=y
+CONFIG_POWER_RESET=y
+CONFIG_POWER_RESET_QCOM_PON=y
+# storage: eMMC and the SD card
+CONFIG_BLOCK=y
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PLTFM=y
+CONFIG_MMC_SDHCI_MSM=y
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_EFI_PARTITION=y
+CONFIG_MSDOS_PARTITION=y
+CONFIG_EXT4_FS=y
+CONFIG_F2FS_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_EXFAT_FS=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+# QEMU virt (the test board): virtio-mmio disk, keyboard, tablet
+CONFIG_VIRTIO_MENU=y
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_INPUT=y
+# QEMU virt's GPIO controller (its power key, through gpio-keys): tests the GPIO interrupt path
+CONFIG_GPIO_PL061=y
+CONFIG_ARCH_QCOM=y
+# Linux with virtual memory (LKL's MMU mode; QRT's "Argon"): the driver host
+# maps Linux's RAM at CONFIG_LKL_MEMORY_START through /dev/flarehw
+CONFIG_MMU=y

@@ -10,7 +10,7 @@ the Linux ABI tests and droid's Android apps) are drawn on the phone's screen.
 | Panel | 5.5" 1080×1920, left on by the boot loader (continuous splash) |
 | Boot loader | Qualcomm LK (Xiaomi's), Android boot image, A/B slots |
 | Hardware description | [`hardware/soc/qcom/msm8953`](../../hardware/soc/qcom/msm8953/platform.fhd), [`hardware/boards/xiaomi/tissot`](../../hardware/boards/xiaomi/tissot/board.fhd) |
-| Boot composition | [`system/xiaomi-tissot.boot.toml`](../../system/xiaomi-tissot.boot.toml) |
+| Boot compositions | [`system/xiaomi-tissot.boot.toml`](../../system/xiaomi-tissot.boot.toml) (native drivers); [`system/xiaomi-tissot-linuxdrv.boot.toml`](../../system/xiaomi-tissot-linuxdrv.boot.toml) (plus Linux's drivers for eMMC, SD and touch) |
 | Status | **Untested on hardware.** Built and checked as described below |
 
 ## What the port is
@@ -34,8 +34,13 @@ consists of descriptions, not kernel patches:
      at 0x90001000, 1080×1920, RGB888, stride 3240. It is the console.
    * `[boot-image]`: how LK wants the kernel packaged.
 3. **Composition**: the Linux personality with the minimal root
-   filesystem (`rootfs = "minimal"`). No drivers for the phone's own
-   peripherals yet.
+   filesystem (`rootfs = "minimal"`), and native drivers for the easy
+   hardware (after QRT's, which runs on this phone):
+   * `drivers/qcom/gpio-keys-tlmm`: volume up (GPIO 85) and the hall
+     sensor (GPIO 44), polled every 20 ms, as `/dev/input/event0`;
+   * `drivers/qcom/uart-msm`: the debug UART as a second console;
+   * the kernel finds the panel's real scan-out buffer in the MDP5 pipe
+     registers, and kicks command-mode panels after drawing.
 
 What it took in generic code (every board benefits):
 * **Linux arm64 Image header.** Boot loaders that boot Linux load Flare
@@ -64,7 +69,8 @@ What it took in generic code (every board benefits):
 cargo xtask image --system system/xiaomi-tissot.boot.toml
 ```
 
-This produces `target/images/xiaomi-tissot/`:
+This produces `target/images/xiaomi-tissot/` (each composition goes to
+`target/images/<its name>/`):
 
 | File | What |
 | --- | --- |
@@ -84,7 +90,7 @@ description compiled into the kernel.
 
 The packer refuses images that would extend past 0x81800000, where
 firmware memory begins. LK always loads 64-bit kernels at 0x80080000.
-The current image is about 5 MiB, ending near 0x806a5000.
+The current image is about 6.6 MiB, ending near 0x80860000.
 
 ## Run it on the phone
 
@@ -126,7 +132,8 @@ Power.
   * the Linux ABI tests (threads, signals, memory, events, processes,
     dynamic linking, Binder);
   * the Java and Kotlin apps under droid, with `selftest: 51/51 passed`.
-* It ends at `flare:~#`. There is no keyboard or touch input yet.
+* It ends at `flare:~#`. Volume up is `/dev/input/event0`; there is no
+  touch input yet.
   The console wraps from the bottom back to the top.
 * To turn the phone off, hold Power for about 10 seconds.
 
@@ -157,14 +164,48 @@ phone-specific facts below.
 * **The text stops, possibly with `KERNEL PANIC` at the bottom.** The panic
   stays on screen (`panic = "halt"`). A photo of it is the bug report.
 
+## Linux's drivers for the hard parts
+
+```sh
+cargo xtask image --system system/xiaomi-tissot-linuxdrv.boot.toml
+```
+
+This image (`target/images/xiaomi-tissot-linuxdrv/boot.img`) also runs the
+Linux driver host ([../linux-drivers.md](../linux-drivers.md)). It gives
+Linux:
+* the eMMC, the SD card and the touch screen's I2C bus;
+* the clock controller, the pin controller, the RPM, SMEM, TCSR, the APCS
+  mailbox and the PMICs, which those need.
+
+Linux probes them with mainline's device tree for this phone
+(`hardware/boards/xiaomi/tissot/linux.dtb`, as QRT ships it), trimmed to
+exactly those devices (`linux.txt` there lists what else is left out). The
+panel, the UART and the CPUs stay Flare's. In this composition the keys
+are Linux's (it owns the pin controller), so the native key driver is not
+started.
+
+A few seconds after the shell appears, the driver host prints what Linux
+found:
+
+```
+linuxdrv: Linux is up (RAM 64 MiB at ...)
+linuxdrv: block devices: mmcblk0 mmcblk0boot0 ...
+linuxdrv: mmcblk0: first sector read through Linux's driver: ...
+linuxdrv: rtc0 (Linux's driver): ...
+linuxdrv: input devices: ...
+linuxdrv: waiting: <device> <what it waits for>
+```
+
+It only reads. The image is 19.8 MiB uncompressed, ending at 0x81507000,
+under the 0x81800000 limit. Untested on the phone. The `waiting:` lines
+say what to fix first.
+
 ## Not there yet
 
-These are drivers still to write, next in roughly this order:
-* the PMIC power key and volume keys (GPIO 85);
-* the debug UART (MSM UARTDM, for those with a cable on the test pads);
+* the PMIC power key as a native driver (it is Linux's in the
+  `-linuxdrv` composition);
+* Linux's input and block devices handed to Flare (touch, eMMC storage);
 * USB device mode, for `fdb`;
-* the touchscreen (I2C);
-* eMMC storage;
 * display control (MDSS/DSI), so the screen can be turned off or changed;
 * an MSM8953 user-space display driver, so the Arcan shell can run on the
   panel.
