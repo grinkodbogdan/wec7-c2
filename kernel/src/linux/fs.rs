@@ -630,6 +630,11 @@ impl Kernel {
                 return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
             }
         }
+        if abs == "/proc/flare-threads" {
+            let data = self.proc_threads();
+            let f = open_file(FileKind::Mem(data), flags, &abs);
+            return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+        }
         let lx = self.lx();
         if let Some(name) = abs.strip_prefix("/proc/") {
             if let Some(data) = lx.proc_content(name, procs) {

@@ -66,7 +66,7 @@ const INTERP_BASE: u64 = 0x7f_4000_0000;
 pub const MAX_FDS: usize = 1024;
 
 pub fn proc_files() -> &'static [&'static str] {
-    &["version", "uptime", "meminfo", "cpuinfo", "loadavg", "mounts", "filesystems", "cmdline", "stat", "components"]
+    &["version", "uptime", "meminfo", "cpuinfo", "loadavg", "mounts", "filesystems", "cmdline", "stat", "components", "flare-threads"]
 }
 
 /// A thread group: what the threads of one Linux process share.
@@ -295,6 +295,33 @@ impl Kernel {
             .collect();
         v.sort();
         v
+    }
+
+    /// /proc/flare-threads: every Linux thread, what it is doing: pid, tid,
+    /// name, state, and for a sleeping thread the system call it waits in
+    /// (number, first argument) and where it was (pc). For finding what a
+    /// program that shows nothing waits for.
+    pub(crate) fn proc_threads(&self) -> Vec<u8> {
+        let mut out = alloc::string::String::from("pid tid name state syscall arg0 pc\n");
+        for i in 0..self.comps.len() {
+            let c = &self.comps[i];
+            if c.free || c.state == State::Dead {
+                continue;
+            }
+            let Some(t) = c.linux.as_ref() else { continue };
+            let p = t.p.borrow();
+            if p.status.is_some() {
+                continue;
+            }
+            let comm: alloc::string::String = p.exe.rsplit('/').next().unwrap_or("?").chars().take(15).collect();
+            let (state, sys) = if c.state == State::LinuxWait {
+                ("S", alloc::format!("{} {:#x}", c.frame.x[8], c.frame.x[0]))
+            } else {
+                ("R", alloc::string::String::from("- -"))
+            };
+            out.push_str(&alloc::format!("{} {} {} {} {} {:#x}\n", p.pid, t.tid, comm, state, sys, c.frame.elr));
+        }
+        out.into_bytes()
     }
 
     /// /proc/<pid>/<name>, for ps, pidof and killall.

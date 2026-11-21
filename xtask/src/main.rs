@@ -1414,6 +1414,8 @@ fn linuxdrv_test(o: &Opts) -> bool {
         "is Flare's touch screen",
         "flarehome: ready",
         "flarehome: unlocked",
+        // /proc/flare-threads lists the shell's threads
+        "rc: arcan threads: ",
         // fdb over Linux's virtio console driver (checked below).
         "linuxdrv: Flare's serial device carried over Linux's /dev/hvc0",
     ];
