@@ -36,14 +36,17 @@ use core::panic::PanicInfo;
 pub extern "C" fn kmain() -> ! {
     // Vectors first: a fault in early boot then panics instead of jumping
     // to whatever the boot loader left in VBAR_EL1.
+    console::boot_mapped();
+    console::early_mark(2);
     arch::exceptions::init();
     smp::init_boot_cpu();
+    console::early_mark(3);
     // SAFETY: called exactly once, first thing, on the boot CPU.
     unsafe { arch::mmu::init() };
     console::mapped();
-    console::early_mark(2);
+    console::early_mark(5);
     let heap = heap::init();
-    console::early_mark(3);
+    console::early_mark(6);
     console::init();
     kprintln!();
     kprintln!("Flare OS framekernel {} (arm64)", env!("CARGO_PKG_VERSION"));
@@ -66,6 +69,7 @@ pub extern "C" fn kmain() -> ! {
 fn panic(info: &PanicInfo) -> ! {
     if !console::ready() {
         // No text yet: a band of stripes says "panicked in early boot".
+        console::boot_mapped();
         for n in 10..15 {
             console::early_mark(n);
         }

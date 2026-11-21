@@ -139,13 +139,48 @@ __boot:
     // The tables were written with the data cache off: drop any stale
     // lines a boot loader left for them, so the walker and later cached
     // accesses see what is in memory (as Linux's head.S does).
-    adrp    x2, __boot_l1_lo
-    add     x3, x2, #(3 * 4096)
+    // The framebuffer console too, if it is in the kernel's gigabyte (as
+    // on phones): Device memory, so boot marks can be drawn from the moment
+    // the MMU is on (console::early_mark).
+    adrp    x9, EARLY_FB
+    add     x9, x9, :lo12:EARLY_FB
+    ldr     x7, [x9]                // physical base, 0 for none
+    cbz     x7, 43f
+    ldr     x10, [x9, #8]
+    ldr     x11, [x9, #16]
+    mul     x10, x10, x11           // bytes
+    add     x8, x7, x10             // end
+    lsr     x10, x7, #30
+    adrp    x11, _start
+    lsr     x11, x11, #30
+    cmp     x10, x11
+    b.ne    43f
+    lsr     x7, x7, #21
+    lsl     x7, x7, #21
+    ldr     x5, =(0x401 | (3 << 53)) // block | Device-nGnRnE (attr 0) | AF | XN
+42: lsr     x9, x7, #21
+    and     x9, x9, #0x1ff
+    orr     x10, x7, x5
+    str     x10, [x6, x9, lsl #3]
+    add     x7, x7, #0x200000
+    cmp     x7, x8
+    b.lo    42b
+43:
+    // Everything here was written with the data cache off (by the boot
+    // loader's copy, the move above, and these tables). Drop any stale
+    // lines the boot loader left for this memory, so cached accesses after
+    // the MMU is on see what is in memory (as Linux's head.S does). Stale
+    // lines would otherwise return old data for the moved image.
+    adrp    x2, _start
+    adrp    x3, __kernel_end
 41: dc      ivac, x2
     add     x2, x2, #64
     cmp     x2, x3
     b.lo    41b
     dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
     ldr     x2, =0x44ff00           // MAIR: attr0 Device-nGnRnE, attr1 Normal WB, attr2 Normal NC
     msr     mair_el1, x2
     ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
@@ -165,6 +200,9 @@ __boot:
     ldr     x0, =__high_entry
     br      x0
 __high_entry:
+    ldr     x0, =__vectors          // faults from here on panic (and draw a mark)
+    msr     vbar_el1, x0
+    isb
     ldr     x0, =__stack_top
     mov     sp, x0
     ldr     x0, =__bss_start

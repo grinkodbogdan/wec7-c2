@@ -128,6 +128,7 @@ pub unsafe fn init() {
             map(l1, r.base, r.size, attrs | UXN | PXN);
         }
     }
+    crate::console::early_mark(4);
     let ttbr1 = virt_to_phys(l1.as_ptr() as u64);
     let ttbr0 = virt_to_phys(EMPTY_L1.get().0.as_ptr() as u64);
     core::arch::asm!(

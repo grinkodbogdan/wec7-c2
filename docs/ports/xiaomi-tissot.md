@@ -164,10 +164,13 @@ phone-specific facts below.
   | Stripes at the top | Got as far as |
   | --- | --- |
   | none | the kernel never ran, or the boot loader's screen is not at the described address (`fb0`) |
-  | 1 | entered; moving itself to its link address (0x80080000) if loaded elsewhere |
+  | 1 | entered; moving itself to its link address (0x80080000) if loaded elsewhere (a 20 MiB image takes about 2 s) |
   | 2 | running at its link address; turning on the MMU |
-  | 3 | MMU and direct map up |
-  | 4 | kernel heap up; the console starts (it reads the display controller) |
+  | 3 | MMU on, running Rust in the upper half |
+  | 4 | exception vectors installed; building the kernel's page tables |
+  | 5 | page tables built; switching to them |
+  | 6 | switched; setting up the kernel heap |
+  | 7 | heap up; the console starts (it reads the display controller) |
   | then text | the console is up and has cleared the stripes |
 
   Five more stripes lower down (rows 480–720) mean a panic before the

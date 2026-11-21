@@ -57,9 +57,10 @@ static MAPPED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::
 /// draws text, stage `n` fills rows `[48n, 48n + 32)` of the framebuffer
 /// white (marks 0 and 1 come from entry.rs). A photo of a stuck boot shows
 /// how far it got; the console clears them once it is up.
-/// 0 entered, 1 at the linked address, 2 MMU and direct map, 3 heap (the
-/// console starts next). A panic before the console has text fills rows
-/// 480-720 with five stripes.
+/// 0 entered, 1 at the linked address (entry.rs, MMU off), 2 MMU on and
+/// in Rust, 3 exception vectors, 4 kernel page tables built, 5 switched to
+/// them, 6 heap (the console starts next). A panic before the console has
+/// text fills rows 480-720 with five stripes.
 pub fn early_mark(n: u64) {
     let [base, stride, rows] = EARLY_FB;
     if base == 0 || !MAPPED.load(core::sync::atomic::Ordering::Relaxed) || 48 * n + 32 > rows {
@@ -69,6 +70,16 @@ pub fn early_mark(n: u64) {
     for i in 0..(32 * stride / 8) as usize {
         // SAFETY: inside the described framebuffer, mapped (non-cacheable) by mmu::init.
         unsafe { core::ptr::write_volatile(p.add(i), u64::MAX) };
+    }
+}
+
+/// Running on the boot tables, which map the framebuffer when it is in the
+/// kernel image's gigabyte (entry.rs).
+pub fn boot_mapped() {
+    // The kernel image's physical address, from this function's own.
+    let kernel = crate::arch::mmu::virt_to_phys(boot_mapped as usize as u64);
+    if EARLY_FB[0] != 0 && EARLY_FB[0] >> 30 == kernel >> 30 {
+        MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
