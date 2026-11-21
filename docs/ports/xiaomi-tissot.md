@@ -174,7 +174,9 @@ phone-specific facts below.
   | then text | the console is up and has cleared the stripes |
 
   Five more stripes lower down (rows 480–720) mean a panic before the
-  console had text. A photo is the bug report.
+  console had text. `tools/bootimg/early-boot.sh` runs this kernel's early
+  boot on QEMU, loaded at LK's address, and prints the screen up to the
+  first SoC device access. It reproduces such panics with their message. A photo is the bug report.
   Black with no text can also mean a command-mode panel, which needs a
   "kick" per frame rather than continuous scan-out.
 * **Text is garbled, slanted or the wrong size.** The splash buffer's

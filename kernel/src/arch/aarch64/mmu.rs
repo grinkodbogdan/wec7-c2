@@ -102,6 +102,12 @@ fn map(l1: &mut [u64; 512], base: u64, size: u64, attrs: u64) {
             pa += MIB2;
             continue;
         }
+        // Already inside a block (a window that lies within another one,
+        // such as a key's pin block in the GPIO controller's): it is mapped.
+        if l2[i2] & VALID != 0 && l2[i2] & TABLE == 0 {
+            pa = (pa & !(MIB2 - 1)) + MIB2;
+            continue;
+        }
         let l3 = next_level(&mut l2[i2]);
         let i3 = ((pa >> 12) & 0x1ff) as usize;
         if l3[i3] == 0 {
