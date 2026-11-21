@@ -32,9 +32,14 @@ if [ "$FLARE_BOOT" = quick ]; then
         (echo "rc: event$FLARE_TEST_INPUT read:$(head -c 24 /dev/input/event$FLARE_TEST_INPUT | od -An -tx1 -j16)" \
             > /dev/console &)
     # The phone shell, if this root filesystem has it and there is a display.
-    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DISABLE=true
+    # Shaders: Mesa's cache, filled at build time (a QEMU run of this shell),
+    # so a boot compiles only what is new.
+    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DIR=/var/cache/mesa
+    mkdir -p /var/cache/mesa
     [ -e /dev/fdb ] && command -v fdbd > /dev/null && (fdbd > /dev/console 2>&1 &)
     if [ -e /dev/dri/card0 ] && command -v arcan > /dev/null; then
+        # (the kernel's tick profiler, from here until the shell is ready)
+        echo profile on > /dev/flarectl
         flare-ui flarehome
         # Say when the shell is ready (seconds since boot), or, if it is not
         # after 90 s, where it is: its last words and what its threads wait
@@ -42,7 +47,19 @@ if [ "$FLARE_BOOT" = quick ]; then
         (i=0
          while [ $i -lt 90 ]; do
              if grep -q "flarehome: ready" /tmp/flare-ui.log 2>/dev/null; then
-                 echo "rc: phone shell ready at $(cut -d' ' -f1 /proc/uptime) s since boot ($(grep MemFree /proc/meminfo | tr -s ' '))"
+                 echo "rc: phone shell ready at $(cut -d' ' -f1 /proc/uptime) s since boot ($(grep MemFree /proc/meminfo | tr -s ' '), CPU $(grep 'cpu MHz' /proc/cpuinfo | tr -dc 0-9) MHz)"
+                 if [ -n "$FLARE_TEST_INPUT" ]; then
+                     # (tests: every bucket, paced for the serial console)
+                     echo "profile all" > /dev/flarectl
+                     cat /dev/flarectl | while read -r l; do echo "$l"; usleep 3000; done
+                 else
+                     echo profile > /dev/flarectl && cat /dev/flarectl
+                 fi
+                 # ... and the shell idle for 10 s (what it costs at rest)
+                 echo profile on > /dev/flarectl
+                 sleep 10
+                 echo "rc: the shell idle for 10 s:"
+                 echo profile > /dev/flarectl && cat /dev/flarectl
                  exit 0
              fi
              sleep 1; i=$((i + 1))
@@ -89,7 +106,8 @@ for apk in /data/app/*.apk; do
 done
 # The display: Mesa renders through /dev/dri/card0 (Flare's KMS device over
 # the panel's shared memory), first a self-check, then the Arcan phone shell.
-export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DISABLE=true
+export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DIR=/var/cache/mesa
+mkdir -p /var/cache/mesa
 [ -e /dev/dri/card0 ] && command -v kmstest > /dev/null && kmstest
 # ART, the Android runtime itself (from Android Translation Layer's standalone
 # build), running a Java program interpreted.

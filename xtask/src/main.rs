@@ -894,6 +894,15 @@ fn assemble_rootfs_at(full: bool, rootfs: &Path) -> PathBuf {
         // Arcan, Mesa and their libraries (built by compat/arcan/build.sh).
         let arcan = arcan_stage();
         copy_tree(&arcan, &rootfs);
+        // Mesa's shader cache from a run of the phone shell in QEMU
+        // (`cargo xtask linuxdrv-test` keeps it): shaders compiled once at
+        // build time instead of at every boot.
+        let cache = root().join("target/mesa-shader-cache");
+        if cache.is_dir() {
+            let dst = rootfs.join("var/cache/mesa");
+            std::fs::create_dir_all(&dst).unwrap();
+            copy_tree(&cache, &dst);
+        }
         symlink("/lib/ld-musl-aarch64.so.1", rootfs.join("lib/libc.musl-aarch64.so.1")).unwrap();
         // ART, the Android runtime (/opt/art, art-run).
         copy_tree(&art_stage(), &rootfs);
@@ -1414,6 +1423,10 @@ fn linuxdrv_test(o: &Opts) -> bool {
         "is Flare's touch screen",
         "flarehome: ready",
         "flarehome: unlocked",
+        // The tick profiler's report on the user interface's start, and
+        // the console over the shell (volume up + down, as on a phone).
+        "profile: ",
+        "console: shown over the user interface",
         // /proc/flare-threads lists the shell's threads
         "rc: arcan threads: ",
         // fdb over Linux's virtio console driver (checked below).
@@ -1421,7 +1434,7 @@ fn linuxdrv_test(o: &Opts) -> bool {
     ];
     let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];
     let deadline = Instant::now() + Duration::from_secs(600);
-    let (mut pressed, mut tapped) = (false, false);
+    let (mut pressed, mut tapped, mut chord) = (false, false, false);
     let ok = loop {
         let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
         // (after rc's reader of event1 has started: it is up before the shell)
@@ -1439,6 +1452,13 @@ fn linuxdrv_test(o: &Opts) -> bool {
             }
             tapped = true;
         }
+        if !chord && seen.contains("flarehome: unlocked") {
+            std::thread::sleep(Duration::from_secs(1));
+            if let Some(mut q) = Qmp::connect(&qmp) {
+                q.cmd(r#"{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"volumeup"},{"type":"qcode","data":"volumedown"}]}}"#);
+            }
+            chord = true;
+        }
         if expected.iter().all(|e| seen.contains(e)) {
             break true;
         }
@@ -1450,6 +1470,13 @@ fn linuxdrv_test(o: &Opts) -> bool {
     // The debug bridge end to end: fdbd in Flare, /dev/fdb, the driver host,
     // Linux's virtio console driver, QEMU's socket.
     let fdb_fails = if ok { fdb_checks("display") } else { Vec::new() };
+    if ok {
+        // (the rest of the shell, so its shaders are in the cache too)
+        if let Some(mut q) = Qmp::connect(&qmp) {
+            ui_walk(&mut q, &output, &|_: &mut Qmp, _: &str| {});
+        }
+        save_shader_cache();
+    }
     let ok = ok && fdb_fails.is_empty();
     let _ = child.kill();
     let _ = child.wait();
@@ -1476,6 +1503,13 @@ fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
     shot(qmp, "1-lock");
     qmp.swipe((60.0, 600.0), (400.0, 600.0));
     wait_output(output, "flarehome: unlocked", 30);
+    ui_walk(qmp, output, &|q: &mut Qmp, name: &str| shot(q, name));
+    let _ = std::fs::remove_file(dir.join("tmp.png"));
+}
+
+/// The unlocked shell: both pages, two applications opened and minimized.
+fn ui_walk(qmp: &mut Qmp, output: &Mutex<Vec<u8>>, shot: &dyn Fn(&mut Qmp, &str)) {
+    let (left, right) = ((60.0, 500.0), (420.0, 500.0));
     shot(qmp, "2-applications");
     qmp.swipe(left, right);
     wait_output(output, "flarehome: page events", 30);
@@ -1499,12 +1533,45 @@ fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
     qmp.swipe((5.0, 400.0), (330.0, 400.0));
     wait_output(output, "flarehome: minimized Phone (2 open)", 30);
     shot(qmp, "5-open-applications");
-    let _ = std::fs::remove_file(dir.join("tmp.png"));
+}
+
+/// Keep the phone shell's Mesa shader cache (target/mesa-shader-cache),
+/// for the root filesystems built after this.
+fn save_shader_cache() {
+    let sock = root().join("target/fdb.sock");
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(&sock) else { return };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let mut c = fdb::Client::new(stream);
+    // (busybox here has no tar: file by file)
+    let list = c.exec("cd /var/cache/mesa && find . -type f -size +0").map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let files: Vec<String> = list.unwrap_or_default().lines().map(|l| l.trim_start_matches("./").to_string()).collect();
+    if files.is_empty() {
+        println!("xtask: no shader cache to keep (Mesa wrote nothing to /var/cache/mesa)");
+        return;
+    }
+    let dir = root().join("target/mesa-shader-cache");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut bytes = 0;
+    for f in &files {
+        match c.read_file(&format!("/var/cache/mesa/{}", f)) {
+            Ok(data) => {
+                let path = dir.join(f);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &data).unwrap();
+                bytes += data.len();
+            }
+            Err(e) => {
+                println!("xtask: shader cache: cannot read {}: {}", f, e);
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+        }
+    }
+    println!("xtask: shader cache kept: {} files, {} KiB (target/mesa-shader-cache)", files.len(), bytes / 1024);
 }
 
 /// Exercise the debug bridge from the host, as a developer would; returns
-/// what failed.
-/// The debug bridge end to end; `component`: one the supervisor must list.
+/// what failed. `component`: one the supervisor must list.
 fn fdb_checks(component: &str) -> Vec<String> {
     let mut fails = Vec::new();
     let sock = root().join("target/fdb.sock");

@@ -949,6 +949,41 @@ impl Kernel {
         }
     }
 
+    /// fallocate(fd, mode, offset, len): mode 0 makes the file at least
+    /// `offset + len` long (posix_fallocate; Mesa's shader cache sizes its
+    /// index this way). Memory-backed files have no holes to fill; other
+    /// modes (punching holes, ...) are refused as on filesystems without them.
+    pub(crate) fn sys_fallocate(&mut self, c: usize, fd: u64, mode: u64, off: u64, len: u64) -> Result<i64, i64> {
+        const EOPNOTSUPP: i64 = 95;
+        let end = off.checked_add(len).ok_or(EFBIG)?;
+        if len == 0 {
+            return Err(EINVAL);
+        }
+        if mode != 0 {
+            return Err(EOPNOTSUPP);
+        }
+        let file = self.proc(c).file(fd)?;
+        let f = file.borrow();
+        match &f.kind {
+            FileKind::Reg(n) => {
+                let mut n = n.borrow_mut();
+                if (end as usize) > n.data.len() {
+                    n.data.truncate(end as usize);
+                }
+                Ok(0)
+            }
+            FileKind::MemFd(o) => {
+                let mut o = o.borrow_mut();
+                if end > o.size {
+                    o.truncate(end);
+                }
+                Ok(0)
+            }
+            FileKind::Dir(_) => Err(EISDIR),
+            _ => Err(ENODEV),
+        }
+    }
+
     pub(crate) fn sys_dup3(&mut self, c: usize, old: u64, new: u64, flags: u32) -> Result<i64, i64> {
         let mut p = self.proc(c);
         let f = p.file(old)?;

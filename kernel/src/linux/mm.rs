@@ -309,8 +309,11 @@ impl Kernel {
         let Some(end) = va.checked_add(len as u64) else { return false };
         let mut page = page_floor(va);
         while page < end {
+            // (no address space: a thread of a process that is exiting,
+            // its memory already gone, e.g. clearing its child tid)
             let ok = {
-                let vs = self.comps[c].vspace.as_ref().unwrap().borrow();
+                let Some(vsr) = self.comps[c].vspace.as_ref() else { return false };
+                let vs = vsr.borrow();
                 vs.translate_user(page.max(va), write).is_some()
             };
             if !ok && !self.linux_populate(c, page.max(va), write, false) {
@@ -592,7 +595,11 @@ impl Kernel {
         let is_data = ec == 0x24;
         let is_inst = ec == 0x20;
         if (is_data || is_inst) && (dfsc == 1 || dfsc == 3) {
-            let write = is_data && esr & (1 << 6) != 0;
+            // WnR is also set for cache maintenance (ISS.CM, bit 8: `dc
+            // cvau` in __clear_cache after a JIT writes code), which only
+            // needs the page readable, as Linux treats it. (QEMU never
+            // faults on these; a phone does, on a JIT page not yet touched.)
+            let write = is_data && esr & (1 << 6) != 0 && esr & (1 << 8) == 0;
             if self.linux_populate(c, far, write, is_inst) {
                 return;
             }

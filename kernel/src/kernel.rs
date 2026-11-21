@@ -168,6 +168,9 @@ struct KlogReader {
     comp: usize,
 }
 
+/// Profiler samples kept (8 CPUs at 100 Hz: 80 s).
+const PROF_MAX: usize = 65536;
+
 pub struct Kernel {
     pub(crate) comps: Vec<Component>,
     eps: Vec<Endpoint>,
@@ -194,6 +197,12 @@ pub struct Kernel {
     console_gen: u32,
     /// Byte streams between drivers and Linux devices, as `boot::SERIAL_DEVICES`.
     pub(crate) serials: Vec<SerialPort>,
+    /// The tick profiler (`profile on` / `profile`): where Linux programs
+    /// were, as (task, pc), and ticks that found a CPU idle or elsewhere.
+    pub(crate) prof: Option<Vec<(u32, u64)>>,
+    pub(crate) prof_idle: u64,
+    pub(crate) prof_other: u64,
+    pub(crate) prof_t0: u64,
 }
 
 /// One serial device: bytes from the driver to Linux (`rx`) and back (`tx`).
@@ -240,6 +249,10 @@ pub fn start() -> ! {
         shm: Vec::new(),
         console_gen: 0,
         serials: boot::SERIAL_DEVICES.iter().map(|_| SerialPort::default()).collect(),
+        prof: None,
+        prof_idle: 0,
+        prof_other: 0,
+        prof_t0: 0,
     };
     for (name, size) in boot::SHM_REGIONS {
         let len = page_ceil(*size);
@@ -477,6 +490,22 @@ impl Kernel {
         smp::kick_idle();
     }
 
+    /// One profiler tick on this CPU.
+    fn prof_sample(&mut self) {
+        match self.current[smp::cpu()] {
+            Some(c) if self.comps[c].linux.is_some() => {
+                let pc = self.comps[c].frame.elr;
+                if let Some(v) = self.prof.as_mut() {
+                    if v.len() < PROF_MAX {
+                        v.push((c as u32, pc));
+                    }
+                }
+            }
+            Some(_) => self.prof_other += 1,
+            None => self.prof_idle += 1,
+        }
+    }
+
     fn handle_irqs(&mut self) {
         while let Some(iar) = gic::ack() {
             let id = iar & 0x3ff;
@@ -484,6 +513,9 @@ impl Kernel {
                 // An inter-processor wake-up: nothing to do but look again.
             } else if id == timer::irq() {
                 timer::rearm();
+                if self.prof.is_some() {
+                    self.prof_sample();
+                }
                 if smp::cpu() == 0 {
                     self.ticks += 1;
                     self.fire_alarms();
@@ -831,6 +863,37 @@ impl Kernel {
                     out.push_str(&format!("{:<12} {:<10} {:>11}  {:>8}\n", c.name, state, c.incarnation, c.restarts));
                 }
                 out
+            }
+            ["profile", "on"] => {
+                self.prof = Some(Vec::with_capacity(PROF_MAX));
+                self.prof_t0 = timer::now_ns();
+                if let Some(l) = self.linux.as_mut() {
+                    l.drm.presents = 0;
+                    l.drm.present_ns = 0;
+                }
+                self.prof_idle = 0;
+                self.prof_other = 0;
+                "profiling\n".into()
+            }
+            ["profile"] | ["profile", "all"] => match self.prof.take() {
+                Some(samples) => self.linux_profile_report(&samples, words.len() == 2),
+                None => "not profiling (profile on)\n".into(),
+            },
+            ["console", "show"] => {
+                crate::console::show();
+                kprintln!("console: shown over the user interface (volume up + down again: back)");
+                "console shown\n".into()
+            }
+            ["console", "hide"] => {
+                crate::console::hide();
+                if let Some(fb) = self.linux.as_ref().and_then(|l| l.drm.scanout()) {
+                    self.drm_present(fb);
+                }
+                "console hidden\n".into()
+            }
+            ["console", "toggle"] => {
+                let w = if crate::console::shown() { "hide" } else { "show" };
+                return self.supervisor(&format!("console {}", w));
             }
             ["console", "on"] => {
                 // Draw the log on the screen again, over a user interface

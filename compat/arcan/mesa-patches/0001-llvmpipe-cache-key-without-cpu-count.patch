@@ -1,0 +1,17 @@
+--- a/src/gallium/drivers/llvmpipe/lp_screen.c
++++ b/src/gallium/drivers/llvmpipe/lp_screen.c
+@@ -817,7 +817,13 @@
+     */
+    STATIC_ASSERT(offsetof(struct util_cpu_caps_t, num_L3_caches)
+                  == 5 * sizeof(uint32_t));
+-   _mesa_sha1_update(ctx, cpu_caps, 5 * sizeof(uint32_t));
++   /* (not the number of CPUs: the code generated is the same, and a cache
++    * made on one machine serves another with more CPUs) */
++   struct util_cpu_caps_t key;
++   memcpy(&key, cpu_caps, 5 * sizeof(uint32_t));
++   key.nr_cpus = 0;
++   key.max_cpus = 0;
++   _mesa_sha1_update(ctx, &key, 5 * sizeof(uint32_t));
+ }
+ 
+ 

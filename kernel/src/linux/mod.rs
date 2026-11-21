@@ -23,6 +23,7 @@ pub mod fs;
 pub mod input;
 pub mod mm;
 pub mod net;
+pub mod prof;
 pub mod signal;
 pub mod tty;
 pub mod vfs;
@@ -270,7 +271,10 @@ impl Personality {
                 total - used,
                 total - used
             ),
-            "cpuinfo" => "processor\t: 0\nBogoMIPS\t: 125.00\nFeatures\t: fp asimd evtstrm cpuid\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU part\t: 0xd03\n\n".to_string(),
+            "cpuinfo" => format!(
+                "processor\t: 0\nBogoMIPS\t: 125.00\nFeatures\t: fp asimd evtstrm cpuid\nCPU implementer\t: 0x41\nCPU architecture: 8\nCPU part\t: 0xd03\ncpu MHz\t\t: {}\n\n",
+                crate::CPU_MHZ.load(core::sync::atomic::Ordering::Relaxed)
+            ),
             "loadavg" => format!("0.00 0.00 0.00 1/{} {}\n", procs, self.next_pid),
             "mounts" => "rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\ndevtmpfs /dev devtmpfs rw 0 0\n".to_string(),
             "filesystems" => "nodev\trootfs\nnodev\tproc\nnodev\tdevtmpfs\n".to_string(),
@@ -1270,6 +1274,7 @@ impl Kernel {
             nr::RENAMEAT | nr::RENAMEAT2 => self.sys_rename(c, a[0], a[1], a[2], a[3]),
             nr::LINKAT => self.sys_link(c, a[0], a[1], a[2], a[3], a[4]),
             nr::FTRUNCATE => self.sys_ftruncate(c, a[0], a[1]),
+            nr::FALLOCATE => self.sys_fallocate(c, a[0], a[1], a[2], a[3]),
             nr::STATFS | nr::FSTATFS => {
                 // Everything is one tmpfs: struct statfs for it.
                 let mut b = [0u8; 120];
@@ -1330,7 +1335,11 @@ impl Kernel {
                     Err(ENOMEM)
                 }
             }
-            nr::SYNC | nr::FSYNC | nr::FADVISE64 | nr::MLOCK => Ok(0),
+            nr::SYNC | nr::FSYNC | nr::FDATASYNC | nr::FADVISE64 | nr::MLOCK => Ok(0),
+            // Advisory file locks: granted at once. (Mesa's shader cache
+            // locks its database; its writers also hold a mutex, and the
+            // phone shell is its only user.)
+            nr::FLOCK => self.proc(c).file(a[0]).map(|_| 0),
             nr::EVENTFD2 => self.sys_eventfd2(c, a[0], a[1]),
             nr::EPOLL_CREATE1 => self.sys_epoll_create1(c, a[0]),
             nr::EPOLL_CTL => self.sys_epoll_ctl(c, a[0], a[1], a[2], a[3]),
@@ -1502,6 +1511,10 @@ impl Kernel {
                 let bytes: Vec<u8> = (0..len.div_ceil(8)).flat_map(|_| self.lx().random().to_le_bytes()).collect();
                 self.uwrite(c, a[0], &bytes[..len]).map(|_| len as i64)
             }
+            // Scheduling policy and CPU affinity: accepted, not applied
+            // (Flare schedules every thread alike on any CPU; Mesa's shader
+            // cache asks for an idle-priority writer thread).
+            nr::SCHED_SETSCHEDULER | nr::SCHED_SETAFFINITY => Ok(0),
             nr::SCHED_GETAFFINITY => {
                 let cpus = (crate::platform::CPUS as usize).min(crate::smp::MAX_CPUS);
                 self.uwrite(c, a[2], &((1u64 << cpus) - 1).to_le_bytes()).map(|_| 8)

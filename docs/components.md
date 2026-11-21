@@ -128,3 +128,9 @@ sees the table in `/proc/components`:
 ```sh
 echo restart storage > /dev/flarectl && cat /dev/flarectl
 ```
+
+Besides `list`, `stop`, `start` and `restart`, it takes `console show`,
+`console hide` and `console toggle` (the kernel console over a user
+interface, with its recent text), `console on`, and `profile on` /
+`profile` / `profile all` (the kernel's tick profiler: where Linux programs
+spent their time, by mapping and file offset).

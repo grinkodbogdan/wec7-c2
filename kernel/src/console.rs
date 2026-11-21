@@ -307,14 +307,24 @@ pub fn write_bytes(bytes: &[u8]) {
                 putc(*base, b);
             }
         }
-        Backend::Fb(_) if QUIET.load(core::sync::atomic::Ordering::Relaxed) => {}
         Backend::Fb(fb) => {
-            // UTF-8 continuation bytes would each show as '?': show one per
-            // character instead.
             // Each line on the screen starts with the seconds since boot
             // ("[54.6] "): a photo of the screen is the boot's timeline.
+            // Kept in the history even while a user interface has the
+            // screen, to be shown on demand (`console show`).
             use core::sync::atomic::Ordering::Relaxed;
+            let quiet = QUIET.load(Relaxed);
+            // SAFETY: callers hold the kernel lock.
+            let hist = unsafe { HISTORY.get() };
+            let mut out = |fb: &mut Fb, b: u8| {
+                hist.push(b);
+                if !quiet {
+                    fb.write(b);
+                }
+            };
             for &b in bytes {
+                // UTF-8 continuation bytes would each show as '?': show one
+                // per character instead.
                 if b & 0xc0 == 0x80 {
                     continue;
                 }
@@ -331,19 +341,21 @@ pub fn write_bytes(bytes: &[u8]) {
                             break;
                         }
                     }
-                    fb.write(b'[');
+                    out(fb, b'[');
                     for i in (0..n).rev() {
-                        fb.write(digits[i]);
+                        out(fb, digits[i]);
                     }
-                    fb.write(b'.');
-                    fb.write(b'0' + (ds % 10) as u8);
-                    fb.write(b']');
-                    fb.write(b' ');
+                    out(fb, b'.');
+                    out(fb, b'0' + (ds % 10) as u8);
+                    out(fb, b']');
+                    out(fb, b' ');
                 }
                 LINE_START.store(b == b'\n', Relaxed);
-                fb.write(b);
+                out(fb, b);
             }
-            fb.flush();
+            if !quiet {
+                fb.flush();
+            }
         }
     }
 }
@@ -422,6 +434,75 @@ static QUIET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::n
 
 /// A user interface owns the screen (it presents frames): the console stops
 /// drawing on it, but keeps its place. A panic draws again.
+/// The screen console's recent text, for `console show`.
+struct History {
+    buf: [u8; HISTORY_LEN],
+    len: usize,
+    head: usize,
+}
+
+const HISTORY_LEN: usize = 16384;
+
+impl History {
+    fn push(&mut self, b: u8) {
+        self.buf[self.head] = b;
+        self.head = (self.head + 1) % HISTORY_LEN;
+        self.len = (self.len + 1).min(HISTORY_LEN);
+    }
+}
+
+static HISTORY: Global<History> = Global::new(History { buf: [0; HISTORY_LEN], len: 0, head: 0 });
+/// The console has the screen over a user interface (`console show`).
+static SHOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn shown() -> bool {
+    SHOWN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Give the screen to the console: cleared, with the last screenful of the
+/// history, until `hide`. Presents of the user interface are held back.
+pub fn show() {
+    // SAFETY: callers hold the kernel lock.
+    let Backend::Fb(fb) = (unsafe { CONSOLE.get() }) else { return };
+    let hist = unsafe { HISTORY.get() };
+    SHOWN.store(true, core::sync::atomic::Ordering::Relaxed);
+    QUIET.store(false, core::sync::atomic::Ordering::Relaxed);
+    for r in 0..fb.rows {
+        fb.clear_row(r);
+    }
+    fb.col = 0;
+    fb.row = 0;
+    fb.escape = 0;
+    // The last rows - 2 screen lines (long lines wrap: count them so).
+    let start = (hist.head + HISTORY_LEN - hist.len) % HISTORY_LEN;
+    let at = |i: usize| hist.buf[(start + i) % HISTORY_LEN];
+    let (mut lines, mut col, mut from) = (0usize, 0usize, hist.len);
+    while from > 0 {
+        let b = at(from - 1);
+        if b == b'\n' || col == fb.cols {
+            lines += 1;
+            col = 0;
+            if lines >= fb.rows.saturating_sub(2) {
+                break;
+            }
+        }
+        if b != b'\n' {
+            col += 1;
+        }
+        from -= 1;
+    }
+    for i in from..hist.len {
+        fb.write(at(i));
+    }
+    fb.flush();
+}
+
+/// Give the screen back to the user interface.
+pub fn hide() {
+    SHOWN.store(false, core::sync::atomic::Ordering::Relaxed);
+    QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_quiet(q: bool) {
     QUIET.store(q, core::sync::atomic::Ordering::Relaxed);
 }

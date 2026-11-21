@@ -18,6 +18,7 @@ pub const EFAULT: i64 = 14;
 pub const EBUSY: i64 = 16;
 pub const EEXIST: i64 = 17;
 pub const ENODEV: i64 = 19;
+pub const EFBIG: i64 = 27;
 pub const ENOTDIR: i64 = 20;
 pub const EISDIR: i64 = 21;
 pub const EINVAL: i64 = 22;
@@ -240,6 +241,9 @@ pub mod nr {
     pub const FSTAT: u64 = 80;
     pub const SYNC: u64 = 81;
     pub const FSYNC: u64 = 82;
+    pub const FDATASYNC: u64 = 83;
+    pub const FLOCK: u64 = 32;
+    pub const FALLOCATE: u64 = 47;
     pub const UTIMENSAT: u64 = 88;
     pub const EXIT: u64 = 93;
     pub const EXIT_GROUP: u64 = 94;
@@ -252,6 +256,8 @@ pub mod nr {
     pub const CLOCK_GETTIME: u64 = 113;
     pub const CLOCK_GETRES: u64 = 114;
     pub const CLOCK_NANOSLEEP: u64 = 115;
+    pub const SCHED_SETSCHEDULER: u64 = 119;
+    pub const SCHED_SETAFFINITY: u64 = 122;
     pub const SCHED_GETAFFINITY: u64 = 123;
     pub const SCHED_YIELD: u64 = 124;
     pub const KILL: u64 = 129;

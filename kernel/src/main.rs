@@ -18,6 +18,9 @@ extern crate alloc;
 mod klog;
 
 mod arch;
+
+/// The boot CPU's clock as measured at boot (MHz), for /proc/cpuinfo.
+pub static CPU_MHZ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 mod boot;
 mod console;
 mod elf;
@@ -66,7 +69,9 @@ pub extern "C" fn kmain() -> ! {
             );
         }
         let ns = (arch::timer::now_ns() - t0).max(1);
-        kprintln!("cpu: the boot CPU runs at about {} MHz", x * 1000 / ns);
+        let mhz = x * 1000 / ns;
+        CPU_MHZ.store(mhz, core::sync::atomic::Ordering::Relaxed);
+        kprintln!("cpu: the boot CPU runs at about {} MHz", mhz);
     }
     kprintln!(
         "fhd: board '{}' on soc '{}', {} RAM region(s), {} devices",

@@ -626,6 +626,28 @@ static int tablet_event(const struct watched *w, struct flare_event *e)
 	return 0;
 }
 
+/* Volume up and down held together: the kernel console takes the screen
+ * over the user interface (the boot log, timings, the profile), or gives
+ * it back. */
+static void volume_keys(unsigned code, int value)
+{
+	static int held[2];
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	pthread_mutex_lock(&lock);
+	int was = held[0] && held[1];
+	held[code == 115] = value != 0;
+	int now = held[0] && held[1];
+	pthread_mutex_unlock(&lock);
+	if (now && !was) {
+		int fd = open("/dev/flarectl", O_WRONLY);
+		if (fd >= 0) {
+			if (write(fd, "console toggle", 14) < 0)
+				printf("linuxdrv: console toggle: %s\n", strerror(errno));
+			close(fd);
+		}
+	}
+}
+
 static void *input_thread(void *p)
 {
 	struct watched *w = p;
@@ -658,6 +680,8 @@ static void *input_thread(void *p)
 				down = ev[i].value ? 1 : 0;
 			else if (ev[i].type == 1 && ev[i].value == 1)
 				printf("linuxdrv: %s: key %u pressed\n", w->name, ev[i].code);
+			if (ev[i].type == 1 && (ev[i].code == 114 || ev[i].code == 115))
+				volume_keys(ev[i].code, ev[i].value);
 			else if (ev[i].type == 0 && down == 1) {
 				if (++touches <= 3) /* the first few: proof it works */
 					printf("linuxdrv: %s: touch %d at %d,%d\n", w->name, touches, x, y);

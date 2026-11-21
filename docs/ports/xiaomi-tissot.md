@@ -150,6 +150,52 @@ The same composition runs in QEMU on a test double of this board
 when the shell prompt appears. That checks everything except the
 phone-specific facts below.
 
+### The phone shell: reading the log and the timings
+
+Once the shell has the screen, the kernel console stops drawing. Hold
+**Volume up and Volume down together** to bring the console back over the
+shell, with its last screenful of text; do it again to return to the
+shell. (The driver host sees both keys and writes `console toggle` to
+`/dev/flarectl`; presents of the shell are held back meanwhile.)
+
+What to look for there:
+
+* every line starts with the seconds since power-on, `[54.6] ...`;
+* `cpu: the boot CPU runs at about N MHz` (near the top);
+* `rc: phone shell ready at N s since boot (MemFree: ..., CPU N MHz)`;
+* then the kernel's tick profile of the shell's start, from `flare-ui`
+  until ready:
+
+  ```
+  profile: 15509 ticks: programs 29%, idle 68%, Flare components 0%, exited 1%
+  profile: 8.1 s; display: 40 presents (4.9/s), 12 ms each to copy
+  profile: 21% arcan file 0x4505038 (3280 ticks) 2044bc0:122 18a2200:57 ...
+  profile:  5% arcan anon rx (JIT) (795 ticks)
+  ```
+
+  `rc: the shell idle for 10 s:` follows with the same report for the
+  shell at rest (what it costs when nothing happens: presents per second,
+  CPU). `display:` counts the frames the kernel copied to the panel and
+  what each copy took (it doubles every pixel on this 1080×1920 panel and
+  runs under the kernel lock).
+
+  A library is named by its size (`0x4505038` is Mesa's `libgallium`);
+  `anon rx (JIT)` is llvmpipe's compiled shaders running. The offsets are
+  file offsets with their tick counts, for `llvm-symbolizer` on the
+  unstripped library in `target/arcan/src/mesa-*/build` (add 0x10000 to
+  offsets past its first segment). `echo profile on > /dev/flarectl`
+  starts the profiler at any time; `echo profile > /dev/flarectl; cat
+  /dev/flarectl` reports.
+
+Shaders: Mesa's shader cache ships in the root filesystem
+(`/var/cache/mesa`). `cargo xtask linuxdrv-test` boots the same shell in
+QEMU and keeps the cache it fills (`target/mesa-shader-cache`); images
+built after that carry it, so the phone does not compile those shaders
+at boot. llvmpipe's cache key leaves out the number of CPUs
+(`compat/arcan/mesa-patches`), so QEMU's 4-CPU cache serves the phone's 8
+CPUs; the rest of the key (Flare's CPU description, the Mesa build, the
+compile flags) is the same on both.
+
 ### Troubleshooting
 
 * **The boot loader goes back to fastboot ("dtb not found").** LK did not

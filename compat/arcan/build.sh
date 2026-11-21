@@ -42,6 +42,7 @@ tarball="$cache/mesa-$MESA_VERSION.tar.xz"
 echo "$MESA_SHA256  $tarball" | sha256sum -c - >/dev/null
 rm -rf "$out/src/mesa-$MESA_VERSION" "$out/mesa-root"
 tar xJf "$tarball" -C "$out/src"
+for p in "$here"/mesa-patches/*.patch; do patch -s -d "$out/src/mesa-$MESA_VERSION" -p1 < "$p"; done
 cat > "$out/cross.ini" <<EOF
 [binaries]
 c = ['clang', '--target=aarch64-alpine-linux-musl', '--sysroot=$sys', '--gcc-toolchain=$sys/usr']

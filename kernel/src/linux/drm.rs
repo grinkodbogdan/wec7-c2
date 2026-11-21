@@ -67,6 +67,17 @@ pub struct Drm {
     sequence: u32,
     last_vblank: u64,
     flips: u64,
+    /// Presents copied to the panel, and the time spent copying (ns), for
+    /// the profiler's report.
+    pub presents: u64,
+    pub present_ns: u64,
+}
+
+impl Drm {
+    /// The framebuffer on the panel (the last one presented).
+    pub fn scanout(&self) -> Option<u32> {
+        self.scanout
+    }
 }
 
 pub type DrmFileRef = Rc<RefCell<DrmFile>>;
@@ -150,9 +161,14 @@ impl Kernel {
     }
 
     /// Copy framebuffer `fb_id` to the panel.
-    fn drm_present(&mut self, fb_id: u32) {
+    pub(crate) fn drm_present(&mut self, fb_id: u32) {
+        // (the console has the screen: shown again on `console hide`)
+        if crate::console::shown() {
+            return;
+        }
         let Some(p) = self.panel() else { return };
         let Some(fb) = self.drm().fbs.get(&fb_id).cloned() else { return };
+        let t0 = timer::now_ns();
         let (pa, _) = self.shm[crate::boot::LINUX_DISPLAY.unwrap()];
         let dst = phys_to_virt(pa) + p.fb_offset as u64;
         let (w, h) = (fb.width.min(p.width) as u64 * 4, fb.height.min(p.height));
@@ -219,6 +235,8 @@ impl Kernel {
         let d = self.drm();
         d.scanout = Some(fb_id);
         d.flips += 1;
+        d.presents += 1;
+        d.present_ns += timer::now_ns() - t0;
     }
 
     fn vblank_now(&mut self) -> (u32, u64) {
