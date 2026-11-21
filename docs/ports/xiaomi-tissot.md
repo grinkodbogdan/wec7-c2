@@ -236,7 +236,9 @@ What runs:
   `ARCAN_WATCHDOG_TIMEOUT_MS` (compat/arcan/patches/0005), 60 s in
   `flare-ui`. The kernel now reports signal deaths and faults sent to a
   handler, and `/proc/flare-threads` lists what every thread waits in. If
-  the shell is not up after 30 s, `/etc/rc` prints that on the screen.
+  the shell is not up after 90 s, `/etc/rc` prints a short report on the
+  screen (it only reports: an earlier version traced the shell, and on the
+  phone the trace output flooded the screen and slowed everything).
 * **Speed**:
   * the shell renders with llvmpipe: shaders compiled to native code, each
     frame shared by all 8 cores (was softpipe: interpreted, one core);
@@ -244,6 +246,10 @@ What runs:
     poll, nanosleep, timerfds) arms the timer for it, where it used to
     wait for the next 10 ms tick. Linux's drivers in the driver host time
     everything that way (eMMC, I2C, touch);
+  * the shell renders at 540×960, and KMS doubles each pixel onto the
+    1080×1920 panel: a quarter of the pixels to draw;
+  * llvmpipe compiles shaders without LLVM's optimization passes
+    (`GALLIVM_PERF=no_opt` in flare-ui): the first screens come much sooner;
   * the driver host reads the root filesystem as soon as the userdata
     partition exists, with 8 MiB readahead, and Linux has 160 MiB of RAM
     there (as QRT gives it).

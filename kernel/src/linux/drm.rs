@@ -87,8 +87,12 @@ fn wr64(b: &mut [u8], o: usize, v: u64) {
 /// The panel as the driver describes it, or None while it is offline.
 #[derive(Clone, Copy)]
 struct Panel {
+    /// The mode clients render at: the panel's size divided by `scale`.
     width: u32,
     height: u32,
+    /// Pixels drawn per client pixel, each way: 2 on large panels (a phone's
+    /// 1080x1920), so software rendering fills a quarter of the pixels.
+    scale: u32,
     stride: u32,
     fb_offset: u32,
     width_mm: u32,
@@ -128,9 +132,11 @@ impl Kernel {
             && h.height > 0
             && h.stride >= h.width * 4
             && fb_end <= len;
+        let scale = if h.width >= 1000 && h.height >= 1000 { 2 } else { 1 };
         ok.then_some(Panel {
-            width: h.width,
-            height: h.height,
+            width: h.width / scale,
+            height: h.height / scale,
+            scale,
             stride: h.stride,
             fb_offset: h.fb_offset,
             width_mm: h.width_mm,
@@ -152,15 +158,17 @@ impl Kernel {
         let (w, h) = (fb.width.min(p.width) as u64 * 4, fb.height.min(p.height));
         let mut obj = fb.obj.borrow_mut();
         let mut rows = 0u32;
+        // a scaled panel: each client row goes through here, then doubled
+        let mut row: Vec<u32> = if p.scale > 1 { alloc::vec![0; (w / 4) as usize] } else { Vec::new() };
         for y in 0..h as u64 {
             let src_off = fb.offset as u64 + y * fb.pitch as u64;
             let mut done = 0u64;
             while done < w {
                 let pos = src_off + done;
                 let n = (PAGE_SIZE - pos % PAGE_SIZE).min(w - done);
-                let d = dst + y * p.stride as u64 + done;
+                let d = if p.scale > 1 { row.as_mut_ptr() as u64 + done } else { dst + y * p.stride as u64 + done };
                 match obj.page(pos / PAGE_SIZE) {
-                    // SAFETY: both ranges are RAM inside their objects.
+                    // SAFETY: both ranges are RAM inside their objects (or the row buffer).
                     Some(spa) => unsafe {
                         core::ptr::copy_nonoverlapping(
                             (phys_to_virt(spa) + pos % PAGE_SIZE) as *const u8,
@@ -174,6 +182,18 @@ impl Kernel {
             }
             if done >= w {
                 rows += 1;
+            }
+            if p.scale == 2 {
+                // each pixel twice, the row twice
+                let out = dst + 2 * y * p.stride as u64;
+                // SAFETY: two rows of the panel's memory, inside the framebuffer.
+                unsafe {
+                    let d0 = out as *mut u64;
+                    for (i, px) in row.iter().enumerate() {
+                        core::ptr::write(d0.add(i), (*px as u64) << 32 | *px as u64);
+                    }
+                    core::ptr::copy_nonoverlapping(out as *const u8, (out + p.stride as u64) as *mut u8, row.len() * 8);
+                }
             }
         }
         drop(obj);
@@ -193,7 +213,7 @@ impl Kernel {
             );
         }
         // The panel's display engine reads memory, not the CPU's caches.
-        crate::arch::mmu::clean_dcache(dst, p.stride as u64 * h as u64);
+        crate::arch::mmu::clean_dcache(dst, p.stride as u64 * h as u64 * p.scale as u64);
         // A UI owns the screen now: the kernel console stops drawing on it.
         crate::console::set_quiet(true);
         let d = self.drm();
@@ -609,7 +629,7 @@ impl Kernel {
     fn fb_region(&self) -> Option<(u64, u64)> {
         let p = self.panel()?;
         let (pa, _) = *self.shm.get(crate::boot::LINUX_DISPLAY?)?;
-        Some((phys_to_virt(pa) + p.fb_offset as u64, p.stride as u64 * p.height as u64))
+        Some((phys_to_virt(pa) + p.fb_offset as u64, p.stride as u64 * (p.height * p.scale) as u64))
     }
 
     pub(crate) fn fb_read(&self, pos: u64, max: usize) -> Vec<u8> {
@@ -634,7 +654,9 @@ impl Kernel {
         match req & 0xffff {
             0x4600 => {
                 let mut v = [0u8; 160];
-                for (i, x) in [p.width, p.height, p.width, p.height, 0, 0, 32, 0].iter().enumerate() {
+                // /dev/fb0 is the panel's own memory: its real size
+                let (pw, ph) = (p.width * p.scale, p.height * p.scale);
+                for (i, x) in [pw, ph, pw, ph, 0, 0, 32, 0].iter().enumerate() {
                     wr32(&mut v, i * 4, *x);
                 }
                 // red, green, blue, transp bitfields: offset, length, msb_right
@@ -649,7 +671,7 @@ impl Kernel {
             0x4602 => {
                 let mut v = [0u8; 80];
                 v[..9].copy_from_slice(b"flare-shm");
-                wr32(&mut v, 24, p.stride * p.height);
+                wr32(&mut v, 24, p.stride * p.height * p.scale);
                 wr32(&mut v, 36, 2); // FB_VISUAL_TRUECOLOR
                 wr32(&mut v, 48, p.stride);
                 self.uwrite(c, arg, &v).map(|_| 0)

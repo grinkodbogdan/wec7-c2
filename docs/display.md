@@ -167,6 +167,11 @@ Running Arcan and Mesa surfaced gaps that any large Linux program would hit:
 
 ## Performance and limits
 
+* **Large panels at half resolution.** On a panel 1000 pixels or more each
+  way (the Xiaomi Mi A1's 1080×1920), KMS offers clients half the size
+  (540×960) and doubles every pixel when it presents a frame. Software
+  rendering then fills a quarter of the pixels, at the same copy cost.
+  `/dev/fb0` stays the panel's own memory, at full size.
 * **Frame rate.** Rendering is done on the CPU by llvmpipe, with one
   thread per CPU (8 on the Xiaomi Mi A1). Under QEMU's emulation LLVM
   itself is emulated, so the first frames (compiling shaders) are slow

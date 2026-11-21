@@ -10,6 +10,9 @@ export ARCAN_VIDEO_DISPLAY_DEVICE=/dev/dri/card0 XDG_RUNTIME_DIR=/tmp
 # Arcan's watchdog kills its engine when a frame takes over 5 s; with
 # software rendering on a 1080x1920 panel the first one can (compat/arcan/patches/0005).
 export ARCAN_WATCHDOG_TIMEOUT_MS=60000
+# llvmpipe: compile shaders without LLVM's optimization passes (several times
+# faster to compile; the shell's 2D shaders barely run slower).
+export GALLIVM_PERF=no_opt
 if [ ! -f "/usr/share/arcan/appl/$appl/$appl.lua" ]; then
     echo "flare-ui: no appl '$appl' in /usr/share/arcan/appl" >&2
     exit 1
