@@ -71,6 +71,11 @@ fn flags(prot: Prot, device: bool) -> u64 {
 impl AddressSpace {
     pub fn new(asid: u16) -> Option<AddressSpace> {
         let l1 = frame::alloc()?;
+        // The ASID may have been another address space's: drop whatever any
+        // CPU still holds for it (entries walked speculatively from that
+        // address space's tables, after its last flush) before it means this
+        // one.
+        mmu::flush_asid(asid);
         Some(AddressSpace { l1, asid, tables: Vec::new() })
     }
 

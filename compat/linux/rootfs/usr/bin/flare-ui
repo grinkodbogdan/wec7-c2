@@ -21,7 +21,7 @@ if pidof arcan > /dev/null; then
     killall arcan
     while pidof arcan > /dev/null; do usleep 100000; done
 fi
-echo "flare-ui: starting $appl" | tee -a /tmp/flare-ui.log > /dev/console
+echo "flare-ui: starting $appl at $(cut -d' ' -f1 /proc/uptime) s since boot" | tee -a /tmp/flare-ui.log > /dev/console
 (arcan -d /tmp/arcan.sqlite -p /usr/share/arcan/resources -t /usr/share/arcan/appl \
     -T /usr/share/arcan/scripts "$appl" "$@" 2>&1 | tee -a /tmp/flare-ui.log > /dev/console) \
     < /dev/null > /dev/null 2>&1 &

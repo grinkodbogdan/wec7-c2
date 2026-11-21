@@ -410,8 +410,12 @@ impl Kernel {
             }
         }
         // Nothing runnable here. Leave the registers of whoever ran last in
-        // memory (it may resume on another CPU) and go idle.
+        // memory (it may resume on another CPU) and go idle, off its
+        // translation tables: an idle CPU may still walk the tables in TTBR0
+        // speculatively, and those of a process that exits meanwhile are freed
+        // and their memory reused (stale entries under a reused ASID).
         self.current[cpu] = None;
+        mmu::switch_to_kernel();
         if let Some(o) = self.ext_owner[cpu].take() {
             if self.comps[o].state != State::Dead {
                 arch::ext_save(&mut self.comps[o].ext);
