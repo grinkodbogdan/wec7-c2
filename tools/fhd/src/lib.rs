@@ -622,6 +622,18 @@ pub mod codegen {
         let _ = writeln!(s, "];");
         let console = p.console.as_ref().and_then(|c| enabled.iter().position(|n| &n.name == c));
         let _ = writeln!(s, "pub const CONSOLE: Option<usize> = {:?};", console);
+        // A framebuffer console, for marks drawn before there is a console:
+        // (physical base, bytes per row, rows), or zeros.
+        let fb = console
+            .map(|i| enabled[i])
+            .filter(|n| n.is_compatible("simple-framebuffer") && !n.regs.is_empty())
+            .map(|n| {
+                let int = |k: &str| n.props.get(k).and_then(|v| v.as_int()).unwrap_or(0) as u64;
+                (n.regs[0].base, int("stride"), int("height"))
+            })
+            .filter(|&(_, stride, height)| stride % 8 == 0 && stride > 0 && height > 0)
+            .unwrap_or((0, 0, 0));
+        let _ = writeln!(s, "pub const EARLY_FB: [u64; 3] = [{:#x}, {}, {}];", fb.0, fb.1, fb.2);
         s
     }
 }

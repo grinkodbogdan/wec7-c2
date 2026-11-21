@@ -898,7 +898,26 @@ fn fbcon_test(o: &Opts) -> bool {
     run(c);
     let qmp = root().join("target/fbcon-qmp.sock");
     let _ = std::fs::remove_file(&qmp);
-    let mut child = qemu_command(&o2, &image)
+    // `--load-at ADDR`: load the Image somewhere else and start it there, as
+    // a boot loader with its own idea of the address would (the kernel must
+    // move itself); no -kernel, so the CPU starts as from reset.
+    let load_at = o.rest.iter().position(|a| a == "--load-at").and_then(|i| o.rest.get(i + 1)).cloned();
+    let mut cmd = qemu_command(&o2, &image);
+    if let Some(addr) = &load_at {
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
+        let mut c = Command::new(cmd.get_program());
+        let mut it = args.into_iter();
+        while let Some(a) = it.next() {
+            if a == "-kernel" {
+                it.next();
+                continue;
+            }
+            c.arg(a);
+        }
+        c.arg("-device").arg(format!("loader,file={},addr={},cpu-num=0", image.display(), addr));
+        cmd = c;
+    }
+    let mut child = cmd
         .arg("-qmp")
         .arg(format!("unix:{},server=on,wait=off", qmp.display()))
         .stdin(Stdio::null())

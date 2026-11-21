@@ -89,7 +89,10 @@ LK picks an appended tree by `qcom,msm-id = <293 0>` (MSM8953) and
 description compiled into the kernel.
 
 The packer refuses images that would extend past 0x81800000, where
-firmware memory begins. LK always loads 64-bit kernels at 0x80080000.
+firmware memory begins. The kernel is linked at 0x80080000, where LK
+normally loads 64-bit kernels. If a boot loader puts it elsewhere, it
+moves itself there first (checked in QEMU with
+`cargo xtask fbcon-test --load-at ADDR`).
 The current image is about 6.6 MiB, ending near 0x80860000.
 
 ## Run it on the phone
@@ -154,8 +157,21 @@ phone-specific facts below.
   other `qcom,board-id` or `qcom,pmic-id` values. Your stock `boot.img`'s
   device tree shows them (extract it with `unpack_bootimg` and
   `extract-dtb`). Put them in `[boot-image]` in `board.fhd` and rebuild.
-* **The screen keeps the splash image, or stays black.** The kernel did not
-  start, or crashed before drawing; nothing is logged anywhere else yet.
+* **The screen keeps the fastboot or splash image.** Look at the top of
+  the screen. Before the console can draw text, the kernel paints white
+  stripes 32 pixels high, one per boot stage:
+
+  | Stripes at the top | Got as far as |
+  | --- | --- |
+  | none | the kernel never ran, or the boot loader's screen is not at the described address (`fb0`) |
+  | 1 | entered; moving itself to its link address (0x80080000) if loaded elsewhere |
+  | 2 | running at its link address; turning on the MMU |
+  | 3 | MMU and direct map up |
+  | 4 | kernel heap up; the console starts (it reads the display controller) |
+  | then text | the console is up and has cleared the stripes |
+
+  Five more stripes lower down (rows 480–720) mean a panic before the
+  console had text. A photo is the bug report.
   Black with no text can also mean a command-mode panel, which needs a
   "kick" per frame rather than continuous scan-out.
 * **Text is garbled, slanted or the wrong size.** The splash buffer's

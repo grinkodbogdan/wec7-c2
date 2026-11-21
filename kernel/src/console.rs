@@ -45,6 +45,44 @@ static CONSOLE: Global<Backend> = Global::new(Backend::None);
 /// What MDP5 discovery found, reported once the console is up.
 static FOUND: Global<Option<(u64, usize, usize, u64, usize, bool)>> = Global::new(None);
 
+/// The framebuffer console for boot marks (physical base, bytes per row,
+/// rows; zeros for none), read by entry.rs with the MMU off.
+#[no_mangle]
+#[used]
+static EARLY_FB: [u64; 3] = platform::EARLY_FB;
+
+static MAPPED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Boot marks, for boards whose only output is a screen: before the console
+/// draws text, stage `n` fills rows `[48n, 48n + 32)` of the framebuffer
+/// white (marks 0 and 1 come from entry.rs). A photo of a stuck boot shows
+/// how far it got; the console clears them once it is up.
+/// 0 entered, 1 at the linked address, 2 MMU and direct map, 3 heap (the
+/// console starts next). A panic before the console has text fills rows
+/// 480-720 with five stripes.
+pub fn early_mark(n: u64) {
+    let [base, stride, rows] = EARLY_FB;
+    if base == 0 || !MAPPED.load(core::sync::atomic::Ordering::Relaxed) || 48 * n + 32 > rows {
+        return;
+    }
+    let p = crate::arch::mmu::phys_to_virt(base + 48 * n * stride) as *mut u64;
+    for i in 0..(32 * stride / 8) as usize {
+        // SAFETY: inside the described framebuffer, mapped (non-cacheable) by mmu::init.
+        unsafe { core::ptr::write_volatile(p.add(i), u64::MAX) };
+    }
+}
+
+/// The direct map (and with it the framebuffer) is up.
+pub fn mapped() {
+    MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the console can show text.
+pub fn ready() -> bool {
+    // SAFETY: read of a word-sized discriminant; set once at boot.
+    !matches!(unsafe { &*CONSOLE.get() }, Backend::None)
+}
+
 pub fn init() {
     let Some(dev) = platform::CONSOLE.map(|i| &platform::DEVICES[i]) else { return };
     let base = crate::arch::mmu::phys_to_virt(dev.regs[0].base) as usize;

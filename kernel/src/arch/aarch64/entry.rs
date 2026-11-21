@@ -31,6 +31,61 @@ __boot:
 1:  wfe
     b       1b
 2:
+    // Boot mark 0: the boot loader entered the kernel (a white stripe at the
+    // top of a framebuffer console; see console::early_mark).
+    mov     x0, #0
+    bl      __early_stripe
+    // Run where the kernel was linked. Boot loaders differ (Qualcomm's LK
+    // can use the boot image's address or its own): if this is not the
+    // linked physical address, move the image there (memmove; the MMU and
+    // data cache are off) and continue at the copy.
+    adr     x0, _start
+    ldr     x1, =_start_phys
+    cmp     x0, x1
+    b.eq    13f
+    ldr     x2, =__load_size
+    b.hi    14f
+    // dest above src: copy from the top down (never reaches this code)
+    add     x0, x0, x2
+    add     x1, x1, x2
+10: ldr     x3, [x0, #-8]!
+    str     x3, [x1, #-8]!
+    subs    x2, x2, #8
+    b.hi    10b
+    b       12f
+    // dest below src: an ascending copy would overwrite this code before
+    // it finished. Copy the first 4 KiB (this code) down first, then run
+    // the whole copy from there: it rewrites that page with the same bytes.
+14: sub     x5, x0, x1
+    cmp     x5, #4096
+    b.lo    1b                      // too close to move safely: stop
+    mov     x5, #0
+15: ldr     x3, [x0, x5]
+    str     x3, [x1, x5]
+    add     x5, x5, #8
+    cmp     x5, #4096
+    b.lo    15b
+    dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
+    adr     x5, 11f
+    sub     x5, x5, x0
+    add     x5, x5, x1
+    br      x5
+11: ldr     x3, [x0], #8
+    str     x3, [x1], #8
+    subs    x2, x2, #8
+    b.hi    11b
+12: dsb     sy
+    ic      iallu
+    dsb     sy
+    isb
+    ldr     x0, =(__boot - 0xffffff8000000000)
+    br      x0
+13:
+    mov     x0, #1                  // boot mark 1: at the linked address
+    bl      __early_stripe
     // If entered at EL2, drop to EL1h with all interrupts masked.
     mrs     x0, CurrentEL
     lsr     x0, x0, #2
@@ -81,6 +136,16 @@ __boot:
     add     x7, x7, #0x200000
     cmp     x7, x8
     b.lo    40b
+    // The tables were written with the data cache off: drop any stale
+    // lines a boot loader left for them, so the walker and later cached
+    // accesses see what is in memory (as Linux's head.S does).
+    adrp    x2, __boot_l1_lo
+    add     x3, x2, #(3 * 4096)
+41: dc      ivac, x2
+    add     x2, x2, #64
+    cmp     x2, x3
+    b.lo    41b
+    dsb     sy
     ldr     x2, =0x44ff00           // MAIR: attr0 Device-nGnRnE, attr1 Normal WB, attr2 Normal NC
     msr     mair_el1, x2
     ldr     x2, =((25) | (1 << 8) | (1 << 10) | (3 << 12) | (25 << 16) | (1 << 24) | (1 << 26) | (3 << 28) | (2 << 30) | (2 << 32))
@@ -91,15 +156,10 @@ __boot:
     tlbi    vmalle1
     dsb     ish
     isb
-    mrs     x2, sctlr_el1
-    orr     x2, x2, #(1 << 0)       // M
-    orr     x2, x2, #(1 << 2)       // C
-    orr     x2, x2, #(1 << 12)      // I
-    orr     x2, x2, #(1 << 14)      // DZE: DC ZVA at EL0
-    orr     x2, x2, #(1 << 15)      // UCT: CTR_EL0 readable at EL0
-    orr     x2, x2, #(1 << 26)      // UCI: cache maintenance at EL0 (JITs)
-    bic     x2, x2, #(1 << 1)       // A
-    bic     x2, x2, #(1 << 19)      // WXN
+    // SCTLR_EL1 from scratch, not from what the boot loader left (little
+    // endian, no alignment checks, no WXN): RES1 bits | M | C | I | DZE |
+    // UCT | UCI.
+    ldr     x2, =(0x30d00800 | (1 << 0) | (1 << 2) | (1 << 12) | (1 << 14) | (1 << 15) | (1 << 26))
     msr     sctlr_el1, x2
     isb
     ldr     x0, =__high_entry
@@ -117,6 +177,28 @@ __high_entry:
     bl      kmain
 7:  wfe
     b       7b
+
+// Boot mark x0 with the MMU off: fill rows [x0 * 48, x0 * 48 + 32) of the
+// framebuffer console (EARLY_FB: physical base, bytes per row, rows; base 0
+// for none) with white. Uses x0-x7 only and no stack.
+__early_stripe:
+    adrp    x1, EARLY_FB
+    add     x1, x1, :lo12:EARLY_FB
+    ldr     x2, [x1]
+    cbz     x2, 2f
+    ldr     x3, [x1, #8]
+    mov     x4, #48
+    mul     x4, x4, x0
+    mul     x4, x4, x3
+    add     x2, x2, x4
+    mov     x5, #32
+    mul     x5, x5, x3
+    mov     x6, #-1
+1:  str     x6, [x2], #8
+    subs    x5, x5, #8
+    b.hi    1b
+    dsb     sy
+2:  ret
 
 // Secondary CPUs, started by PSCI CPU_ON at their physical address with the
 // MMU off; x0 = CPU index. Same tables as the boot CPU, then the upper half.
@@ -136,15 +218,7 @@ __secondary_entry:
     tlbi    vmalle1
     dsb     ish
     isb
-    mrs     x2, sctlr_el1
-    orr     x2, x2, #(1 << 0)
-    orr     x2, x2, #(1 << 2)
-    orr     x2, x2, #(1 << 12)
-    orr     x2, x2, #(1 << 14)
-    orr     x2, x2, #(1 << 15)
-    orr     x2, x2, #(1 << 26)
-    bic     x2, x2, #(1 << 1)
-    bic     x2, x2, #(1 << 19)
+    ldr     x2, =(0x30d00800 | (1 << 0) | (1 << 2) | (1 << 12) | (1 << 14) | (1 << 15) | (1 << 26))
     msr     sctlr_el1, x2
     isb
     ldr     x0, =__secondary_high

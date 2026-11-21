@@ -26,6 +26,10 @@ SECTIONS
         *(.got .got.*)
     }
 
+    /* End of what the boot loader loads: a misplaced image moves this much. */
+    . = ALIGN(8);
+    __load_end = .;
+
     . = ALIGN(4096);
     .boot_tables (NOLOAD) : AT(ADDR(.boot_tables) - KVA) {
         __boot_l1_lo = .;
@@ -56,6 +60,7 @@ SECTIONS
 
     _start_phys = _start - KVA;
     __image_size = __kernel_end - __kernel_start;
+    __load_size = __load_end - __kernel_start;
 
     /DISCARD/ : {
         *(.eh_frame*)
