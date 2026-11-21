@@ -290,6 +290,8 @@ fn leave_loop(frame: &mut TrapFrame) {
         if kernel().try_leave(frame) {
             return;
         }
+        // Sleep no later than the earliest timeout anything waits for.
+        timer::arm();
         smp::idle_wait();
         kernel().handle_irqs();
     }
@@ -363,6 +365,8 @@ impl Kernel {
             break;
         }
         self.load(frame);
+        // Run no later than the earliest timeout anything waits for.
+        timer::arm();
         true
     }
 
@@ -370,6 +374,9 @@ impl Kernel {
     /// caller idles and asks again).
     fn pick_next(&mut self) -> bool {
         let cpu = smp::cpu();
+        // The pass over waiters rebuilds the earliest wake time.
+        timer::reset_wakes();
+        self.fire_alarms();
         self.linux_poll();
         self.flush_klog();
         if self.halting && self.console_drained() {
@@ -536,6 +543,7 @@ impl Kernel {
                 due.push((ep, bit));
                 false
             } else {
+                timer::want_wake(t);
                 true
             }
         });
@@ -1314,7 +1322,9 @@ impl Kernel {
         if bit >= 64 || self.alarms.len() >= 256 {
             return Err(Error::InvalidArg);
         }
-        self.alarms.push((timer::now_ns().saturating_add(ns), ep, bit as u32));
+        let t = timer::now_ns().saturating_add(ns);
+        self.alarms.push((t, ep, bit as u32));
+        timer::want_wake(t);
         self.ret(c, &[]);
         Ok(())
     }

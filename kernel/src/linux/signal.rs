@@ -472,7 +472,14 @@ impl Kernel {
                 match p.sig.itimer {
                     Some((d, iv)) if now >= d => {
                         p.sig.itimer = if iv > 0 { Some((d + iv * (1 + (now - d) / iv), iv)) } else { None };
+                        if let Some((nd, _)) = p.sig.itimer {
+                            timer::want_wake(nd);
+                        }
                         true
+                    }
+                    Some((d, _)) => {
+                        timer::want_wake(d);
+                        false
                     }
                     _ => false,
                 }
@@ -617,6 +624,7 @@ impl Kernel {
                 self.task(c).wait = Default::default();
                 return Out::Ret(-EAGAIN);
             }
+            timer::want_wake(deadline);
         }
         Out::Block
     }

@@ -202,7 +202,7 @@ const EXPECTED: &[&str] = &[
     "virtio-input: 'QEMU Virtio Tablet' online",
     "ramfb: panel 480x854 online (generation 1, incarnation 0)",
     "driver flare: Flare display (shared-memory KMS)",
-    "GL renderer softpipe, version OpenGL ES 3.1 Mesa 25.1.9",
+    "GL renderer llvmpipe (LLVM 20.1.8, 128 bits), version OpenGL ES 3.2 Mesa 25.1.9",
     "frame 2 flipped",
     "flarehome: ready on a 480x854 panel, 16 apps, 6 events",
     "flarehome: unlocked",
@@ -567,7 +567,7 @@ fn arcan_stage() -> PathBuf {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let dir = root().join("compat/arcan");
         let mut files =
-            vec![dir.join("build.sh"), dir.join("alpine.lock"), dir.join("alpine.py"), dir.join("stage.py")];
+            vec![dir.join("build.sh"), dir.join("alpine.lock"), dir.join("alpine.py"), dir.join("stage.py"), dir.join("llvm-config.in")];
         files.push(dir.join("tests/kmstest.c"));
         let mut patches: Vec<PathBuf> =
             std::fs::read_dir(dir.join("patches")).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();

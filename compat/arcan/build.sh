@@ -2,7 +2,8 @@
 # compat/arcan/build.sh OUT - Arcan 0.6 for Flare's Linux personality.
 #
 # Builds, for aarch64 Linux (musl), dynamically linked:
-#   * Mesa 25.1 with only the softpipe software rasterizer (no LLVM):
+#   * Mesa 25.1 with llvmpipe (shaders compiled to native code by LLVM,
+#     linked statically; each frame split across all CPUs) and softpipe:
 #     EGL, GBM and GLES2, rendering into KMS dumb buffers (kms_swrast);
 #   * Arcan 0.6.3.4 with the egl-dri video platform and the GLES2 backend;
 #   * kmstest, a GBM/EGL/KMS self-check;
@@ -31,9 +32,11 @@ echo "arcan/build.sh: sysroot (Alpine packages)"
 rm -rf "$sys"
 python3 "$here/alpine.py" "$cache" "$sys" "$here/alpine.lock" \
     musl-dev libstdc++-dev gcc linux-headers zlib-dev expat-dev libdrm-dev freetype-dev \
-    libpng-dev sqlite-dev luajit-dev libxkbcommon-dev font-dejavu
+    libpng-dev sqlite-dev luajit-dev libxkbcommon-dev font-dejavu llvm20-dev llvm20-static zstd-dev
 
-echo "arcan/build.sh: Mesa $MESA_VERSION (softpipe)"
+sed "s|@LLVM@|$sys/usr/lib/llvm20|" "$here/llvm-config.in" > "$out/llvm-config"
+chmod +x "$out/llvm-config"
+echo "arcan/build.sh: Mesa $MESA_VERSION (llvmpipe, softpipe)"
 tarball="$cache/mesa-$MESA_VERSION.tar.xz"
 [ -f "$tarball" ] || curl -fsSL --retry 3 -o "$tarball" "https://archive.mesa3d.org/mesa-$MESA_VERSION.tar.xz"
 echo "$MESA_SHA256  $tarball" | sha256sum -c - >/dev/null
@@ -46,6 +49,7 @@ cpp = ['clang++', '--target=aarch64-alpine-linux-musl', '--sysroot=$sys', '--gcc
 ar = 'llvm-ar'
 strip = 'llvm-strip'
 pkg-config = 'pkg-config'
+llvm-config = '$out/llvm-config'
 [properties]
 sys_root = '$sys'
 pkg_config_libdir = '$sys/usr/lib/pkgconfig:$sys/usr/share/pkgconfig'
@@ -61,7 +65,7 @@ EOF
 (
     cd "$out/src/mesa-$MESA_VERSION"
     meson setup build --cross-file "$out/cross.ini" --prefix=/usr --libdir=lib --buildtype=release \
-        -Db_ndebug=true -Dgallium-drivers=softpipe -Dvulkan-drivers= -Dllvm=disabled -Dplatforms= \
+        -Db_ndebug=true -Dgallium-drivers=llvmpipe,softpipe -Dvulkan-drivers= -Dllvm=enabled -Dshared-llvm=disabled -Dplatforms= \
         -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled -Dopengl=true -Dglx=disabled \
         -Dgallium-va=disabled -Dgallium-vdpau=disabled -Dgallium-rusticl=false -Dvalgrind=disabled \
         -Dlibunwind=disabled -Dlmsensors=disabled -Dzstd=disabled -Dexpat=enabled -Dbuild-tests=false \

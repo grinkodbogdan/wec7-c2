@@ -1,7 +1,7 @@
 # GPU: Linux's driver, shared efficiently
 
 **Status: design, not built yet.** The phone shell renders in software
-(Mesa softpipe) today.
+(Mesa llvmpipe, on all CPUs) today.
 
 The Xiaomi Mi A1's GPU (Adreno 506) has a mature driver in Linux: `msm`
 (DRM), with Mesa's `freedreno` in user space. Flare should use both
@@ -67,12 +67,12 @@ Linux's msm driver → the GPU
 * `CONFIG_DRM_MSM` with the display parts off (the panel stays Flare's),
   `CONFIG_QCOM_IOMMU`, `CONFIG_QCOM_SCM` with the SCM node given back to
   Linux for these calls only.
-* Mesa built with `-Dgallium-drivers=freedreno,kmsro,softpipe`. Arcan's
+* Mesa built with `-Dgallium-drivers=freedreno,kmsro,llvmpipe`. Arcan's
   EGL then picks freedreno for rendering and Flare's KMS for display.
 
 ## Cost per frame, compared
 
-| | today (softpipe) | proxied msm |
+| | today (llvmpipe) | proxied msm |
 | --- | --- | --- |
 | rendering | all on the CPU (A53s) | on the GPU |
 | per frame across the boundary | 8 MB copy + cache clean | a few ioctls (~1–2 KB) |

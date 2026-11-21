@@ -871,9 +871,13 @@ static void load_rootfs(void)
 	char path[64];
 	snprintf(path, sizeof path, "/dev/%s", found);
 	long fd = l_open(path, 0);
+	/* big requests: 8 MiB readahead instead of 128 KiB (fewer, longer
+	 * transfers from the eMMC) */
+	if (fd >= 0)
+		l_sys(NR_IOCTL, fd, 0x1262 /* BLKRASET */, 16384 /* sectors */, 0, 0);
 	uint64_t got = 0;
 	while (fd >= 0 && got < total) {
-		long chunk = total - got > (1 << 20) ? (1 << 20) : (long)(total - got);
+		long chunk = total - got > (8 << 20) ? (8 << 20) : (long)(total - got);
 		long r = l_read((int)fd, buf + got, chunk);
 		if (r <= 0)
 			break;
@@ -1004,11 +1008,14 @@ static void bridge_serial(void)
 static void report(void)
 {
 	static char names[4096];
+	/* The root filesystem first, as soon as its partition is there (the
+	 * user interface waits for it); the other devices keep probing. */
+	load_rootfs();
 	/* A phone's devices appear as their suppliers do (the RPM, then the
 	 * clocks, then eMMC, I2C...), each probe deferred until the last: wait
-	 * until nothing is waiting any more and a block device is there, or
-	 * 30 s. */
-	for (int i = 0; i < 60; i++) {
+	 * until nothing is waiting any more (the touch screen among them), or
+	 * 10 s. */
+	for (int i = 0; i < 50; i++) {
 		static char d[256];
 		long fd = l_open("/sys/kernel/debug/devices_deferred", 0), n = 0;
 		if (fd >= 0) {
@@ -1018,10 +1025,9 @@ static void report(void)
 		l_list("/sys/class/block", names, sizeof names);
 		if (n <= 0 && names[0])
 			break;
-		struct timespec ts = { 0, 500000000 };
+		struct timespec ts = { 0, 200000000 };
 		nanosleep(&ts, NULL);
 	}
-	load_rootfs();
 	/* (again: the partitions are there now) */
 	l_list("/sys/class/block", names, sizeof names);
 	/* The whole disks (a phone's eMMC has dozens of partitions). */
@@ -1156,7 +1162,7 @@ int main(int argc, char **argv)
 	lkl_qrt_dma_base = pool_phys;
 	lkl_qrt_dma_size = pool_size;
 
-	char cmd[512] = "mem=64M loglevel=6";
+	char cmd[512] = "mem=160M loglevel=6"; /* QRT gives Linux 160 MiB on the Mi A1 */
 	for (int i = 2; i < argc; i++) {
 		strncat(cmd, " ", sizeof cmd - strlen(cmd) - 1);
 		strncat(cmd, argv[i], sizeof cmd - strlen(cmd) - 1);

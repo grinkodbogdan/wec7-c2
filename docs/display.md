@@ -26,7 +26,7 @@ these screenshots in `target/screenshots/`.
 ```
  flarehome.lua            Arcan appl: lock screen, views, apps, gestures
  arcan (egl-dri, gles2)   composition, text, animation, input
- Mesa 25.1 softpipe       GLES2 rendered on the CPU into GBM buffers
+ Mesa 25.1 llvmpipe       GLES2 rendered on the CPU into GBM buffers
  ─────────────── Linux ABI ───────────────
  /dev/dri/card0           Flare KMS device (kernel/src/linux/drm.rs)
  /dev/input/event0, 1     Flare evdev devices (kernel/src/linux/input.rs)
@@ -125,8 +125,10 @@ virtio keyboard for hardware keys.
 again whenever its inputs change (script, lock file, patches), and takes a
 few minutes. It cross-builds, with clang:
 
-* **Mesa 25.1.9** with only the softpipe rasterizer (no LLVM): EGL, GBM
-  and GLES2;
+* **Mesa 25.1.9** with llvmpipe (shaders compiled to native code by
+  LLVM 20, linked statically into `libgallium`; each frame split across all
+  CPUs) and softpipe: EGL, GBM and GLES2. The sysroot's `llvm-config` is an
+  aarch64 program, so `compat/arcan/llvm-config.in` answers for it;
 * **Arcan 0.6.3.4** with the egl-dri platform and the GLES2 backend, plus
   four small patches in `compat/arcan/patches`:
   * a prototype mismatch;
@@ -165,11 +167,11 @@ Running Arcan and Mesa surfaced gaps that any large Linux program would hit:
 
 ## Performance and limits
 
-* **Frame rate.** Rendering is done on the CPU by softpipe, which under
-  QEMU's arm64 emulation manages about one frame per second at 480×854.
-  Animations run in Arcan's logic time, so every frame shows the right
-  state; the motion in between is lost. On hardware, or with llvmpipe or a
-  GPU driver, the same stack runs at full rate. The shell keeps the
+* **Frame rate.** Rendering is done on the CPU by llvmpipe, with one
+  thread per CPU (8 on the Xiaomi Mi A1). Under QEMU's emulation LLVM
+  itself is emulated, so the first frames (compiling shaders) are slow
+  there. Animations run in Arcan's logic time, so every frame shows the
+  right state. A GPU driver is the next step ([gpu.md](gpu.md)). The shell keeps the
   rasterizer's work down:
   * no full-screen background;
   * covered layers are hidden;

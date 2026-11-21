@@ -965,6 +965,7 @@ impl Kernel {
                     self.task(c).wait = Wait::default();
                     return Out::Ret(-ETIMEDOUT);
                 }
+                timer::want_wake(d);
             }
             return Out::Block;
         }
@@ -1000,6 +1001,9 @@ impl Kernel {
                 };
                 let w = &mut self.task(c).wait;
                 w.futex = Some((key, false));
+                if let Some(d) = deadline {
+                    timer::want_wake(d);
+                }
                 w.deadline = deadline;
                 Out::Block
             }
@@ -1697,6 +1701,7 @@ impl Kernel {
             self.task(c).wait = Wait::default();
             return Out::Ret(0);
         }
+        timer::want_wake(deadline);
         Out::Block
     }
 

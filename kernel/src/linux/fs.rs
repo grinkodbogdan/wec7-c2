@@ -42,6 +42,9 @@ impl TimerFd {
                 self.deadline = if self.interval > 0 { Some(d + n * self.interval) } else { None };
             }
         }
+        if let Some(d) = self.deadline {
+            crate::arch::timer::want_wake(d);
+        }
     }
 }
 
@@ -1264,6 +1267,7 @@ impl Kernel {
                 t if t < 0 => false,
                 t => {
                     let d = *self.task(c).wait.deadline.get_or_insert(now + t as u64 * 1_000_000);
+                    timer::want_wake(d);
                     now >= d
                 }
             };
@@ -1328,6 +1332,7 @@ impl Kernel {
             Some(t) => {
                 let now = timer::now_ns();
                 let d = *self.task(c).wait.deadline.get_or_insert(now + t);
+                timer::want_wake(d);
                 now >= d
             }
             None => false,

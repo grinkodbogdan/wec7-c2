@@ -1,0 +1,35 @@
+#!/bin/sh
+# llvm-config for the aarch64 sysroot's LLVM 20, linked statically, for
+# Mesa's cross build (compat/arcan/build.sh substitutes @LLVM@). The
+# sysroot's own llvm-config is an aarch64 program. --libs lists every LLVM
+# library: lld takes only what llvmpipe uses.
+llvm=@LLVM@
+libs() { printf -- '-L%s ' "$llvm/lib"; (cd "$llvm/lib" && ls libLLVM*.a | sed 's/^lib\(.*\)\.a$/-l\1/' | tr '\n' ' '); echo; }
+components() { (cd "$llvm/lib" && ls libLLVM*.a | sed 's/^libLLVM\(.*\)\.a$/\1/' | tr 'A-Z' 'a-z' | tr '\n' ' '); }
+inc="-I$llvm/include -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS"
+for a in "$@"; do
+    case "$a" in
+    --version) echo 20.1.8 ;;
+    --prefix) echo "$llvm" ;;
+    --bindir) echo "$llvm/bin" ;;
+    --libdir) echo "$llvm/lib" ;;
+    --includedir) echo "$llvm/include" ;;
+    --cmakedir) echo "$llvm/lib/cmake/llvm" ;;
+    --cppflags|--cflags) echo "$inc" ;;
+    --cxxflags) echo "$inc -std=c++17 -fno-exceptions -funwind-tables" ;;
+    --ldflags) echo "-L$llvm/lib" ;;
+    --system-libs) echo "-lzstd -lz" ;;
+    --libs) libs ;;
+    --libfiles) (cd "$llvm/lib" && ls "$PWD"/libLLVM*.a | tr '\n' ' '); echo ;;
+    --libnames) (cd "$llvm/lib" && ls libLLVM*.a | tr '\n' ' '); echo ;;
+    --components) echo "all all-targets native nativecodegen engine mcjit orcjit interpreter aarch64 $(components)" ;;
+    --targets-built) echo AArch64 ;;
+    --shared-mode) echo static ;;
+    --has-rtti) if grep -q 'LLVM_ENABLE_RTTI ON' "$llvm/lib/cmake/llvm/LLVMConfig.cmake"; then echo YES; else echo NO; fi ;;
+    --assertion-mode) echo OFF ;;
+    --build-mode) echo Release ;;
+    --build-system) echo cmake ;;
+    --host-target) echo aarch64-alpine-linux-musl ;;
+    *) ;;
+    esac
+done

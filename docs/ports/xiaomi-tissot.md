@@ -237,6 +237,16 @@ What runs:
   `flare-ui`. The kernel now reports signal deaths and faults sent to a
   handler, and `/proc/flare-threads` lists what every thread waits in. If
   the shell is not up after 30 s, `/etc/rc` prints that on the screen.
+* **Speed**:
+  * the shell renders with llvmpipe: shaders compiled to native code, each
+    frame shared by all 8 cores (was softpipe: interpreted, one core);
+  * timeouts are on time: every Linux wait with a deadline (futexes,
+    poll, nanosleep, timerfds) arms the timer for it, where it used to
+    wait for the next 10 ms tick. Linux's drivers in the driver host time
+    everything that way (eMMC, I2C, touch);
+  * the driver host reads the root filesystem as soon as the userdata
+    partition exists, with 8 MiB readahead, and Linux has 160 MiB of RAM
+    there (as QRT gives it).
 
 The GPU is next: [../gpu.md](../gpu.md).
 
@@ -306,7 +316,7 @@ with LKL):
 * writable storage: the eMMC is read (the root filesystem) but not yet a
   Flare block device or file system for programs;
 * display control (MDSS/DSI), so the screen can be turned off or changed;
-* the GPU (Adreno 506): the shell renders in software (Mesa softpipe) at
+* the GPU (Adreno 506): the shell renders in software (Mesa llvmpipe, on all 8 cores) at
   1080×1920. The plan: [../gpu.md](../gpu.md).
 
 Only the low 2 GiB of the 4 GiB fitted is used. CPU frequency and thermal

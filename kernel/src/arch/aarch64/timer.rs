@@ -54,10 +54,57 @@ pub fn irq() -> u32 {
     unsafe { TIMER.get().irq }
 }
 
+/// The earliest time something waits for (a Linux timeout, a timer file,
+/// an alarm): ns since boot, u64::MAX for none. Rebuilt on every pass over
+/// the waiters (`reset_wakes`, then each `want_wake`).
+static NEXT_WAKE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// Something waits until `t` (ns since boot): no CPU's timer may sleep past
+/// it. Without this, a timeout would wait for the next 100 Hz tick (Linux's
+/// drivers in the driver host time everything this way).
+pub fn want_wake(t: u64) {
+    NEXT_WAKE.fetch_min(t, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Start collecting the earliest wake again (before re-running waiters).
+pub fn reset_wakes() {
+    NEXT_WAKE.store(u64::MAX, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Each CPU's next preemption tick (counter value).
+static NEXT_TICK: [core::sync::atomic::AtomicU64; 8] = [const { core::sync::atomic::AtomicU64::new(0) }; 8];
+
+fn counter() -> u64 {
+    let c: u64;
+    // SAFETY: reading the virtual counter.
+    unsafe { core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) c, options(nomem, nostack)) };
+    c
+}
+
+/// The tick fired: schedule this CPU's next one, then arm.
 pub fn rearm() {
-    // SAFETY: reprogram the timer's down-counter.
-    unsafe {
-        let interval = TIMER.get().interval;
-        core::arch::asm!("msr cntv_tval_el0, {}", in(reg) interval, options(nostack));
+    // SAFETY: read-only after init.
+    let interval = unsafe { TIMER.get().interval };
+    let cpu = crate::smp::cpu().min(7);
+    NEXT_TICK[cpu].store(counter() + interval, core::sync::atomic::Ordering::Relaxed);
+    arm();
+}
+
+/// Program this CPU's timer for its next tick, or the earliest wake if
+/// sooner (without moving the tick: preemption stays periodic).
+pub fn arm() {
+    let cpu = crate::smp::cpu().min(7);
+    let tick = NEXT_TICK[cpu].load(core::sync::atomic::Ordering::Relaxed);
+    let mut at = tick;
+    let wake = NEXT_WAKE.load(core::sync::atomic::Ordering::Relaxed);
+    if wake != u64::MAX {
+        let freq: u64;
+        // SAFETY: reading the counter frequency.
+        unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack)) };
+        let w = ((wake as u128 * freq as u128).div_ceil(1_000_000_000)) as u64;
+        // at least 20 us from now
+        at = at.min(w.max(counter() + freq / 50_000));
     }
+    // SAFETY: the timer's compare value (absolute).
+    unsafe { core::arch::asm!("msr cntv_cval_el0, {}", in(reg) at, options(nostack)) };
 }
