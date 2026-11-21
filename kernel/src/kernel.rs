@@ -820,6 +820,12 @@ impl Kernel {
                 }
                 out
             }
+            ["console", "on"] => {
+                // Draw the log on the screen again, over a user interface
+                // (one that stopped presenting, while finding out why).
+                crate::console::set_quiet(false);
+                "console on\n".into()
+            }
             ["trace", "off"] => {
                 if let Some(l) = self.linux.as_mut() {
                     l.trace = None;

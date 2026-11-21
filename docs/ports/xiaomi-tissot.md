@@ -229,6 +229,14 @@ What runs:
   `FDB_SOCKET=/dev/ttyACM0 cargo fdb shell`.
 * **Quick boot**: the driver host first; the shell starts once the root
   filesystem, touch and keys are there.
+* **Arcan's watchdog** kills its engine (SIGUSR1) when a frame takes more
+  than 5 s, and on the phone's 8 cores and 1080×1920 panel the first,
+  software-rendered frame did, before the engine had a handler. Arcan ended
+  silently. Found by reproducing with 8 CPUs in QEMU; the timeout is now
+  `ARCAN_WATCHDOG_TIMEOUT_MS` (compat/arcan/patches/0005), 60 s in
+  `flare-ui`. The kernel now reports signal deaths and faults sent to a
+  handler, and `/proc/flare-threads` lists what every thread waits in. If
+  the shell is not up after 30 s, `/etc/rc` prints that on the screen.
 
 The GPU is next: [../gpu.md](../gpu.md).
 

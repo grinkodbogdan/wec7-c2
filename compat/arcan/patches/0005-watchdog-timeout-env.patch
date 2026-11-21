@@ -1,0 +1,20 @@
+--- a/src/platform/posix/psep_open.c	2026-11-21 16:46:47.867290327 +0000
++++ b/src/platform/posix/psep_open.c	2026-11-21 16:46:47.886701747 +0000
+@@ -597,7 +597,16 @@
+  * ppid() or not - and use that as an 'ANR' (if it comes from the lua context,
+  * second time around, it's killing time */
+ 	uint64_t ts = arcan_watchdog_ping ? atomic_load(arcan_watchdog_ping) : 0;
+-	if (ts && arcan_timemillis() - ts > WATCHDOG_ANR_TIMEOUT_MS){
++/* Flare: the timeout from ARCAN_WATCHDOG_TIMEOUT_MS (0: no watchdog). With
++ * software rendering on a phone's panel the first frame alone can take
++ * longer than the default, and the child is killed (SIGUSR1) before it has
++ * installed a handler for it. */
++	static long anr_ms = -1;
++	if (anr_ms < 0){
++		const char* e = getenv("ARCAN_WATCHDOG_TIMEOUT_MS");
++		anr_ms = e ? strtol(e, NULL, 10) : WATCHDOG_ANR_TIMEOUT_MS;
++	}
++	if (anr_ms > 0 && ts && arcan_timemillis() - ts > (uint64_t) anr_ms){
+ 
+ /* only trigger if there is a drm device open */
+ 		bool found = false;

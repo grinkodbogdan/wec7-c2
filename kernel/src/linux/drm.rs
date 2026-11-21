@@ -151,6 +151,7 @@ impl Kernel {
         let dst = phys_to_virt(pa) + p.fb_offset as u64;
         let (w, h) = (fb.width.min(p.width) as u64 * 4, fb.height.min(p.height));
         let mut obj = fb.obj.borrow_mut();
+        let mut rows = 0u32;
         for y in 0..h as u64 {
             let src_off = fb.offset as u64 + y * fb.pitch as u64;
             let mut done = 0u64;
@@ -171,6 +172,25 @@ impl Kernel {
                 }
                 done += n;
             }
+            if done >= w {
+                rows += 1;
+            }
+        }
+        drop(obj);
+        if self.drm().flips == 0 {
+            // Said before the console goes quiet: what the first frame was.
+            kprintln!(
+                "drm: first frame on the panel: framebuffer {} {}x{} (pitch {}) to {}x{} (stride {}), {} of {} rows copied",
+                fb_id,
+                fb.width,
+                fb.height,
+                fb.pitch,
+                p.width,
+                p.height,
+                p.stride,
+                rows,
+                h
+            );
         }
         // The panel's display engine reads memory, not the CPU's caches.
         crate::arch::mmu::clean_dcache(dst, p.stride as u64 * h as u64);

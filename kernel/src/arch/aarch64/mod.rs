@@ -31,8 +31,9 @@ pub fn sync_icache(addr: u64, len: u64) {
         unsafe { core::arch::asm!("dc cvau, {}", in(reg) a, options(nostack)) };
         a += LINE;
     }
-    // SAFETY: barrier and whole-icache invalidate.
-    unsafe { core::arch::asm!("dsb ish", "ic iallu", "dsb ish", "isb", options(nostack)) };
+    // SAFETY: barrier and whole-icache invalidate, on every CPU (inner
+    // shareable): the program may run on another core.
+    unsafe { core::arch::asm!("dsb ish", "ic ialluis", "dsb ish", "isb", options(nostack)) };
 }
 
 pub fn read_esr() -> u64 {

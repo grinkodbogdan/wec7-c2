@@ -1424,7 +1424,8 @@ fn linuxdrv_test(o: &Opts) -> bool {
     let (mut pressed, mut tapped) = (false, false);
     let ok = loop {
         let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
-        if !pressed && seen.contains("linuxdrv: input devices:") {
+        // (after rc's reader of event1 has started: it is up before the shell)
+        if !pressed && seen.contains("rc: starting an interactive shell") {
             std::thread::sleep(Duration::from_secs(1));
             if let Some(mut q) = Qmp::connect(&qmp) {
                 q.cmd(r#"{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"a"}]}}"#);

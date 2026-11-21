@@ -778,6 +778,11 @@ impl Kernel {
             return;
         }
         let pid = self.proc(c).pid;
+        // The display server ending is worth a line (the phone's screen
+        // depends on it).
+        if self.comps[c].name.contains("arcan") {
+            kprintln!("linux: pid {} ({}) exits: status {:#x}", pid, self.comps[c].name, status);
+        }
         for t in self.group(c) {
             if t != c && self.comps[t].linux.as_ref().unwrap().tid != pid {
                 self.teardown(t);

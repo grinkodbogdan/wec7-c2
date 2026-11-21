@@ -245,6 +245,20 @@ impl Kernel {
         if action.handler > SIG_IGN && !blocked {
             let info = SigInfo { signo: sig as i32, code, addr, ..Default::default() };
             if self.setup_frame(c, sig, info, esr, addr) {
+                // Said anyway: programs that catch their faults (Arcan's
+                // crash handler) often just clean up and exit.
+                let pid = self.proc(c).pid;
+                let tid = self.task(c).tid;
+                kprintln!(
+                    "linux: pid {} tid {} ({}) fault, signal {} to its handler: esr {:#x} addr {:#x} pc {:#x}",
+                    pid,
+                    tid,
+                    self.comps[c].name,
+                    sig,
+                    esr,
+                    addr,
+                    pc
+                );
                 return;
             }
         }
@@ -280,12 +294,15 @@ impl Kernel {
                 SIG_IGN => continue,
                 SIG_DFL => match default_action(s) {
                     Default_::Ignore => continue,
-                    Default_::Terminate => {
-                        self.linux_exit_group(c, s as i32);
-                        return;
-                    }
-                    Default_::Core => {
-                        self.linux_exit_group(c, s as i32 | 0x80);
+                    Default_::Terminate | Default_::Core => {
+                        // Said: a program that just disappears is otherwise
+                        // a mystery (SIGPIPE, SIGTERM, SIGHUP...).
+                        let pid = self.proc(c).pid;
+                        if s != 9 && s != 15 || self.comps[c].name.contains("arcan") {
+                            kprintln!("linux: pid {} ({}) killed by signal {}", pid, self.comps[c].name, s);
+                        }
+                        let core = matches!(default_action(s), Default_::Core);
+                        self.linux_exit_group(c, s as i32 | if core { 0x80 } else { 0 });
                         return;
                     }
                 },

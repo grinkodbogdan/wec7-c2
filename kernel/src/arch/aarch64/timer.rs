@@ -28,6 +28,10 @@ pub fn init() {
 
 /// Start this CPU's preemption tick (the timer and its PPI are per CPU).
 pub fn init_cpu() {
+    // EL0 may read the virtual counter (CNTVCT_EL0), as on Linux; nothing
+    // else (the boot loader's value is not relied on).
+    // SAFETY: timer access control for EL0 only.
+    unsafe { core::arch::asm!("msr cntkctl_el1, {}", "isb", in(reg) 1u64 << 1, options(nostack)) };
     rearm();
     // SAFETY: enable the virtual timer, interrupt unmasked.
     unsafe { core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64, options(nostack)) };

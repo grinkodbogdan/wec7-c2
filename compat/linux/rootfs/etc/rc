@@ -35,14 +35,19 @@ if [ "$FLARE_BOOT" = quick ]; then
     [ -e /dev/fdb ] && command -v fdbd > /dev/null && (fdbd > /dev/console 2>&1 &)
     if [ -e /dev/dri/card0 ] && command -v arcan > /dev/null; then
         flare-ui flarehome
-        # If the shell has not drawn after 45 s, say where it is: its last
+        # If the shell is not ready after 30 s, say where it is: its last
         # words and what every thread waits in (syscall number, pc).
-        (sleep 45
+        # (The console may be quiet because the shell presented a frame: turn
+        # it back on first. Then Arcan's system calls for 2 s.)
+        (sleep 30
          if ! grep -q "flarehome: ready" /tmp/flare-ui.log 2>/dev/null; then
-             echo "rc: the phone shell is not up after 45 s (uptime $(cut -d' ' -f1 /proc/uptime) s); its log:"
-             tail -n 6 /tmp/flare-ui.log
-             echo "rc: threads:"
-             cat /proc/flare-threads
+             echo "console on" > /dev/flarectl
+             echo "trace arcan" > /dev/flarectl; sleep 1; echo "trace off" > /dev/flarectl
+             echo "rc: the phone shell is not up after 30 s (uptime $(cut -d' ' -f1 /proc/uptime) s); its log:"
+             tail -n 5 /tmp/flare-ui.log
+             echo "rc: processes: $(ps | awk 'NR > 1 { printf "%s:%s ", $1, $NF }')"
+             echo "rc: threads other than the driver host's ($(grep -c linuxdrv /proc/flare-threads) of those):"
+             grep -v linuxdrv /proc/flare-threads
          fi) > /dev/console 2>&1 &
         # (tests: the thread list itself)
         [ -n "$FLARE_TEST_INPUT" ] && (sleep 5; grep -c arcan /proc/flare-threads | \
