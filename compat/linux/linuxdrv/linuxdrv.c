@@ -508,9 +508,100 @@ static void l_cat(const char *path, const char *prefix)
 		printf("%s%s\n", prefix, l);
 }
 
+/* A whole disk, not a partition or a boot/RPMB area: vda, sda, mmcblk0. */
+static int is_disk(const char *n)
+{
+	if (!strncmp(n, "mmcblk", 6)) {
+		for (const char *c = n + 6; *c; c++)
+			if (*c < '0' || *c > '9')
+				return 0;
+		return n[6] != 0;
+	}
+	if (!strncmp(n, "loop", 4) || !strncmp(n, "ram", 3) || !strncmp(n, "zram", 4) || !strncmp(n, "nbd", 3))
+		return 0;
+	size_t l = strlen(n);
+	return l && (n[l - 1] < '0' || n[l - 1] > '9');
+}
+
+/* One line of a Linux file, without its newline. */
+static void l_gets(const char *path, char *out, int cap)
+{
+	out[0] = 0;
+	long fd = l_open(path, 0);
+	if (fd < 0)
+		return;
+	long n = l_read((int)fd, out, cap - 1);
+	l_close((int)fd);
+	if (n < 0)
+		n = 0;
+	out[n] = 0;
+	char *nl = strchr(out, '\n');
+	if (nl)
+		*nl = 0;
+}
+
+/* Key presses and touches on Linux's input devices, as they happen: proof
+ * on the screen that the touch screen and the keys work. */
+struct watched {
+	char dev[32], name[64];
+};
+
+static void *input_thread(void *p)
+{
+	struct watched *w = p;
+	char path[64];
+	snprintf(path, sizeof path, "/dev/input/%s", w->dev);
+	long fd = l_open(path, 0);
+	if (fd < 0)
+		return NULL;
+	int x = -1, y = -1, down = 0, touches = 0;
+	for (;;) {
+		struct {
+			long sec, usec;
+			unsigned short type, code;
+			int value;
+		} ev[16];
+		long n = l_read((int)fd, ev, sizeof ev);
+		if (n <= 0)
+			break;
+		for (long i = 0; i < n / (long)sizeof ev[0]; i++) {
+			if (ev[i].type == 3 && (ev[i].code == 0x35 || ev[i].code == 0x00))
+				x = ev[i].value; /* ABS_MT_POSITION_X, ABS_X */
+			else if (ev[i].type == 3 && (ev[i].code == 0x36 || ev[i].code == 0x01))
+				y = ev[i].value;
+			else if (ev[i].type == 1 && ev[i].code == 0x14a) /* BTN_TOUCH */
+				down = ev[i].value ? 1 : 0;
+			else if (ev[i].type == 1 && ev[i].value == 1)
+				printf("linuxdrv: %s: key %u pressed\n", w->name, ev[i].code);
+			else if (ev[i].type == 1 && ev[i].value == 0)
+				printf("linuxdrv: %s: key %u released\n", w->name, ev[i].code);
+			else if (ev[i].type == 0 && down == 1) {
+				/* a new touch: its first position */
+				printf("linuxdrv: %s: touch %d at %d,%d\n", w->name, ++touches, x, y);
+				down = 2;
+			}
+		}
+		fflush(stdout);
+	}
+	l_close((int)fd);
+	return NULL;
+}
+
+static void watch_input(const char *dev, const char *name)
+{
+	struct watched *w = calloc(1, sizeof *w);
+	if (!w)
+		return;
+	snprintf(w->dev, sizeof w->dev, "%s", dev);
+	snprintf(w->name, sizeof w->name, "%s", name[0] ? name : dev);
+	pthread_t t;
+	if (pthread_create(&t, NULL, input_thread, w) == 0)
+		pthread_detach(t);
+}
+
 static void report(void)
 {
-	char names[512];
+	static char names[4096];
 	/* A phone's devices appear as their suppliers do (the RPM, then the
 	 * clocks, then eMMC, I2C...), each probe deferred until the last: wait
 	 * until nothing is waiting any more and a block device is there, or
@@ -528,9 +619,25 @@ static void report(void)
 		struct timespec ts = { 0, 500000000 };
 		nanosleep(&ts, NULL);
 	}
-	printf("linuxdrv: block devices: %s\n", names[0] ? names : "none");
+	/* The whole disks (a phone's eMMC has dozens of partitions). */
+	static char disks[512];
+	int nparts = 0, at = 0;
+	disks[0] = 0;
 	char *save = NULL;
 	for (char *n = strtok_r(names, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
+		if (is_disk(n)) {
+			if (at + (int)strlen(n) + 2 < (int)sizeof disks)
+				at += snprintf(disks + at, sizeof disks - (size_t)at, "%s%s", at ? " " : "", n);
+		} else if (strncmp(n, "loop", 4) && strncmp(n, "ram", 3) && strncmp(n, "zram", 4) && strncmp(n, "nbd", 3)) {
+			nparts++;
+		}
+	}
+	printf("linuxdrv: block devices: %s", disks[0] ? disks : "none");
+	if (nparts)
+		printf(" (and %d partitions)", nparts);
+	printf("\n");
+	save = NULL;
+	for (char *n = strtok_r(disks, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
 		char path[64];
 		unsigned char sec[512];
 		snprintf(path, sizeof path, "/dev/%s", n);
@@ -544,7 +651,7 @@ static void report(void)
 			       n, sec[0], sec[1], sec[2], sec[3], sec[510], sec[511]);
 		/* Then past the cache (flushed before each read): each read is
 		 * a request to the device and an interrupt back, which the first,
-		 * cached read may not have needed. Once, on the first device. */
+		 * cached read may not have needed. Once, on the first disk. */
 		static int direct_done;
 		if (r == 512 && !direct_done) {
 			direct_done = 1;
@@ -572,7 +679,18 @@ static void report(void)
 			l_close((int)fd);
 	}
 	l_list("/sys/class/input", names, sizeof names);
-	printf("linuxdrv: input devices: %s\n", names[0] ? names : "none");
+	int any = 0;
+	save = NULL;
+	for (char *n = strtok_r(names, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
+		if (strncmp(n, "event", 5))
+			continue;
+		char path[96], dname[64] = "";
+		snprintf(path, sizeof path, "/sys/class/input/%s/device/name", n);
+		l_gets(path, dname, sizeof dname);
+		printf("%s%s (%s)", any++ ? ", " : "linuxdrv: input devices: ", n, dname[0] ? dname : "?");
+		watch_input(n, dname);
+	}
+	printf(any ? "\n" : "linuxdrv: input devices: none\n");
 	/* Bring-up: what each device Linux has not probed yet still waits for. */
 	l_cat("/sys/kernel/debug/devices_deferred", "linuxdrv: waiting: ");
 	fflush(stdout);

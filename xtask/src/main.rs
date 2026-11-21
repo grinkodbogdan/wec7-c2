@@ -1201,7 +1201,11 @@ fn linuxdrv_test(o: &Opts) -> bool {
         o2.system = o.system.clone();
     }
     let kernel = build(&o2);
+    let qmp = root().join("target/linuxdrv-qmp.sock");
+    let _ = std::fs::remove_file(&qmp);
     let mut child = qemu_command(&o2, &kernel)
+        .arg("-qmp")
+        .arg(format!("unix:{},server=on,wait=off", qmp.display()))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1231,11 +1235,22 @@ fn linuxdrv_test(o: &Opts) -> bool {
         // here: board.fhd), as a phone's RPM replies are.
         "linuxdrv: vda: 8 of 8 uncached reads",
         "linuxdrv: rtc0 (Linux's driver): 20",
+        // A key pressed on QEMU's virtio keyboard, through Linux's driver
+        // (sent once the report is out): KEY_A.
+        "key 30 pressed",
     ];
     let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];
     let deadline = Instant::now() + Duration::from_secs(300);
+    let mut pressed = false;
     let ok = loop {
         let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
+        if !pressed && seen.contains("linuxdrv: input devices:") {
+            std::thread::sleep(Duration::from_secs(1));
+            if let Some(mut q) = Qmp::connect(&qmp) {
+                q.cmd(r#"{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"a"}]}}"#);
+            }
+            pressed = true;
+        }
         if expected.iter().all(|e| seen.contains(e)) {
             break true;
         }

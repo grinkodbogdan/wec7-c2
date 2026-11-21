@@ -205,21 +205,43 @@ panel, the UART and the CPUs stay Flare's. In this composition the keys
 are Linux's (it owns the pin controller), so the native key driver is not
 started.
 
-A few seconds after the shell appears, the driver host prints what Linux
-found:
+Once Linux's devices have settled (up to 30 s after the shell appears), the
+driver host prints what Linux found:
 
 ```
 linuxdrv: Linux is up (RAM 64 MiB at ...)
-linuxdrv: block devices: mmcblk0 mmcblk0boot0 ...
+linuxdrv: block devices: mmcblk0 ... (and N partitions)
 linuxdrv: mmcblk0: first sector read through Linux's driver: ...
+linuxdrv: mmcblk0: 8 of 8 uncached reads (one device interrupt each)
 linuxdrv: rtc0 (Linux's driver): ...
-linuxdrv: input devices: ...
+linuxdrv: input devices: event0 (...), event1 (...), ...
 linuxdrv: waiting: <device> <what it waits for>
 ```
 
-It only reads. The image is 19.8 MiB uncompressed, ending at 0x81507000,
-under the 0x81800000 limit. Untested on the phone. The `waiting:` lines
-say what to fix first.
+After that it prints each key press and each new touch
+(`linuxdrv: <device>: touch 1 at x,y`). It only reads storage; nothing is
+written. `waiting:` lines say what to fix next.
+
+What it took on the phone (and from QRT's notes on bringing up this phone
+with LKL):
+
+* **The RPM's replies are edge interrupts.** The kernel had masked every
+  interrupt it gave the driver host until Linux unmasked it. Linux's edge
+  flow never unmasks, so the RPM's second reply was lost and its clocks
+  timed out (-110).
+* **OPP support** for the RPM's power domains (`PM_OPP`, which only another
+  option can select). Without it, `qcom-rpmpd` failed (-95). The clock
+  controller sits in its CX domain, so the clock controller and everything
+  after it (eMMC, I2C, DMA) waited (QRT 0.21.5). The LKL build now checks
+  that every option asked for was set.
+* **No secure-world calls** (QRT 0.21.10, 0.21.14): `/firmware` (SCM) is
+  dropped from Linux's tree, and the composition allows no SMC calls.
+* **No native UART driver** in this composition: the UART shares BLSP1's
+  bus clock with the I2C controllers, which Linux switches off when idle
+  (QRT 0.21.16).
+* `fw_devlink=permissive`, `clk_ignore_unused`, `pd_ignore_unused`,
+  `regulator_ignore_unused`. QRT's LKL patches keep the boot loader's RPM
+  clocks and power-domain corners.
 
 ## Not there yet
 

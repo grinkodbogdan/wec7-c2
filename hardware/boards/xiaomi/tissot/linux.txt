@@ -13,6 +13,10 @@ drop /smp2p-modem
 drop /smp2p-wcnss
 drop /smsm
 drop /memshare
+# The secure world's call interface (SCM): Flare allows Linux no firmware
+# calls, and on this phone a call the secure world does not like resets it
+# (QRT 0.21.10, 0.21.14).
+drop /firmware
 # The CPUs' timer, PMU and power states are Flare's.
 drop /timer
 drop /pmu
@@ -30,3 +34,6 @@ drop /soc@0/spmi@200f000/pmic@3/labibb
 # clocks and power domain and the UART's clock (Flare's console), and the
 # rails the boot loader left on.
 cmdline clk_ignore_unused pd_ignore_unused regulator_ignore_unused
+# Probe order by the tree's references, but never wait forever for a
+# supplier Linux does not have (as QRT boots it).
+cmdline fw_devlink=permissive

@@ -8,17 +8,17 @@
 # The pin controller goes to Linux as a whole, so the volume and power keys
 # are Linux's (gpio-keys, pm8941-pwrkey) here, not the native TLMM driver's.
 #
-# Untested on hardware. Linux's drivers see only what is granted below; the
-# panel, the UART and the CPUs stay Flare's.
+# Linux's drivers see only what is granted below; the panel and the CPUs
+# stay Flare's. The driver host reports what Linux found, then prints key
+# presses and touches (try them).
 
 name = "xiaomi-tissot-linuxdrv"
 board = "xiaomi/tissot"
 
-[component.uart]
-manifest = "drivers/qcom/uart-msm"
-grants = ["uart=mmio:uart0", "console=endpoint:console:recv", "klog=klog:read+write"]
-restart = "on-failure"
-max-restarts = 2
+# No native UART driver here: the UART shares BLSP1's bus clock with the
+# I2C controllers, which Linux's I2C driver switches off when idle, and a
+# register access with the clock off hangs the CPU (QRT 0.21.16). The log
+# is on the screen.
 
 [linux]
 init = ["/bin/sh", "/etc/rc"]

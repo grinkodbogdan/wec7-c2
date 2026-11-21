@@ -43,7 +43,8 @@ CONFIG_REGULATOR_QCOM_SMD_RPM=y
 CONFIG_SPMI=y
 CONFIG_SPMI_MSM_PMIC_ARB=y
 CONFIG_MFD_SPMI_PMIC=y
-CONFIG_QCOM_SCM=n
+# QCOM_SCM: PINCTRL_MSM selects it; its device (/firmware/scm) is dropped from
+# the tree Linux gets (hardware/boards/xiaomi/tissot/linux.txt), so it never probes.
 # input: the touch screen (FocalTech FT5x06 on I2C), the power and volume keys
 CONFIG_I2C=y
 CONFIG_I2C_QUP=y
@@ -90,8 +91,10 @@ CONFIG_ARCH_QCOM=y
 # maps Linux's RAM at CONFIG_LKL_MEMORY_START through /dev/flarehw
 CONFIG_MMU=y
 # operating points: the RPM power domains' corners and the SDHC clock tables
-# (without them qcom-rpmpd fails with -EOPNOTSUPP and everything behind it waits)
-CONFIG_PM_OPP=y
+# (without them qcom-rpmpd fails with -EOPNOTSUPP and everything behind it
+# waits). PM_OPP has no prompt: only another option can select it; devfreq
+# does (its governors stay off).
+CONFIG_PM_DEVFREQ=y
 # the PMICs' GPIOs (pm8953 and pmi8950 gpio@c000)
 CONFIG_PINCTRL_QCOM_SPMI_PMIC=y
 # Not the interconnect drivers: their bus nodes are not Linux's, and with them

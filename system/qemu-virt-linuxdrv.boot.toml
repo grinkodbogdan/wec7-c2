@@ -1,6 +1,6 @@
 # Linux's own drivers in a Flare process: the reference phone board, with its
-# storage (virtio-blk) and real-time clock (PL031) given to Linux instead of
-# Flare's native drivers. /etc/rc starts the driver host (linuxdrv), which
+# storage (virtio-blk), real-time clock (PL031) and keyboard (virtio-input)
+# given to Linux instead of Flare's native drivers. /etc/rc starts the driver host (linuxdrv), which
 # runs Linux's virtio-blk and rtc-pl031 drivers as a library.
 # `cargo xtask linuxdrv-test` boots it.
 
@@ -24,4 +24,4 @@ env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
 control = true
 rootfs = "minimal"
 # Devices whose registers and interrupts only the Linux driver host may use.
-hardware = ["virtio31", "rtc0"]
+hardware = ["virtio31", "rtc0", "virtio29"]

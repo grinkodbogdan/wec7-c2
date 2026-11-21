@@ -45,7 +45,21 @@ make ARCH=lkl CROSS_COMPILE=$X defconfig >/dev/null
 make -C tools/lkl CROSS_COMPILE=$X "$src/.config" >/dev/null 2>&1 || true
 cat "$here/lkl/config-arm64" "$here/lkl/config-flare" >> .config
 make ARCH=lkl CROSS_COMPILE=$X olddefconfig >/dev/null 2>&1
-grep -q '^CONFIG_LKL_QRT_SOC=y' .config || { echo "linuxdrv/build.sh: LKL_QRT_SOC is not set" >&2; exit 1; }
+# Every option asked for must have taken: Kconfig silently drops what it
+# cannot set (an option with no prompt, an unmet dependency).
+bad=0
+for f in "$here/lkl/config-arm64" "$here/lkl/config-flare"; do
+    for kv in $(grep -E '^CONFIG_[A-Za-z0-9_]+=' "$f"); do
+        k=${kv%%=*}; v=${kv#*=}
+        got=$(grep -E "^$k=" .config | cut -d= -f2)
+        [ "$v" = n ] && [ -z "$got" ] && continue
+        if [ "$got" != "$v" ]; then
+            echo "linuxdrv/build.sh: $k: asked for $v, Kconfig made it ${got:-unset}" >&2
+            bad=1
+        fi
+    done
+done
+[ $bad = 0 ] || exit 1
 echo "linuxdrv/build.sh: building LKL (Linux $(make -s kernelversion))"
 make -C tools/lkl CROSS_COMPILE=$X -j"$(nproc)" "$src/tools/lkl/lib/lkl.o" >"$out/lkl-build.log" 2>&1 \
     || { tail -30 "$out/lkl-build.log"; exit 1; }
