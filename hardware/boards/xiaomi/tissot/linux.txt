@@ -30,6 +30,16 @@ drop /analog-amplifier
 drop /soc@0/spmi@200f000/pmic@3/leds@d800
 drop /soc@0/spmi@200f000/pmic@3/labibb
 
+# Bus bandwidth (interconnect) paths: the NoCs are not Linux's, and the RPM
+# keeps the boot loader's bus clocks (QRT's clk-smd-rpm patch). Without the
+# references the SDHC does not wait for providers that never appear.
+delprop interconnects
+delprop interconnect-names
+# ... and the bandwidths in operating-point tables, which Linux's OPP code
+# rejects without paths (the SDHC's; rates and corners stay)
+delprop opp-peak-kBps
+delprop opp-avg-kBps
+
 # Linux must not switch off what it does not know is in use: the panel's
 # clocks and power domain and the UART's clock (Flare's console), and the
 # rails the boot loader left on.
@@ -37,3 +47,6 @@ cmdline clk_ignore_unused pd_ignore_unused regulator_ignore_unused
 # Probe order by the tree's references, but never wait forever for a
 # supplier Linux does not have (as QRT boots it).
 cmdline fw_devlink=permissive
+# Only critical messages on the screen: the driver host's report says what
+# is missing (devices_deferred), and drawing every line slows the boot.
+cmdline loglevel=3

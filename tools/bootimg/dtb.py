@@ -4,10 +4,11 @@
     dtb.py info BOARD.dtb [--all]
         List the enabled nodes that have registers or interrupts.
 
-    dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...]
+    dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...] [--delprop NAME...]
         Disable every device whose registers are not all inside an allowed
         window, and the nodes named by --drop (with what is under them). The
-        interrupt controller is kept. Linux then only probes the devices the
+        interrupt controller is kept. --delprop removes a property from every
+        node (references to providers Linux does not have). Linux then only probes the devices the
         composition gives it: a board's whole mainline device tree can be
         used without Linux touching hardware that Flare kept.
 
@@ -139,14 +140,21 @@ def emit(f, n):
     f.end()
 
 
-def trim(src, dst, allow, drop):
+def trim(src, dst, allow, drop, delprops=()):
     root = parse(open(src, "rb").read())
     off = []
     for n in walk(root):
         pr = n["props"]
-        if n["parent"] is None or not enabled(n):
+        for p in delprops:
+            pr.pop(p, None)
+        if n["parent"] is None:
             continue
+        # Every node under a dropped path, not just the top one: Linux
+        # creates some nodes' children whatever the parent's status (those
+        # of /firmware).
         dropped = any(n["path"] == d or n["path"].startswith(d.rstrip("/") + "/") for d in drop)
+        if not dropped and not enabled(n):
+            continue
         if not dropped:
             if "compatible" in pr and GIC & set(strs(pr["compatible"])):
                 continue
@@ -172,17 +180,19 @@ def main():
     if len(a) >= 2 and a[0] == "info":
         info(a[1], "--all" in a)
     elif len(a) >= 3 and a[0] == "trim":
-        allow, drop, mode = [], [], None
+        allow, drop, delprops, mode = [], [], [], None
         for x in a[3:]:
-            if x in ("--allow", "--drop"):
+            if x in ("--allow", "--drop", "--delprop"):
                 mode = x
             elif mode == "--allow":
                 allow.append(window(x))
             elif mode == "--drop":
                 drop.append(x)
+            elif mode == "--delprop":
+                delprops.append(x)
             else:
                 sys.exit("dtb.py: unexpected '%s'" % x)
-        trim(a[1], a[2], allow, drop)
+        trim(a[1], a[2], allow, drop, delprops)
     else:
         sys.exit(__doc__)
 

@@ -3,6 +3,26 @@
 # Everything below is unmodified busybox running on Flare's own kernel.
 export PATH=/bin:/sbin:/usr/bin HOME=/root PS1='flare:\w# '
 cat /etc/motd
+# Linux's own drivers for the hardware the composition gives Linux (a phone's
+# eMMC, touch screen, PMIC...): the driver host, in the background. The
+# board's arguments (linux.txt) come last, so they can set the log level.
+start_linuxdrv() {
+    if [ -e /dev/flarehw ] && [ -x /usr/bin/linuxdrv ] && [ -z "$linuxdrv_started" ]; then
+        linuxdrv_started=1
+        (linuxdrv /etc/linuxdrv/board.dtb loglevel=4 $(cat /etc/linuxdrv/cmdline 2>/dev/null) \
+            > /dev/console 2>&1 &)
+    fi
+}
+# FLARE_BOOT=quick (a phone's composition): the hardware first, no test
+# suites or demos, straight to the shell.
+if [ "$FLARE_BOOT" = quick ]; then
+    start_linuxdrv
+    echo "rc: quick boot: $(uname -sr), $(grep MemTotal /proc/meminfo | tr -s ' ')"
+    echo "rc: components:"; cat /proc/components
+    echo "rc: starting an interactive shell (type 'exit' to power off)"
+    cd /root
+    exec /bin/sh
+fi
 echo "rc: uname -a: $(uname -a)"
 echo "rc: components:"; cat /proc/components
 # Hot-restart the console driver while everything keeps using it.
@@ -24,12 +44,7 @@ echo "rc: memory: $(grep MemTotal /proc/meminfo)"
 echo "rc: std-test exit status $?"
 sleep 1 && echo "rc: slept 1 second"
 /etc/run-tests
-# Linux's own drivers for the hardware the composition gives Linux (a phone's
-# eMMC, USB, touch screen...): the driver host, in the background.
-if [ -e /dev/flarehw ] && [ -x /usr/bin/linuxdrv ]; then
-    (linuxdrv /etc/linuxdrv/board.dtb $(cat /etc/linuxdrv/cmdline 2>/dev/null) loglevel=4 \
-        > /dev/console 2>&1 &)
-fi
+start_linuxdrv
 # Android apps, straight from their APKs: no init, zygote or system_server.
 for apk in /data/app/*.apk; do
     /usr/bin/droid $apk

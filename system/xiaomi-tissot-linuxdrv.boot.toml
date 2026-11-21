@@ -22,7 +22,8 @@ board = "xiaomi/tissot"
 
 [linux]
 init = ["/bin/sh", "/etc/rc"]
-env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+# FLARE_BOOT=quick: the driver host first, no test suites (/etc/rc).
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
 control = true
 rootfs = "minimal"
 hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3"]

@@ -705,12 +705,13 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
     if own.exists() {
         // The board's own (mainline) tree, with everything Linux was not
         // given disabled, and the board's notes for Linux (linux.txt).
-        let (mut drop, mut cmdline) = (Vec::new(), Vec::new());
+        let (mut drop, mut cmdline, mut delprop) = (Vec::new(), Vec::new(), Vec::new());
         if let Ok(text) = std::fs::read_to_string(board_dir.join("linux.txt")) {
             for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
                 match l.split_once(' ') {
                     Some(("drop", p)) => drop.push(p.trim().to_string()),
                     Some(("cmdline", a)) => cmdline.push(a.trim().to_string()),
+                    Some(("delprop", a)) => delprop.push(a.trim().to_string()),
                     _ => die(&format!("{}/linux.txt: cannot read '{}'", comp.board, l)),
                 }
             }
@@ -725,6 +726,9 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
         }
         if !drop.is_empty() {
             c.arg("--drop").args(&drop);
+        }
+        if !delprop.is_empty() {
+            c.arg("--delprop").args(&delprop);
         }
         c.stdout(Stdio::null());
         run(c);

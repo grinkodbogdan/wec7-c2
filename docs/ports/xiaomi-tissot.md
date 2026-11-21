@@ -239,6 +239,15 @@ with LKL):
 * **No native UART driver** in this composition: the UART shares BLSP1's
   bus clock with the I2C controllers, which Linux switches off when idle
   (QRT 0.21.16).
+* **No interconnect paths.** The bus (NoC) drivers are not Linux's, and
+  the RPM keeps the boot loader's bus clocks. Linux's tree has no
+  `interconnects` references and no bandwidths in its OPP tables, so the
+  SDHC (eMMC, SD) does not wait for providers that never appear.
+* `/firmware` is disabled in the whole subtree: Linux creates `/firmware`'s
+  children whatever the parent's status says.
+* **Quick boot** (`FLARE_BOOT=quick` in the composition): `/etc/rc` starts
+  the driver host first and skips the test suites; Linux shows only critical
+  messages (`loglevel=3`). The report lists anything still waiting.
 * `fw_devlink=permissive`, `clk_ignore_unused`, `pd_ignore_unused`,
   `regulator_ignore_unused`. QRT's LKL patches keep the boot loader's RPM
   clocks and power-domain corners.

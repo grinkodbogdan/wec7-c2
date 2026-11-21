@@ -20,7 +20,7 @@ max-restarts = 3
 
 [linux]
 init = ["/bin/sh", "/etc/rc"]
-env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
 control = true
 rootfs = "minimal"
 # Devices whose registers and interrupts only the Linux driver host may use.
