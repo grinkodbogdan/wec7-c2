@@ -64,6 +64,7 @@ dependencies = [
  "flare-cap",
  "flare-cm",
  "flare-fhd",
+ "miniz_oxide",
 ]
 
 [[package]]
@@ -192,4 +193,5 @@ dependencies = [
  "flare-cm",
  "flare-config",
  "flare-fhd",
+ "miniz_oxide",
 ]

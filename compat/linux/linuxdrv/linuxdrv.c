@@ -766,6 +766,114 @@ static void bridge_inputs(char *devs[], int n)
 		fclose(f);
 }
 
+/* ---- Flare's root filesystem from storage ----
+ * A phone's boot image carries only a minimal root filesystem; the full one
+ * (kernel/src/ramdisk.rs format, zlib-compressed) is on the userdata
+ * partition (`fastboot flash userdata userdata.img`). Read it through
+ * Linux's eMMC driver into DMA memory and hand it to the kernel, which
+ * inflates it and adds its files. */
+#define FLAREHW_ROOTFS 0x4605
+
+/* Whether `dev`'s partition name (GPT) is `want`. */
+static int partname_is(const char *dev, const char *want)
+{
+	static char buf[512];
+	char path[96];
+	snprintf(path, sizeof path, "/sys/class/block/%s/uevent", dev);
+	long fd = l_open(path, 0);
+	if (fd < 0)
+		return 0;
+	long n = l_read((int)fd, buf, sizeof buf - 1);
+	l_close((int)fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = 0;
+	char key[64];
+	snprintf(key, sizeof key, "PARTNAME=%s\n", want);
+	return strstr(buf, key) != NULL;
+}
+
+static int has_rootfs_header(const char *dev, uint64_t *total)
+{
+	char path[64];
+	unsigned char h[32];
+	snprintf(path, sizeof path, "/dev/%s", dev);
+	long fd = l_open(path, 0);
+	if (fd < 0)
+		return 0;
+	long r = l_read((int)fd, h, sizeof h);
+	l_close((int)fd);
+	if (r != 32 || memcmp(h, "FLARERD", 7) || (h[7] != '1' && h[7] != 'Z'))
+		return 0;
+	uint64_t len;
+	memcpy(&len, h + 8, 8);
+	*total = 32 + len;
+	return 1;
+}
+
+static void load_rootfs(char *all)
+{
+	/* the userdata partition, else (QEMU) a disk that is the image itself */
+	char found[32] = "";
+	uint64_t total = 0;
+	char *save = NULL, *list = strdup(all);
+	for (char *n = strtok_r(list, " ", &save); n && !found[0]; n = strtok_r(NULL, " ", &save))
+		if (partname_is(n, "userdata") && has_rootfs_header(n, &total))
+			snprintf(found, sizeof found, "%s", n);
+	free(list);
+	list = strdup(all);
+	save = NULL;
+	for (char *n = strtok_r(list, " ", &save); n && !found[0]; n = strtok_r(NULL, " ", &save))
+		if (is_disk(n) && has_rootfs_header(n, &total))
+			snprintf(found, sizeof found, "%s", n);
+	free(list);
+	if (!found[0]) {
+		printf("linuxdrv: no Flare root filesystem on storage (userdata)\n");
+		return;
+	}
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	uint64_t size = (total + 0xfff) & ~0xfffull, phys;
+	if (dma_alloc(size, &phys)) {
+		printf("linuxdrv: no %llu MiB of DMA memory for the root filesystem\n", (unsigned long long)(size >> 20));
+		return;
+	}
+	unsigned char *buf = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, hw, (off_t)phys);
+	if (buf == MAP_FAILED) {
+		printf("linuxdrv: cannot map the root filesystem buffer: %s\n", strerror(errno));
+		return;
+	}
+	char path[64];
+	snprintf(path, sizeof path, "/dev/%s", found);
+	long fd = l_open(path, 0);
+	uint64_t got = 0;
+	while (fd >= 0 && got < total) {
+		long chunk = total - got > (1 << 20) ? (1 << 20) : (long)(total - got);
+		long r = l_read((int)fd, buf + got, chunk);
+		if (r <= 0)
+			break;
+		got += (uint64_t)r;
+	}
+	if (fd >= 0)
+		l_close((int)fd);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+	if (got < total) {
+		printf("linuxdrv: %s: read %llu of %llu bytes of the root filesystem\n", found, (unsigned long long)got,
+		       (unsigned long long)total);
+		return;
+	}
+	printf("linuxdrv: %s: %llu MiB root filesystem read through Linux's driver in %ld ms\n", found,
+	       (unsigned long long)(total >> 20), ms);
+	uint64_t req[2] = { phys, total };
+	int n = ioctl(hw, FLAREHW_ROOTFS, req);
+	if (n < 0)
+		printf("linuxdrv: Flare refused the root filesystem: %s\n", strerror(errno));
+	else
+		printf("linuxdrv: root filesystem added to Flare: %d entries\n", n);
+	munmap(buf, size);
+}
+
 static void report(void)
 {
 	static char names[4096];
@@ -786,6 +894,7 @@ static void report(void)
 		struct timespec ts = { 0, 500000000 };
 		nanosleep(&ts, NULL);
 	}
+	load_rootfs(names);
 	/* The whole disks (a phone's eMMC has dozens of partitions). */
 	static char disks[512];
 	int nparts = 0, at = 0;

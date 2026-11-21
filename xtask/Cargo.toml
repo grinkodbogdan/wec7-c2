@@ -10,3 +10,5 @@ flare-fhd = { path = "../tools/fhd" }
 flare-cm = { path = "../component-manager" }
 flare-config = { path = "../libs/config" }
 fdb = { path = "../tools/fdb" }
+# Compressed root filesystem images (ramdisk, userdata).
+miniz_oxide = "0.8"

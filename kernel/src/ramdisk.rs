@@ -1,54 +1,63 @@
-//! A root filesystem the boot loader loaded: a phone's boot image ramdisk.
+//! Root filesystem archives from outside the kernel image.
 //!
 //! A kernel image that a boot loader must fit below firmware memory (the
-//! Xiaomi Mi A1's LK: about 23 MiB) cannot carry a full root filesystem, so
-//! `cargo xtask image` puts it in the boot image's ramdisk, which the boot
-//! loader copies to the board's ramdisk address (`[boot-image] base +
-//! ramdisk-offset` in the FHD). It starts with a header:
+//! Xiaomi Mi A1's LK: about 23 MiB) cannot carry a full root filesystem.
+//! It comes instead:
+//! * from the boot image's ramdisk, which the boot loader copies to the
+//!   board's ramdisk address (`[boot-image] base + ramdisk-offset`), found
+//!   at boot (`[linux] rootfs = "ramdisk"`);
+//! * or from storage, read by the Linux driver host (a phone's `userdata`
+//!   partition through Linux's eMMC driver) into DMA memory and handed over
+//!   with `FLAREHW_ROOTFS` (`[linux] rootfs = "userdata"`).
 //!
-//! | bytes | |
-//! | --- | --- |
-//! | 0..8 | `FLARERD1` |
-//! | 8..16 | payload length |
-//! | 16..24 | checksum: the wrapping sum of the payload's little-endian u64 words (zero-padded) |
-//! | 24..32 | 0 |
+//! Either way it starts with a 32-byte header:
 //!
-//! then the payload: an initramfs archive in the kernel's own format. Found
-//! at boot, its memory is kept from the frame allocator for good: the Linux
-//! personality's files point into it.
+//! | bytes | `FLARERD1` (plain) | `FLARERDZ` (zlib) |
+//! | --- | --- | --- |
+//! | 8..16 | payload length | compressed length |
+//! | 16..24 | checksum: the wrapping sum of the payload's little-endian u64 words (zero-padded) | (the same, of the compressed bytes) |
+//! | 24..32 | 0 | uncompressed length |
+//!
+//! then the payload: an initramfs archive in the kernel's own format
+//! (kernel/build.rs `pack_dir`), plain or zlib-compressed. The archive's
+//! memory is kept for good: the Linux personality's files point into it.
 
 use crate::arch::mmu::phys_to_virt;
 use crate::global::Global;
+use crate::mm::{frame, PAGE_SIZE};
 use crate::{boot, platform};
+use alloc::boxed::Box;
 
-const MAGIC: &[u8; 8] = b"FLARERD1";
-const HEADER: u64 = 32;
+pub const HEADER: u64 = 32;
 
-static FOUND: Global<Option<(u64, u64)>> = Global::new(None);
+/// A parsed, checked header.
+#[derive(Clone, Copy)]
+pub struct Archive {
+    /// Bytes after the header.
+    pub len: u64,
+    /// Uncompressed size, if the payload is zlib-compressed.
+    pub zlib: Option<u64>,
+}
 
-/// Look for the ramdisk (before the frame allocator starts). Returns the
-/// physical range to keep, header included.
-pub fn probe() -> Option<(u64, u64)> {
-    let pa = boot::RAMDISK_PHYS?;
-    let in_ram = |a: u64, b: u64| platform::RAM.iter().any(|r| a >= r.base && b <= r.base + r.size);
-    if !in_ram(pa, pa + HEADER) {
-        kprintln!("ramdisk: {:#x} is not in RAM", pa);
-        return None;
+/// Parse and check an archive at `va` (`avail` bytes there, header
+/// included). The error says why it is not one.
+pub fn check(va: *const u8, avail: u64) -> Result<Archive, &'static str> {
+    if avail < HEADER {
+        return Err("too small");
     }
-    let va = phys_to_virt(pa) as *const u8;
-    // SAFETY: inside a RAM region, through the direct map.
+    // SAFETY: the caller vouches for `avail` readable bytes at `va`.
     let hdr = unsafe { core::slice::from_raw_parts(va, HEADER as usize) };
-    if &hdr[..8] != MAGIC {
-        kprintln!("ramdisk: none at {:#x} (the boot image has no Flare root filesystem)", pa);
-        return None;
+    let zlib = match &hdr[..8] {
+        b"FLARERD1" => false,
+        b"FLARERDZ" => true,
+        _ => return Err("no Flare root filesystem header"),
+    };
+    let word = |i: usize| u64::from_le_bytes(hdr[i..i + 8].try_into().unwrap());
+    let (len, want, ulen) = (word(8), word(16), word(24));
+    if len > avail - HEADER {
+        return Err("truncated");
     }
-    let len = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
-    let want = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
-    if !in_ram(pa, pa + HEADER + len) {
-        kprintln!("ramdisk: {} bytes at {:#x} run past RAM", len, pa);
-        return None;
-    }
-    // SAFETY: as above, the whole payload is RAM.
+    // SAFETY: inside the `avail` bytes.
     let body = unsafe { core::slice::from_raw_parts(va.add(HEADER as usize), len as usize) };
     let mut sum = 0u64;
     for c in body.chunks(8) {
@@ -57,19 +66,81 @@ pub fn probe() -> Option<(u64, u64)> {
         sum = sum.wrapping_add(u64::from_le_bytes(w));
     }
     if sum != want {
-        kprintln!("ramdisk: checksum mismatch at {:#x} ({} bytes): damaged or stale, not used", pa, len);
-        return None;
+        return Err("checksum mismatch (damaged or stale)");
     }
-    kprintln!("ramdisk: {} MiB root filesystem at {:#x}", len >> 20, pa);
-    // SAFETY: boot, single-threaded.
-    unsafe { *FOUND.get() = Some((pa, len)) };
-    Some((pa, (pa + HEADER + len + 0xfff) & !0xfff))
+    Ok(Archive { len, zlib: zlib.then_some(ulen) })
 }
 
-/// The archive, if the boot loader loaded one.
+/// The archive's contents in memory kept for good: inflated into fresh
+/// frames if compressed, else copied there unless `in_place` (memory that
+/// is already the kernel's for good).
+pub fn materialize(va: *const u8, a: Archive, in_place: bool) -> Result<&'static [u8], &'static str> {
+    // SAFETY: checked by `check`.
+    let body = unsafe { core::slice::from_raw_parts(va.add(HEADER as usize), a.len as usize) };
+    if a.zlib.is_none() && in_place {
+        return Ok(body);
+    }
+    let out_len = a.zlib.unwrap_or(a.len);
+    let pages = out_len.div_ceil(PAGE_SIZE).max(1);
+    let pa = frame::alloc_contiguous(pages).ok_or("no contiguous memory for it")?;
+    // SAFETY: fresh RAM of `pages` pages, kept for good from here on.
+    let out = unsafe { core::slice::from_raw_parts_mut(phys_to_virt(pa) as *mut u8, out_len as usize) };
+    match a.zlib {
+        None => out.copy_from_slice(body),
+        Some(ulen) => {
+            use miniz_oxide::inflate::core::{decompress, inflate_flags as f, DecompressorOxide};
+            use miniz_oxide::inflate::TINFLStatus;
+            let mut r = Box::new(DecompressorOxide::new());
+            let flags = f::TINFL_FLAG_PARSE_ZLIB_HEADER | f::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+            let (status, _, n) = decompress(&mut r, body, out, 0, flags);
+            if status != TINFLStatus::Done || n as u64 != ulen {
+                return Err("does not inflate");
+            }
+        }
+    }
+    Ok(out)
+}
+
+static FOUND: Global<Option<(u64, Archive)>> = Global::new(None);
+
+/// Look for the boot loader's ramdisk (before the frame allocator starts).
+/// Returns the physical range to keep, header included.
+pub fn probe() -> Option<(u64, u64)> {
+    let pa = boot::RAMDISK_PHYS?;
+    let region = platform::RAM.iter().find(|r| pa >= r.base && pa + HEADER <= r.base + r.size);
+    let Some(region) = region else {
+        kprintln!("ramdisk: {:#x} is not in RAM", pa);
+        return None;
+    };
+    match check(phys_to_virt(pa) as *const u8, region.base + region.size - pa) {
+        Ok(a) => {
+            kprintln!(
+                "ramdisk: {} MiB root filesystem at {:#x}{}",
+                a.zlib.unwrap_or(a.len) >> 20,
+                pa,
+                if a.zlib.is_some() { " (compressed)" } else { "" }
+            );
+            // SAFETY: boot, single-threaded.
+            unsafe { *FOUND.get() = Some((pa, a)) };
+            Some((pa, (pa + HEADER + a.len + 0xfff) & !0xfff))
+        }
+        Err(e) => {
+            kprintln!("ramdisk: none at {:#x}: {}", pa, e);
+            None
+        }
+    }
+}
+
+/// The boot loader's ramdisk archive, inflated if need be.
 pub fn archive() -> Option<&'static [u8]> {
     // SAFETY: written once at boot.
-    let (pa, len) = unsafe { *FOUND.get() }?;
-    // SAFETY: RAM kept from the allocator for good (probe).
-    Some(unsafe { core::slice::from_raw_parts(phys_to_virt(pa + HEADER) as *const u8, len as usize) })
+    let (pa, a) = unsafe { *FOUND.get() }?;
+    // The ramdisk's own memory is kept for good (probe).
+    match materialize(phys_to_virt(pa) as *const u8, a, true) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            kprintln!("ramdisk: {}", e);
+            None
+        }
+    }
 }

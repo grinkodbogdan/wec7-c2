@@ -2,8 +2,9 @@
 # the shape QEMU can run: the reference phone board with its storage
 # (virtio-blk), real-time clock (PL031), touch screen (virtio tablet) and
 # keyboard given to Linux's own drivers in the driver host (linuxdrv), which
-# hands touch and keys back to Flare as input devices; a display driver for
-# the panel; the quick boot path into the Arcan phone shell.
+# hands touch and keys back to Flare as input devices and reads the full root
+# filesystem from the disk; a display driver for the panel; the quick boot
+# path into the Arcan phone shell.
 # `cargo xtask linuxdrv-test` boots it and taps the screen.
 
 name = "qemu-virt-linuxdrv"
@@ -36,7 +37,9 @@ init = ["/bin/sh", "/etc/rc"]
 # FLARE_TEST_INPUT=1: rc prints the first event of /dev/input/event1 (keys).
 env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick", "FLARE_TEST_INPUT=1"]
 control = true
-rootfs = "full"
+# The full root filesystem from storage: the disk is userdata.img (the test
+# boots with it as the virtio disk), read by Linux's virtio-blk driver.
+rootfs = "userdata"
 display = "display"
 # Devices whose registers and interrupts only the Linux driver host may use.
 hardware = ["virtio31", "rtc0", "virtio30", "virtio29"]

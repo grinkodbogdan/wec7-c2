@@ -106,8 +106,10 @@ pub struct LinuxConfig {
     /// Root filesystem profile `cargo xtask build` assembles: "full" (the
     /// default: Arcan, ART, ATL and everything else) or "minimal" (busybox,
     /// the Linux tests and droid) for boards whose boot image must be small,
-    /// or "ramdisk": the kernel carries the minimal one and the boot image's
-    /// ramdisk the full one (`cargo xtask image`; a phone).
+    /// "ramdisk": the kernel carries the minimal one and the boot image's
+    /// ramdisk the full one, or "userdata": the full one is read from
+    /// storage at boot by the Linux driver host (`cargo xtask image` writes
+    /// it as userdata.img; a phone).
     pub rootfs: String,
     /// Devices a Linux driver host (`/dev/flarehw`) may claim: their register
     /// windows and interrupts, exclusively (no component may also get them).
@@ -305,10 +307,13 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                     let control = sec.get("control").and_then(|v| v.as_bool()).unwrap_or(false);
                     let display = sec.get("display").and_then(|v| v.as_str()).map(|s| s.to_string());
                     let rootfs = sec.get("rootfs").and_then(|v| v.as_str()).unwrap_or("full").to_string();
-                    if !["full", "minimal", "ramdisk"].contains(&rootfs.as_str()) {
+                    if !["full", "minimal", "ramdisk", "userdata"].contains(&rootfs.as_str()) {
                         err(
                             sec.line,
-                            format!("[linux] rootfs must be \"full\", \"minimal\" or \"ramdisk\", not \"{}\"", rootfs),
+                            format!(
+                                "[linux] rootfs must be \"full\", \"minimal\", \"ramdisk\" or \"userdata\", not \"{}\"",
+                                rootfs
+                            ),
                         );
                     }
                     let mut smc = Vec::new();

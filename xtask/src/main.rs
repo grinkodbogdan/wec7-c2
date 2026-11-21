@@ -328,10 +328,18 @@ fn build(o: &Opts) -> PathBuf {
     // "ramdisk": the kernel carries the minimal root filesystem, the boot
     // image's ramdisk the full one (target/flare-ramdisk.bin).
     let rootfs = assemble_rootfs(profile == "full");
-    if profile == "ramdisk" {
-        let full = assemble_rootfs_at(true, &root().join("target/flare-rootfs-ramdisk"));
-        let n = pack_ramdisk(&full, &root().join("target/flare-ramdisk.bin"));
-        println!("xtask: ramdisk root filesystem: {} MiB (target/flare-ramdisk.bin)", n >> 20);
+    // "userdata": the same, read from storage at boot (target/flare-userdata.img).
+    if profile == "ramdisk" || profile == "userdata" {
+        let full = assemble_rootfs_at(true, &root().join("target/flare-rootfs-full"));
+        let out = root().join(if profile == "ramdisk" { "target/flare-ramdisk.bin" } else { "target/flare-userdata.img" });
+        let (n, z) = pack_ramdisk(&full, &out);
+        println!(
+            "xtask: {} root filesystem: {} MiB, {} MiB compressed ({})",
+            profile,
+            n >> 20,
+            z >> 20,
+            out.strip_prefix(root()).unwrap().display()
+        );
     }
     if comp.linux.as_ref().is_some_and(|l| !l.hardware.is_empty()) {
         stage_linuxdrv(&comp, &rootfs);
@@ -778,10 +786,11 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
     std::fs::copy(linuxdrv_build(), rootfs.join("usr/bin/linuxdrv")).unwrap();
 }
 
-/// Pack a root filesystem into a ramdisk image (kernel/src/ramdisk.rs): a
-/// 32-byte header (`FLARERD1`, length, checksum) and the kernel's initramfs
-/// format (kernel/build.rs `pack_dir`). Returns the payload's size.
-fn pack_ramdisk(dir: &Path, out: &Path) -> usize {
+/// Pack a root filesystem into a compressed archive image
+/// (kernel/src/ramdisk.rs): a 32-byte header (`FLARERDZ`, compressed length,
+/// checksum, length) and the kernel's initramfs format (kernel/build.rs
+/// `pack_dir`), zlib-compressed. Returns (size, compressed size).
+fn pack_ramdisk(dir: &Path, out: &Path) -> (usize, usize) {
     fn pack(root: &Path, dir: &Path, out: &mut Vec<u8>) {
         use std::os::unix::fs::PermissionsExt;
         let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -807,8 +816,9 @@ fn pack_ramdisk(dir: &Path, out: &Path) -> usize {
             }
         }
     }
-    let mut body = Vec::new();
-    pack(dir, dir, &mut body);
+    let mut raw = Vec::new();
+    pack(dir, dir, &mut raw);
+    let body = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
     let mut sum = 0u64;
     for c in body.chunks(8) {
         let mut w = [0u8; 8];
@@ -816,13 +826,13 @@ fn pack_ramdisk(dir: &Path, out: &Path) -> usize {
         sum = sum.wrapping_add(u64::from_le_bytes(w));
     }
     let mut img = Vec::with_capacity(body.len() + 32);
-    img.extend_from_slice(b"FLARERD1");
+    img.extend_from_slice(b"FLARERDZ");
     img.extend_from_slice(&(body.len() as u64).to_le_bytes());
     img.extend_from_slice(&sum.to_le_bytes());
-    img.extend_from_slice(&[0; 8]);
+    img.extend_from_slice(&(raw.len() as u64).to_le_bytes());
     img.extend_from_slice(&body);
     std::fs::write(out, &img).unwrap();
-    body.len()
+    (raw.len(), body.len())
 }
 
 /// Build (once) the musl C toolchain for Linux test programs.
@@ -1138,6 +1148,10 @@ fn image(o: &Opts) {
         c.arg(root().join("target/flare-ramdisk.bin"));
     }
     run(c);
+    if comp.linux.as_ref().is_some_and(|l| l.rootfs == "userdata") {
+        std::fs::copy(root().join("target/flare-userdata.img"), out.join("userdata.img")).unwrap();
+        println!("image: {} (flash to the userdata partition)", out.join("userdata.img").display());
+    }
     println!("image: {}", out.join("boot.img").display());
 }
 
@@ -1322,7 +1336,20 @@ fn linuxdrv_test(o: &Opts) -> bool {
     let kernel = build(&o2);
     let qmp = root().join("target/linuxdrv-qmp.sock");
     let _ = std::fs::remove_file(&qmp);
-    let mut child = qemu_command(&o2, &kernel)
+    // rootfs = "userdata": the disk is the root filesystem image, as a
+    // phone's userdata partition.
+    let mut cmd = qemu_command(&o2, &kernel);
+    let (comp, _) = load_composition(&o2.system);
+    if comp.linux.as_ref().is_some_and(|l| l.rootfs == "userdata") {
+        let disk = root().join("target/linuxdrv-disk.img");
+        std::fs::copy(root().join("target/flare-userdata.img"), &disk).unwrap();
+        let old = disk_image().display().to_string();
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().replace(&old, &disk.display().to_string())).collect();
+        let mut c = Command::new(cmd.get_program());
+        c.args(args);
+        cmd = c;
+    }
+    let mut child = cmd
         .arg("-qmp")
         .arg(format!("unix:{},server=on,wait=off", qmp.display()))
         .stdin(Stdio::null())
@@ -1350,6 +1377,9 @@ fn linuxdrv_test(o: &Opts) -> bool {
         "linuxdrv: block devices: vda",
         // The userdata disk starts with "FLAR".
         "linuxdrv: vda: first sector read through Linux's driver: 46 4c 41 52",
+        // The full root filesystem: read through Linux's driver, inflated
+        // and added by the kernel (the shell below comes from it).
+        "root filesystem added to Flare:",
         // Several requests, each completed by an interrupt (edge-triggered
         // here: board.fhd), as a phone's RPM replies are.
         "linuxdrv: vda: 8 of 8 uncached reads",

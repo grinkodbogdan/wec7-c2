@@ -20,7 +20,9 @@
 //! * `ioctl(FLAREHW_SMC)`: an allowed SMC Calling Convention call;
 //! * `ioctl(FLAREHW_INPUT)`: feed the Linux input devices the composition
 //!   gives the host (`[linux] inputs`): name, describe, report events, as
-//!   an input driver component does with `INPUT_REPORT`.
+//!   an input driver component does with `INPUT_REPORT`;
+//! * `ioctl(FLAREHW_ROOTFS)`: a root filesystem archive the host read from
+//!   storage into its DMA memory (crate::ramdisk), added to Linux's files.
 
 use super::abi::*;
 use super::Kernel;
@@ -35,6 +37,7 @@ pub const FLAREHW_DMA_ALLOC: u64 = 0x4601;
 pub const FLAREHW_IRQ: u64 = 0x4602;
 pub const FLAREHW_SMC: u64 = 0x4603;
 pub const FLAREHW_INPUT: u64 = 0x4604;
+pub const FLAREHW_ROOTFS: u64 = 0x4605;
 /// mmap offset bit: map DMA memory non-cacheable.
 pub const NOCACHE: u64 = 1 << 62;
 
@@ -216,6 +219,36 @@ impl Kernel {
                     Ok(0)
                 } else {
                     Err(EINVAL)
+                }
+            }
+            FLAREHW_ROOTFS => {
+                // in: u64 physical address, u64 length (inside one of this
+                // host's DMA blocks); out: the number of entries added
+                let v = self.uread(c, arg, 16)?;
+                let pa = u64::from_le_bytes(v[0..8].try_into().unwrap());
+                let len = u64::from_le_bytes(v[8..16].try_into().unwrap());
+                let end = pa.checked_add(len).ok_or(EINVAL)?;
+                if !self.lx().hw.dma.iter().any(|&(b, s)| pa >= b && end <= b + s) {
+                    return Err(EPERM);
+                }
+                let va = crate::arch::mmu::phys_to_virt(pa) as *const u8;
+                let a = crate::ramdisk::check(va, len).map_err(|e| {
+                    kprintln!("linux: root filesystem from storage: {}", e);
+                    EINVAL
+                })?;
+                let data = crate::ramdisk::materialize(va, a, false).map_err(|e| {
+                    kprintln!("linux: root filesystem from storage: {}", e);
+                    ENOMEM
+                })?;
+                match self.lx().vfs.unpack(data) {
+                    Ok(n) => {
+                        kprintln!("linux: root filesystem from storage: {} entries ({} MiB)", n, data.len() >> 20);
+                        Ok(n as i64)
+                    }
+                    Err(e) => {
+                        kprintln!("linux: root filesystem from storage damaged: {}", e);
+                        Err(EINVAL)
+                    }
                 }
             }
             FLAREHW_SMC => {

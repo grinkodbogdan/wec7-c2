@@ -14,6 +14,8 @@ bench = false
 [dependencies]
 flare-abi = { path = "../interfaces/abi" }
 flare-cap = { path = "../libs/cap" }
+# Inflate (no_std, no allocation in its core): compressed root filesystems.
+miniz_oxide = { version = "0.8", default-features = false }
 
 [build-dependencies]
 flare-fhd = { path = "../tools/fhd" }
