@@ -77,7 +77,7 @@ pub fn early_mark(n: u64) {
 /// kernel image's gigabyte (entry.rs).
 pub fn boot_mapped() {
     // The kernel image's physical address, from this function's own.
-    let kernel = crate::arch::mmu::virt_to_phys(boot_mapped as usize as u64);
+    let kernel = crate::arch::mmu::virt_to_phys(boot_mapped as *const () as usize as u64);
     if EARLY_FB[0] != 0 && EARLY_FB[0] >> 30 == kernel >> 30 {
         MAPPED.store(true, core::sync::atomic::Ordering::Relaxed);
     }

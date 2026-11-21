@@ -7,7 +7,7 @@ interrupts.
     fhd2dtb.py SPEC.json OUT.dtb
 
 SPEC (written by `cargo xtask build`): {"model", "intc": {"compatible", "regs"},
-"devices": [{"name", "compatible", "regs", "irqs"}]}; interrupts are GIC
+"devices": [{"name", "compatible", "regs", "irqs", "edge"?}]}; interrupts are GIC
 INTIDs. AMBA (PrimeCell) devices get the fixed APB clock their bus needs.
 """
 import json
@@ -49,8 +49,10 @@ for d in spec["devices"]:
     if d["irqs"]:
         cells = []
         for i in d["irqs"]:
-            # <type number flags>: SPI = 0 (INTID - 32), PPI = 1 (INTID - 16); level high
-            cells += [0, i - 32, 4] if i >= 32 else [1, i - 16, 4]
+            # <type number flags>: SPI = 0 (INTID - 32), PPI = 1 (INTID - 16);
+            # level high, or rising edge for devices marked "edge"
+            flags = 1 if d.get("edge") else 4
+            cells += [0, i - 32, flags] if i >= 32 else [1, i - 16, flags]
         t.prop("interrupts", cells)
     if "arm,primecell" in d["compatible"]:
         t.prop("clocks", [APB])

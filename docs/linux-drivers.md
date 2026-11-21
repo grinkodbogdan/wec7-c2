@@ -70,7 +70,7 @@ The kernel serves the grant as `/dev/flarehw`, present only when
 | `mmap(offset = physical address)` | a granted register window as Device memory (Normal non-cacheable for `mapping = "memory"` devices such as SMEM), or DMA memory this process allocated (cached; offset bit 62: non-cacheable). Anything else: `EPERM` |
 | `ioctl(0x4601, {size})` | physically contiguous DMA memory; returns its physical address |
 | `ioctl(0x4602, {intid, op, arg})` | 0: GIC lines; 1/2: unmask/mask; 3: edge or level. Granted interrupts only |
-| `read()` | the INTIDs that fired, 4 bytes each; each stays masked until unmasked (Linux's handler does that) |
+| `read()` | the INTIDs that fired, 4 bytes each. A level-triggered line stays masked until unmasked (Linux's level flow does that); an edge-triggered one is not masked, since Linux's edge flow never unmasks (Qualcomm's RPM replies are edges) |
 | `ioctl(0x4603, regs[8])` | an SMC call whose function id is allowed |
 
 Linux's RAM (64 MiB) is DMA memory mapped at LKL's fixed address. Physical
@@ -96,6 +96,8 @@ instead of Flare's native drivers. It checks that:
 * the driver host gets exactly those two devices;
 * Linux's virtio-blk driver reads the userdata disk's first sector (it
   starts with `FLAR`); this needs DMA and completion interrupts;
+* with its interrupt edge-triggered (`linux-irq = "edge"`), eight uncached
+  reads, each completed by an interrupt;
 * Linux's PL031 driver reads the clock.
 
 Anything else Linux tries to map is refused and logged

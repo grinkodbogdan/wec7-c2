@@ -740,11 +740,12 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
             .filter_map(|name| p.node(name))
             .map(|n| {
                 format!(
-                    "{{\"name\": {:?}, \"compatible\": [{}], \"regs\": [{}], \"irqs\": {:?}}}",
+                    "{{\"name\": {:?}, \"compatible\": [{}], \"regs\": [{}], \"irqs\": {:?}, \"edge\": {}}}",
                     n.name,
                     strs(&n.compatible),
                     regs(n),
-                    n.irqs
+                    n.irqs,
+                    n.props.get("linux-irq").and_then(|v| v.as_str()) == Some("edge")
                 )
             })
             .collect();
@@ -1226,6 +1227,9 @@ fn linuxdrv_test(o: &Opts) -> bool {
         "linuxdrv: block devices: vda",
         // The userdata disk starts with "FLAR".
         "linuxdrv: vda: first sector read through Linux's driver: 46 4c 41 52",
+        // Several requests, each completed by an interrupt (edge-triggered
+        // here: board.fhd), as a phone's RPM replies are.
+        "linuxdrv: vda: 8 of 8 uncached reads",
         "linuxdrv: rtc0 (Linux's driver): 20",
     ];
     let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];

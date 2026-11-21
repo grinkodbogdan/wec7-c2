@@ -22,6 +22,10 @@ role = "buttons"           # QEMU wires the power key to line 3
 [device.virtio31]
 status = "okay"
 role = "storage"           # virtio-blk: the userdata disk
+# When given to Linux (system/qemu-virt-linuxdrv.boot.toml): an edge-
+# triggered interrupt in Linux's device tree, so `cargo xtask linuxdrv-test`
+# covers the edge path that Qualcomm's RPM replies take.
+linux-irq = "edge"
 
 [device.virtio30]
 status = "okay"

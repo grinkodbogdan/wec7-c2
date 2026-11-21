@@ -89,3 +89,11 @@ CONFIG_ARCH_QCOM=y
 # Linux with virtual memory (LKL's MMU mode; QRT's "Argon"): the driver host
 # maps Linux's RAM at CONFIG_LKL_MEMORY_START through /dev/flarehw
 CONFIG_MMU=y
+# operating points: the RPM power domains' corners and the SDHC clock tables
+# (without them qcom-rpmpd fails with -EOPNOTSUPP and everything behind it waits)
+CONFIG_PM_OPP=y
+# the PMICs' GPIOs (pm8953 and pmi8950 gpio@c000)
+CONFIG_PINCTRL_QCOM_SPMI_PMIC=y
+# Not the interconnect drivers: their bus nodes are not Linux's, and with them
+# the SDHC would wait for providers that never appear (without them, a
+# device's interconnect paths are simply none).

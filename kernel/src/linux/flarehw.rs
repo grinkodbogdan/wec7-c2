@@ -39,6 +39,8 @@ pub struct FlareHw {
     pub fired: VecDeque<u32>,
     /// DMA blocks handed out: (physical base, size).
     pub dma: Vec<(u64, u64)>,
+    /// Lines the host configured edge-triggered (one bit per INTID).
+    pub edge: [u64; 16],
 }
 
 /// The devices given to Linux, from the composition.
@@ -80,7 +82,15 @@ impl Kernel {
 
     /// An interrupt for the driver host: masked until it unmasks it again.
     pub(crate) fn flarehw_irq_fired(&mut self, intid: u32) {
-        gic::disable(intid);
+        // A level interrupt stays asserted until Linux's handler has served
+        // the device: mask it until the host unmasks it. An edge interrupt
+        // fires once per edge and Linux's edge flow never unmasks (it only
+        // acknowledges), so masking it would lose every later one (the RPM's
+        // replies on Qualcomm SoCs).
+        let edge = self.linux.as_ref().is_some_and(|l| l.hw.edge.get(intid as usize / 64).is_some_and(|w| w >> (intid % 64) & 1 != 0));
+        if !edge {
+            gic::disable(intid);
+        }
         if let Some(lx) = self.linux.as_mut() {
             if lx.hw.fired.len() < 1024 {
                 lx.hw.fired.push_back(intid);
@@ -164,7 +174,17 @@ impl Kernel {
                 match op {
                     1 => gic::enable(intid),
                     2 => gic::disable(intid),
-                    3 => gic::set_edge(intid, edge != 0),
+                    3 => {
+                        gic::set_edge(intid, edge != 0);
+                        let lx = self.lx();
+                        if let Some(w) = lx.hw.edge.get_mut(intid as usize / 64) {
+                            if edge != 0 {
+                                *w |= 1 << (intid % 64);
+                            } else {
+                                *w &= !(1 << (intid % 64));
+                            }
+                        }
+                    }
                     _ => return Err(EINVAL),
                 }
                 Ok(0)

@@ -457,6 +457,8 @@ static struct lkl_host_operations ops = {
 #define NR_CLOSE    57
 #define NR_GETDENTS 61
 #define NR_READ     63
+#define NR_PREAD64  67
+#define L_BLKFLSBUF 0x1261 /* drop the device's cached blocks */
 #define AT_FDCWD    (-100)
 static long l_sys(long nr, long a, long b, long c, long d, long e)
 {
@@ -509,11 +511,19 @@ static void l_cat(const char *path, const char *prefix)
 static void report(void)
 {
 	char names[512];
-	/* A phone's eMMC appears after its clocks, rails and the card's
-	 * initialisation: give the block devices a few seconds. */
-	for (int i = 0; i < 20; i++) {
+	/* A phone's devices appear as their suppliers do (the RPM, then the
+	 * clocks, then eMMC, I2C...), each probe deferred until the last: wait
+	 * until nothing is waiting any more and a block device is there, or
+	 * 30 s. */
+	for (int i = 0; i < 60; i++) {
+		static char d[256];
+		long fd = l_open("/sys/kernel/debug/devices_deferred", 0), n = 0;
+		if (fd >= 0) {
+			n = l_read((int)fd, d, sizeof d);
+			l_close((int)fd);
+		}
 		l_list("/sys/class/block", names, sizeof names);
-		if (names[0])
+		if (n <= 0 && names[0])
 			break;
 		struct timespec ts = { 0, 500000000 };
 		nanosleep(&ts, NULL);
@@ -532,6 +542,24 @@ static void report(void)
 		if (r == 512)
 			printf("linuxdrv: %s: first sector read through Linux's driver: %02x %02x %02x %02x ... boot signature %02x%02x\n",
 			       n, sec[0], sec[1], sec[2], sec[3], sec[510], sec[511]);
+		/* Then past the cache (flushed before each read): each read is
+		 * a request to the device and an interrupt back, which the first,
+		 * cached read may not have needed. Once, on the first device. */
+		static int direct_done;
+		if (r == 512 && !direct_done) {
+			direct_done = 1;
+			static unsigned char buf[512];
+			fd = l_open(path, 0);
+			int ok = 0;
+			for (int k = 0; fd >= 0 && k < 8; k++) {
+				l_sys(NR_IOCTL, fd, L_BLKFLSBUF, 0, 0, 0);
+				if (l_sys(NR_PREAD64, fd, (long)buf, 512, (long)k * 4096, 0) == 512)
+					ok++;
+			}
+			if (fd >= 0)
+				l_close((int)fd);
+			printf("linuxdrv: %s: %d of 8 uncached reads (one device interrupt each)\n", n, ok);
+		}
 	}
 	l_list("/sys/class/rtc", names, sizeof names);
 	if (names[0]) {
