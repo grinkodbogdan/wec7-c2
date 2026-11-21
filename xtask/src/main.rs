@@ -324,7 +324,15 @@ fn build(o: &Opts) -> PathBuf {
         run(c);
     }
     let out = root().join("target").join(TARGET).join(profile);
-    let rootfs = assemble_rootfs(comp.linux.as_ref().map(|l| l.rootfs != "minimal").unwrap_or(true));
+    let profile = comp.linux.as_ref().map(|l| l.rootfs.clone()).unwrap_or_else(|| "full".into());
+    // "ramdisk": the kernel carries the minimal root filesystem, the boot
+    // image's ramdisk the full one (target/flare-ramdisk.bin).
+    let rootfs = assemble_rootfs(profile == "full");
+    if profile == "ramdisk" {
+        let full = assemble_rootfs_at(true, &root().join("target/flare-rootfs-ramdisk"));
+        let n = pack_ramdisk(&full, &root().join("target/flare-ramdisk.bin"));
+        println!("xtask: ramdisk root filesystem: {} MiB (target/flare-ramdisk.bin)", n >> 20);
+    }
     if comp.linux.as_ref().is_some_and(|l| !l.hardware.is_empty()) {
         stage_linuxdrv(&comp, &rootfs);
     }
@@ -770,6 +778,53 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
     std::fs::copy(linuxdrv_build(), rootfs.join("usr/bin/linuxdrv")).unwrap();
 }
 
+/// Pack a root filesystem into a ramdisk image (kernel/src/ramdisk.rs): a
+/// 32-byte header (`FLARERD1`, length, checksum) and the kernel's initramfs
+/// format (kernel/build.rs `pack_dir`). Returns the payload's size.
+fn pack_ramdisk(dir: &Path, out: &Path) -> usize {
+    fn pack(root: &Path, dir: &Path, out: &mut Vec<u8>) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+        entries.sort();
+        for p in entries {
+            let rel = format!("/{}", p.strip_prefix(root).unwrap().display());
+            let meta = std::fs::symlink_metadata(&p).unwrap();
+            let (kind, data): (u8, Vec<u8>) = if meta.file_type().is_symlink() {
+                (3, std::fs::read_link(&p).unwrap().to_string_lossy().into_owned().into_bytes())
+            } else if meta.is_dir() {
+                (2, Vec::new())
+            } else {
+                (1, std::fs::read(&p).unwrap())
+            };
+            out.push(kind);
+            out.extend_from_slice(&(meta.permissions().mode() & 0o7777).to_le_bytes());
+            out.extend_from_slice(&(rel.len() as u16).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(rel.as_bytes());
+            out.extend_from_slice(&data);
+            if kind == 2 {
+                pack(root, &p, out);
+            }
+        }
+    }
+    let mut body = Vec::new();
+    pack(dir, dir, &mut body);
+    let mut sum = 0u64;
+    for c in body.chunks(8) {
+        let mut w = [0u8; 8];
+        w[..c.len()].copy_from_slice(c);
+        sum = sum.wrapping_add(u64::from_le_bytes(w));
+    }
+    let mut img = Vec::with_capacity(body.len() + 32);
+    img.extend_from_slice(b"FLARERD1");
+    img.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    img.extend_from_slice(&sum.to_le_bytes());
+    img.extend_from_slice(&[0; 8]);
+    img.extend_from_slice(&body);
+    std::fs::write(out, &img).unwrap();
+    body.len()
+}
+
 /// Build (once) the musl C toolchain for Linux test programs.
 fn linux_sdk() -> PathBuf {
     let out = root().join("target").join("linux-sdk");
@@ -786,8 +841,12 @@ fn linux_sdk() -> PathBuf {
 /// applet links, and the Linux test programs. `full` adds Arcan, ART, ATL
 /// and fdbd; boards with a small boot image use the minimal profile.
 fn assemble_rootfs(full: bool) -> PathBuf {
+    assemble_rootfs_at(full, &root().join("target").join("flare-rootfs"))
+}
+
+fn assemble_rootfs_at(full: bool, rootfs: &Path) -> PathBuf {
     use std::os::unix::fs::{symlink, PermissionsExt};
-    let rootfs = root().join("target").join("flare-rootfs");
+    let rootfs = rootfs.to_path_buf();
     let _ = std::fs::remove_dir_all(&rootfs);
     copy_tree(&root().join("compat/linux/rootfs"), &rootfs);
     for d in ["bin", "sbin", "lib", "usr/bin", "usr/lib", "root", "tmp", "dev", "proc"] {
@@ -895,6 +954,7 @@ fn fbcon_test(o: &Opts) -> bool {
     let int = |k: &str| fb.props.get(k).and_then(|v| v.as_int()).unwrap_or(0);
     let (w, h, stride, scale) = (int("width"), int("height"), int("stride"), int("console-scale").max(1));
     let base = fb.regs[0].base;
+    let follows_display = comp.linux.as_ref().is_some_and(|l| l.display.is_some());
     let kernel = build(&o2);
     // Boot it as a phone's boot loader would: the raw Linux Image.
     let image = root().join("target/fbcon-test.Image");
@@ -908,6 +968,16 @@ fn fbcon_test(o: &Opts) -> bool {
     // move itself); no -kernel, so the CPU starts as from reset.
     let load_at = o.rest.iter().position(|a| a == "--load-at").and_then(|i| o.rest.get(i + 1)).cloned();
     let mut cmd = qemu_command(&o2, &image);
+    // A ramdisk root filesystem goes where the board's boot loader puts it.
+    let ramdisk = comp.linux.as_ref().is_some_and(|l| l.rootfs == "ramdisk");
+    if ramdisk {
+        let int = |k: &str| p.boot_image.get(k).and_then(|v| v.as_int()).unwrap_or(0);
+        cmd.arg("-device").arg(format!(
+            "loader,file={},addr={:#x}",
+            root().join("target/flare-ramdisk.bin").display(),
+            int("base") + int("ramdisk-offset")
+        ));
+    }
     if let Some(addr) = &load_at {
         let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
         let mut c = Command::new(cmd.get_program());
@@ -948,18 +1018,51 @@ fn fbcon_test(o: &Opts) -> bool {
     let mut seen = String::new(); // every screen decoded: lines scroll off
     let deadline = Instant::now() + Duration::from_secs(300);
     let done = "rc: starting an interactive shell";
-    while Instant::now() < deadline && !text.contains(done) && !text.contains("KERNEL PANIC") {
+    let joined = |t: &str| t.replace('\n', "");
+    while Instant::now() < deadline && !joined(&text).contains(done) && !joined(&text).contains("KERNEL PANIC") {
         std::thread::sleep(Duration::from_secs(2));
-        q.cmd(&format!(
-            "{{\"execute\":\"pmemsave\",\"arguments\":{{\"val\":{},\"size\":{},\"filename\":\"{}\"}}}}",
-            base,
-            stride * h,
-            dump.display()
-        ));
+        // With a display driver (it takes the panel over, and the console
+        // follows it) read what the panel shows; else the boot loader's
+        // framebuffer memory.
+        let (mut sw, mut sh, mut sstride) = (w, h, stride);
+        if follows_display {
+            let ppm = root().join("target/fbcon-test.ppm");
+            let _ = std::fs::remove_file(&ppm);
+            q.cmd(&format!("{{\"execute\":\"screendump\",\"arguments\":{{\"filename\":\"{}\"}}}}", ppm.display()));
+            let Ok(img) = std::fs::read(&ppm) else { continue };
+            // P6 <w> <h> 255\n<RGB...>
+            let mut fields = Vec::new();
+            let mut at = 0;
+            while fields.len() < 4 && at < img.len() {
+                while at < img.len() && img[at].is_ascii_whitespace() {
+                    at += 1;
+                }
+                let start = at;
+                while at < img.len() && !img[at].is_ascii_whitespace() {
+                    at += 1;
+                }
+                fields.push(String::from_utf8_lossy(&img[start..at]).into_owned());
+            }
+            at += 1;
+            if fields.len() < 4 || fields[0] != "P6" {
+                continue;
+            }
+            sw = fields[1].parse().unwrap_or(0);
+            sh = fields[2].parse().unwrap_or(0);
+            sstride = sw * 3;
+            std::fs::write(&dump, &img[at.min(img.len())..]).unwrap();
+        } else {
+            q.cmd(&format!(
+                "{{\"execute\":\"pmemsave\",\"arguments\":{{\"val\":{},\"size\":{},\"filename\":\"{}\"}}}}",
+                base,
+                stride * h,
+                dump.display()
+            ));
+        }
         let out = Command::new("python3")
             .arg(root().join("tools/bootimg/fbtext.py"))
             .arg(&dump)
-            .args([w, h, stride, 3, scale].iter().map(|v| v.to_string()))
+            .args([sw, sh, sstride, 3, scale].iter().map(|v| v.to_string()))
             .arg(&png)
             .output()
             .unwrap_or_else(|e| die(&format!("fbtext.py: {}", e)));
@@ -970,8 +1073,17 @@ fn fbcon_test(o: &Opts) -> bool {
     let _ = child.wait();
     println!("---- screen ({}) ----\n{}", png.display(), text);
     let flat = seen.replace('\n', "");
-    let mut ok = text.contains(done) && !seen.contains("KERNEL PANIC");
-    for want in ["rc: input devices: event0", "keys waiting"] {
+    let mut ok = joined(&text).contains(done) && !flat.contains("KERNEL PANIC");
+    let mut wants = vec!["rc: starting an interactive shell"];
+    if comp.components.iter().any(|c| c.instance == "keys") {
+        wants.extend(["rc: input devices: event0", "keys waiting"]);
+    }
+    // (With a display driver, the shell on the panel it shows is the proof
+    // that the console followed it.)
+    if ramdisk {
+        wants.push("linux: ramdisk unpacked:");
+    }
+    for want in wants {
         let found = flat.split_whitespace().collect::<Vec<_>>().join(" ").contains(want);
         println!("{}: {}", want, if found { "seen" } else { "MISSING" });
         ok &= found;
@@ -1022,6 +1134,9 @@ fn image(o: &Opts) {
     std::fs::write(&spec_path, spec).unwrap();
     let mut c = Command::new("python3");
     c.arg(root().join("tools/bootimg/mkimage.py")).arg(&spec_path).arg(&image).arg(&out);
+    if comp.linux.as_ref().is_some_and(|l| l.rootfs == "ramdisk") {
+        c.arg(root().join("target/flare-ramdisk.bin"));
+    }
     run(c);
     println!("image: {}", out.join("boot.img").display());
 }
@@ -1242,10 +1357,20 @@ fn linuxdrv_test(o: &Opts) -> bool {
         // A key pressed on QEMU's virtio keyboard, through Linux's driver
         // (sent once the report is out): KEY_A.
         "key 30 pressed",
+        // ... and handed to Flare: described, and the event read from Flare's
+        // own /dev/input/event0 (type 1, code 0x1e, value 1 after the time).
+        "linux: input device event1: linuxdrv keys",
+        "rc: event1 read: 01 00 1e 00 01 00 00 00",
+        // The tablet as Flare's touch screen, and the phone shell unlocked by
+        // a swipe through it (Linux's virtio-input driver, the driver host,
+        // Flare's evdev, Arcan).
+        "is Flare's touch screen",
+        "flarehome: ready",
+        "flarehome: unlocked",
     ];
     let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];
-    let deadline = Instant::now() + Duration::from_secs(300);
-    let mut pressed = false;
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let (mut pressed, mut tapped) = (false, false);
     let ok = loop {
         let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
         if !pressed && seen.contains("linuxdrv: input devices:") {
@@ -1254,6 +1379,13 @@ fn linuxdrv_test(o: &Opts) -> bool {
                 q.cmd(r#"{"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"a"}]}}"#);
             }
             pressed = true;
+        }
+        if !tapped && seen.contains("flarehome: ready") {
+            std::thread::sleep(Duration::from_secs(2));
+            if let Some(mut q) = Qmp::connect(&qmp) {
+                q.swipe((60.0, 600.0), (400.0, 600.0));
+            }
+            tapped = true;
         }
         if expected.iter().all(|e| seen.contains(e)) {
             break true;

@@ -105,7 +105,9 @@ pub struct LinuxConfig {
     pub display: Option<String>,
     /// Root filesystem profile `cargo xtask build` assembles: "full" (the
     /// default: Arcan, ART, ATL and everything else) or "minimal" (busybox,
-    /// the Linux tests and droid) for boards whose boot image must be small.
+    /// the Linux tests and droid) for boards whose boot image must be small,
+    /// or "ramdisk": the kernel carries the minimal one and the boot image's
+    /// ramdisk the full one (`cargo xtask image`; a phone).
     pub rootfs: String,
     /// Devices a Linux driver host (`/dev/flarehw`) may claim: their register
     /// windows and interrupts, exclusively (no component may also get them).
@@ -113,6 +115,10 @@ pub struct LinuxConfig {
     /// Firmware calls (SMC function ids, inclusive ranges) Linux may make
     /// through `/dev/flarehw`.
     pub smc: Vec<(u32, u32)>,
+    /// Linux input devices (/dev/input/eventN) fed by the driver host
+    /// (`/dev/flarehw`) with what its Linux drivers report: a phone's touch
+    /// screen and keys.
+    pub inputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +158,11 @@ impl Composition {
                         out.push(name.clone());
                     }
                 }
+            }
+        }
+        for name in self.linux.iter().flat_map(|l| l.inputs.iter()) {
+            if !out.contains(name) {
+                out.push(name.clone());
             }
         }
         out
@@ -284,7 +295,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control", "display", "rootfs", "hardware", "smc"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display", "rootfs", "hardware", "smc", "inputs"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -294,8 +305,11 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                     let control = sec.get("control").and_then(|v| v.as_bool()).unwrap_or(false);
                     let display = sec.get("display").and_then(|v| v.as_str()).map(|s| s.to_string());
                     let rootfs = sec.get("rootfs").and_then(|v| v.as_str()).unwrap_or("full").to_string();
-                    if rootfs != "full" && rootfs != "minimal" {
-                        err(sec.line, format!("[linux] rootfs must be \"full\" or \"minimal\", not \"{}\"", rootfs));
+                    if !["full", "minimal", "ramdisk"].contains(&rootfs.as_str()) {
+                        err(
+                            sec.line,
+                            format!("[linux] rootfs must be \"full\", \"minimal\" or \"ramdisk\", not \"{}\"", rootfs),
+                        );
                     }
                     let mut smc = Vec::new();
                     for r in list("smc").unwrap_or_default() {
@@ -317,6 +331,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                         rootfs,
                         hardware,
                         smc,
+                        inputs: list("inputs").unwrap_or_default(),
                     })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
@@ -572,6 +587,20 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     if let Err(rs) = resolve::resolve(&unique) {
         for r in rs {
             errs.push(format!("{}", r));
+        }
+    }
+    // Input devices the driver host feeds: its own, and only with hardware.
+    if let Some(l) = &comp.linux {
+        for name in &l.inputs {
+            if l.hardware.is_empty() {
+                errs.push(format!("[linux] inputs '{}' needs [linux] hardware (a driver host to feed it)", name));
+            }
+            if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+                errs.push(format!("[linux] inputs name '{}' must be [A-Za-z0-9_-]", name));
+            }
+            if let Some(owner) = input_owner.get(name) {
+                errs.push(format!("input device '{}' fed by both '{}' and the Linux driver host", name, owner));
+            }
         }
     }
     // Hardware for the Linux driver host: described, enabled, and nobody else's.

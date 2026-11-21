@@ -28,6 +28,7 @@ mod kernel;
 mod linux;
 mod mm;
 mod platform;
+mod ramdisk;
 mod smp;
 
 use core::panic::PanicInfo;
@@ -57,7 +58,8 @@ pub extern "C" fn kmain() -> ! {
         platform::RAM.len(),
         platform::DEVICES.len()
     );
-    mm::frame::init(heap);
+    let rd = ramdisk::probe();
+    mm::frame::init(heap, rd.unwrap_or((0, 0)));
     arch::enable_fp();
     arch::gic::init();
     arch::timer::init();

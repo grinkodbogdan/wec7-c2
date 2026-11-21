@@ -162,6 +162,17 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = {};", l.control);
             let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &{:?};", l.hardware);
             let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &{:?};", l.smc);
+            // The full root filesystem in the boot image's ramdisk, at the
+            // board's ramdisk address.
+            let int = |k: &str| platform.boot_image.get(k).and_then(|v| v.as_int());
+            let ramdisk = match (l.rootfs.as_str(), int("base"), int("ramdisk-offset")) {
+                ("ramdisk", Some(b), Some(o)) => Some(b as u64 + o as u64),
+                ("ramdisk", _, _) => fail("[linux] rootfs = \"ramdisk\" needs [boot-image] base and ramdisk-offset in the board's FHD"),
+                _ => None,
+            };
+            let _ = writeln!(g, "pub const RAMDISK_PHYS: Option<u64> = {:?};", ramdisk);
+            let li: Vec<usize> = l.inputs.iter().filter_map(|n| inputs.iter().position(|m| m == n)).collect();
+            let _ = writeln!(g, "pub const LINUX_INPUTS: &[usize] = &{:?};", li);
             let _ = writeln!(
                 g,
                 "pub static INITRAMFS: &[u8] = include_bytes!({:?});",
@@ -180,6 +191,8 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = false;");
             let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &[];");
             let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &[];");
+            let _ = writeln!(g, "pub const LINUX_INPUTS: &[usize] = &[];");
+            let _ = writeln!(g, "pub const RAMDISK_PHYS: Option<u64> = None;");
             let _ = writeln!(g, "pub static INITRAMFS: &[u8] = &[];");
         }
     }

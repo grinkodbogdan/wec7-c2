@@ -540,11 +540,82 @@ static void l_gets(const char *path, char *out, int cap)
 		*nl = 0;
 }
 
-/* Key presses and touches on Linux's input devices, as they happen: proof
- * on the screen that the touch screen and the keys work. */
+/* ---- Linux's input devices, handed to Flare ----
+ * The composition names Flare input devices the host feeds ([linux] inputs,
+ * e.g. "touch" and "keys"): Linux's touch screen feeds the one whose name
+ * contains "touch", its key devices (power key, volume keys...) together the
+ * one whose name contains "key". Each is described as Linux's driver
+ * describes it (evdev ioctls inside Linux) and gets its events as they come.
+ * flare_abi::proto::input::Describe, laid out as #[repr(C)]. */
+struct flare_abs {
+	int32_t min, max, fuzz, flat, res;
+};
+struct flare_describe {
+	char name[64];
+	uint16_t bustype, vendor, product, version;
+	uint32_t ev_bits;
+	uint8_t key_bits[96], rel_bits[2], abs_bits[8], prop_bits[4];
+	struct flare_abs abs[64];
+};
+struct flare_event {
+	uint16_t kind, code;
+	int32_t value;
+};
+#define FLAREHW_INPUT 0x4604
+struct flare_input_req {
+	uint32_t index, op;
+	uint64_t ptr, len;
+};
+
+static int flare_input(int idx, int op, const void *p, size_t len)
+{
+	struct flare_input_req r = { (uint32_t)idx, (uint32_t)op, (uint64_t)(uintptr_t)p, len };
+	return ioctl(hw, FLAREHW_INPUT, &r);
+}
+
+#define EVIOC(nr, len) (0x80000000u | ((unsigned)(len) << 16) | ('E' << 8) | (nr))
+
 struct watched {
 	char dev[32], name[64];
+	int slot; /* Flare input index, or -1: shown only */
+	/* A touch screen handed over as an absolute pointer: its axis ranges
+	 * (ABS_X, ABS_Y), scaled to 0..32767 (see tablet_describe). */
+	int tablet, min[2], max[2];
 };
+
+/* A touch screen as Flare's user interfaces take touch (QEMU's virtio
+ * tablet): ABS_X and ABS_Y in 0..32767, BTN_LEFT while touched. Linux's
+ * driver reports the first finger that way too (pointer emulation), in the
+ * panel's own units, with BTN_TOUCH. */
+static void tablet_describe(const struct flare_describe *in, struct flare_describe *out)
+{
+	memset(out, 0, sizeof *out);
+	memcpy(out->name, in->name, sizeof out->name);
+	out->bustype = in->bustype, out->vendor = in->vendor, out->product = in->product, out->version = in->version;
+	out->ev_bits = 1 << 0 | 1 << 1 | 1 << 3;  /* SYN, KEY, ABS */
+	out->key_bits[0x110 / 8] |= 1 << (0x110 % 8); /* BTN_LEFT */
+	out->abs_bits[0] = 3;                      /* ABS_X, ABS_Y */
+	out->abs[0] = (struct flare_abs){ 0, 32767, 0, 0, 0 };
+	out->abs[1] = (struct flare_abs){ 0, 32767, 0, 0, 0 };
+}
+
+/* One event of a touch screen, as the tablet: 0 to drop it. */
+static int tablet_event(const struct watched *w, struct flare_event *e)
+{
+	if (e->kind == 0)
+		return 1;
+	if (e->kind == 3 && e->code < 2) {
+		int span = w->max[e->code] - w->min[e->code];
+		long v = span > 0 ? (long)(e->value - w->min[e->code]) * 32767 / span : 0;
+		e->value = (int32_t)(v < 0 ? 0 : v > 32767 ? 32767 : v);
+		return 1;
+	}
+	if (e->kind == 1 && (e->code == 0x14a || e->code == 0x110)) { /* BTN_TOUCH, BTN_LEFT */
+		e->code = 0x110;
+		return 1;
+	}
+	return 0;
+}
 
 static void *input_thread(void *p)
 {
@@ -560,11 +631,16 @@ static void *input_thread(void *p)
 			long sec, usec;
 			unsigned short type, code;
 			int value;
-		} ev[16];
+		} ev[64];
 		long n = l_read((int)fd, ev, sizeof ev);
 		if (n <= 0)
 			break;
+		struct flare_event out[64];
+		int m = 0;
 		for (long i = 0; i < n / (long)sizeof ev[0]; i++) {
+			out[m] = (struct flare_event){ ev[i].type, ev[i].code, ev[i].value };
+			if (!w->tablet || tablet_event(w, &out[m]))
+				m++;
 			if (ev[i].type == 3 && (ev[i].code == 0x35 || ev[i].code == 0x00))
 				x = ev[i].value; /* ABS_MT_POSITION_X, ABS_X */
 			else if (ev[i].type == 3 && (ev[i].code == 0x36 || ev[i].code == 0x01))
@@ -573,30 +649,121 @@ static void *input_thread(void *p)
 				down = ev[i].value ? 1 : 0;
 			else if (ev[i].type == 1 && ev[i].value == 1)
 				printf("linuxdrv: %s: key %u pressed\n", w->name, ev[i].code);
-			else if (ev[i].type == 1 && ev[i].value == 0)
-				printf("linuxdrv: %s: key %u released\n", w->name, ev[i].code);
 			else if (ev[i].type == 0 && down == 1) {
-				/* a new touch: its first position */
-				printf("linuxdrv: %s: touch %d at %d,%d\n", w->name, ++touches, x, y);
+				if (++touches <= 3) /* the first few: proof it works */
+					printf("linuxdrv: %s: touch %d at %d,%d\n", w->name, touches, x, y);
 				down = 2;
 			}
 		}
+		if (w->slot >= 0 && m)
+			flare_input(w->slot, 1, out, (size_t)m * sizeof out[0]);
 		fflush(stdout);
 	}
 	l_close((int)fd);
 	return NULL;
 }
 
-static void watch_input(const char *dev, const char *name)
+/* What a Linux input device is, from Linux's own evdev. */
+static void describe_linux(const char *dev, struct flare_describe *d)
 {
-	struct watched *w = calloc(1, sizeof *w);
-	if (!w)
+	char path[64];
+	snprintf(path, sizeof path, "/dev/input/%s", dev);
+	memset(d, 0, sizeof *d);
+	long fd = l_open(path, 0);
+	if (fd < 0)
 		return;
-	snprintf(w->dev, sizeof w->dev, "%s", dev);
-	snprintf(w->name, sizeof w->name, "%s", name[0] ? name : dev);
-	pthread_t t;
-	if (pthread_create(&t, NULL, input_thread, w) == 0)
-		pthread_detach(t);
+	l_sys(NR_IOCTL, fd, EVIOC(0x06, sizeof d->name - 1), (long)d->name, 0, 0);
+	uint16_t id[4] = { 0 };
+	l_sys(NR_IOCTL, fd, EVIOC(0x02, sizeof id), (long)id, 0, 0);
+	d->bustype = id[0], d->vendor = id[1], d->product = id[2], d->version = id[3];
+	l_sys(NR_IOCTL, fd, EVIOC(0x20, 4), (long)&d->ev_bits, 0, 0);
+	l_sys(NR_IOCTL, fd, EVIOC(0x21, sizeof d->key_bits), (long)d->key_bits, 0, 0);
+	l_sys(NR_IOCTL, fd, EVIOC(0x22, sizeof d->rel_bits), (long)d->rel_bits, 0, 0);
+	l_sys(NR_IOCTL, fd, EVIOC(0x23, sizeof d->abs_bits), (long)d->abs_bits, 0, 0);
+	l_sys(NR_IOCTL, fd, EVIOC(0x09, sizeof d->prop_bits), (long)d->prop_bits, 0, 0);
+	for (int a = 0; a < 64; a++) {
+		if (!(d->abs_bits[a / 8] >> (a % 8) & 1))
+			continue;
+		int32_t ai[6] = { 0 }; /* value, min, max, fuzz, flat, resolution */
+		if (l_sys(NR_IOCTL, fd, EVIOC(0x40 + a, sizeof ai), (long)ai, 0, 0) == 0)
+			d->abs[a] = (struct flare_abs){ ai[1], ai[2], ai[3], ai[4], ai[5] };
+	}
+	l_close((int)fd);
+}
+
+/* A touch screen (multi-touch, or a direct device) or another absolute
+ * pointer (QEMU's virtio tablet: ABS_X and ABS_Y). */
+static int is_touch(const struct flare_describe *d)
+{
+	return (d->abs_bits[0x35 / 8] >> (0x35 % 8) & 1) || (d->prop_bits[0] & 2 /* INPUT_PROP_DIRECT */) ||
+	       (d->abs_bits[0] & 3) == 3;
+}
+
+/* The Flare input whose name contains `what`, or -1. */
+static int flare_slot(const char *what)
+{
+	for (int i = 0; i < 16; i++) {
+		char name[32] = "";
+		if (flare_input(i, 2, name, sizeof name))
+			return -1;
+		if (strstr(name, what))
+			return i;
+	}
+	return -1;
+}
+
+/* Hand Linux's input devices to Flare and watch them. `devs`: event names. */
+static void bridge_inputs(char *devs[], int n)
+{
+	int touch = flare_slot("touch"), keys = flare_slot("key");
+	struct flare_describe *kd = calloc(1, sizeof *kd);
+	int nkeys = 0;
+	for (int i = 0; i < n; i++) {
+		struct flare_describe d;
+		describe_linux(devs[i], &d);
+		int slot = -1;
+		int tablet = 0;
+		if (is_touch(&d) && touch >= 0) {
+			struct flare_describe t;
+			tablet_describe(&d, &t);
+			flare_input(touch, 0, &t, sizeof t);
+			printf("linuxdrv: %s (%s) is Flare's touch screen (%d..%d x %d..%d)\n", devs[i], d.name,
+			       d.abs[0].min, d.abs[0].max, d.abs[1].min, d.abs[1].max);
+			slot = touch;
+			touch = -1; /* one touch screen */
+			tablet = 1;
+		} else if ((d.ev_bits & 2) && keys >= 0 && kd) {
+			/* keys: one Flare device for all of Linux's key devices */
+			kd->ev_bits |= d.ev_bits;
+			for (int b = 0; b < 96; b++)
+				kd->key_bits[b] |= d.key_bits[b];
+			nkeys++;
+			slot = keys;
+		}
+		struct watched *w = calloc(1, sizeof *w);
+		if (!w)
+			continue;
+		snprintf(w->dev, sizeof w->dev, "%s", devs[i]);
+		snprintf(w->name, sizeof w->name, "%s", d.name[0] ? d.name : devs[i]);
+		w->slot = slot;
+		w->tablet = tablet;
+		w->min[0] = d.abs[0].min, w->max[0] = d.abs[0].max;
+		w->min[1] = d.abs[1].min, w->max[1] = d.abs[1].max;
+		pthread_t t;
+		if (pthread_create(&t, NULL, input_thread, w) == 0)
+			pthread_detach(t);
+	}
+	if (nkeys && kd) {
+		snprintf(kd->name, sizeof kd->name, "linuxdrv keys");
+		kd->ev_bits |= 1; /* EV_SYN */
+		flare_input(keys, 0, kd, sizeof *kd);
+		printf("linuxdrv: %d key device(s) are Flare's keys\n", nkeys);
+	}
+	free(kd);
+	/* /etc/rc waits for this before starting a user interface. */
+	FILE *f = fopen("/tmp/linuxdrv.ready", "w");
+	if (f)
+		fclose(f);
 }
 
 static void report(void)
@@ -679,18 +846,20 @@ static void report(void)
 			l_close((int)fd);
 	}
 	l_list("/sys/class/input", names, sizeof names);
-	int any = 0;
+	char *devs[32];
+	int ndev = 0;
 	save = NULL;
-	for (char *n = strtok_r(names, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
+	for (char *n = strtok_r(names, " ", &save); n && ndev < 32; n = strtok_r(NULL, " ", &save)) {
 		if (strncmp(n, "event", 5))
 			continue;
 		char path[96], dname[64] = "";
 		snprintf(path, sizeof path, "/sys/class/input/%s/device/name", n);
 		l_gets(path, dname, sizeof dname);
-		printf("%s%s (%s)", any++ ? ", " : "linuxdrv: input devices: ", n, dname[0] ? dname : "?");
-		watch_input(n, dname);
+		printf("%s%s (%s)", ndev ? ", " : "linuxdrv: input devices: ", n, dname[0] ? dname : "?");
+		devs[ndev++] = n;
 	}
-	printf(any ? "\n" : "linuxdrv: input devices: none\n");
+	printf(ndev ? "\n" : "linuxdrv: input devices: none\n");
+	bridge_inputs(devs, ndev);
 	/* Bring-up: what each device Linux has not probed yet still waits for. */
 	l_cat("/sys/kernel/debug/devices_deferred", "linuxdrv: waiting: ");
 	fflush(stdout);

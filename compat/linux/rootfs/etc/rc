@@ -19,6 +19,21 @@ if [ "$FLARE_BOOT" = quick ]; then
     start_linuxdrv
     echo "rc: quick boot: $(uname -sr), $(grep MemTotal /proc/meminfo | tr -s ' ')"
     echo "rc: components:"; cat /proc/components
+    # The driver host's input devices (a phone's touch screen and keys) must
+    # be described before a user interface opens them.
+    if [ -n "$linuxdrv_started" ]; then
+        i=0
+        while [ ! -e /tmp/linuxdrv.ready ] && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+    fi
+    # (tests: the first event that reaches Flare's input device eventN,
+    # N = $FLARE_TEST_INPUT; its type, code and value, after the time)
+    [ -n "$FLARE_TEST_INPUT" ] && \
+        (echo "rc: event$FLARE_TEST_INPUT read:$(head -c 24 /dev/input/event$FLARE_TEST_INPUT | od -An -tx1 -j16)" \
+            > /dev/console &)
+    # The phone shell, if this root filesystem has it and there is a display.
+    export MESA_LOADER_DRIVER_OVERRIDE=kms_swrast GBM_ALWAYS_SOFTWARE=1 MESA_SHADER_CACHE_DISABLE=true
+    [ -e /dev/fdb ] && command -v fdbd > /dev/null && (fdbd > /dev/console 2>&1 &)
+    [ -e /dev/dri/card0 ] && command -v arcan > /dev/null && flare-ui flarehome
     echo "rc: starting an interactive shell (type 'exit' to power off)"
     cd /root
     exec /bin/sh

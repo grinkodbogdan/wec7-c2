@@ -129,8 +129,12 @@ panic = "halt"             # keep a panic message on the screen
 format = "android-v0"
 page-size = 2048
 base = 0x80000000
-kernel-offset = 0x00080000             # LK forces 64-bit kernels to 0x80080000 anyway
-ramdisk-offset = 0x02000000
+kernel-offset = 0x00080000             # Xiaomi's LK loads elsewhere; the kernel moves itself here
+# The ramdisk (Flare's full root filesystem, [linux] rootfs = "ramdisk")
+# goes where ~159 MiB are free, up to ramoops (as QRT's: a large ramdisk
+# at +0x2000000 would run into qseecom at 0x84a00000).
+ramdisk-offset = 0x16000000
+max-ramdisk-end = 0x9ff00000
 tags-offset = 0x01e00000
 kernel-compression = "gzip"
 cmdline = "flare"

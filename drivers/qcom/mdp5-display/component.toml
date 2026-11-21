@@ -1,0 +1,15 @@
+[component]
+name = "mdp5-display"
+version = "0.1.0"
+kind = "driver"
+swap = "restart"          # the pipe is re-pointed at the same memory
+
+[binds]
+compatible = ["qcom,mdp5"]
+
+[provides]
+interfaces = ["flare.display@1.0"]
+
+[lifecycle]
+quiesce = false
+checkpoint = false

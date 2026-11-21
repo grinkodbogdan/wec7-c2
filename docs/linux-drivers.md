@@ -90,15 +90,22 @@ addresses given to devices are therefore right, with no IOMMU needed.
 
 ## Tested
 
-`cargo xtask linuxdrv-test` boots `system/qemu-virt-linuxdrv.boot.toml`.
-That is the reference phone board with its disk and RTC given to Linux
-instead of Flare's native drivers. It checks that:
+`cargo xtask linuxdrv-test` boots `system/qemu-virt-linuxdrv.boot.toml`,
+the phone image's shape on QEMU. The reference phone board's disk, RTC,
+tablet and keyboard go to Linux instead of Flare's native drivers; the
+host hands the tablet and keyboard back as Flare's `touch` and `keys`.
+There is a display driver and the full root filesystem, booted the quick
+way into the phone shell. It checks that:
 * the driver host gets exactly those two devices;
 * Linux's virtio-blk driver reads the userdata disk's first sector (it
   starts with `FLAR`); this needs DMA and completion interrupts;
 * with its interrupt edge-triggered (`linux-irq = "edge"`), eight uncached
   reads, each completed by an interrupt;
-* Linux's PL031 driver reads the clock.
+* Linux's PL031 driver reads the clock;
+* a key pressed on QEMU's keyboard reaches Flare's `/dev/input/event1`
+  through Linux's driver (the bytes are checked);
+* the phone shell starts and is unlocked by a swipe through Linux's
+  tablet driver.
 
 Anything else Linux tries to map is refused and logged
 (`linuxdrv: ioremap(...): not hardware this host was given`).
@@ -117,11 +124,27 @@ The panel, the UART and the CPUs stay Flare's. The tree is mainline's
 off the panel's clocks and rails, which it does not know are in use. See
 [ports/xiaomi-tissot.md](ports/xiaomi-tissot.md).
 
+## Input devices for Flare
+
+`[linux] inputs = ["touch", "keys"]` names Flare input devices
+(`/dev/input/eventN`) that the driver host feeds, instead of an input
+driver component. `ioctl(FLAREHW_INPUT, {index, op, ptr, len})` with:
+* op 2: the device's name;
+* op 0: describe it (`flare_abi::proto::input::Describe`);
+* op 1: report events.
+
+The host describes each Linux input device from Linux's own evdev
+(name, ids, capability bits, axis ranges). It gives the touch screen to the
+Flare device whose name contains `touch`, as an absolute pointer in
+0..32767 with `BTN_LEFT` (as the phone shell takes touch). All key devices
+go to the one whose name contains `key`. Then it writes
+`/tmp/linuxdrv.ready`, which `/etc/rc` waits for before starting a user
+interface.
+
 ## Not yet
 
-* Linux's devices are visible only inside the driver host. Next is
+* Linux's block devices are visible only inside the driver host. Next is
   bridging them to Flare:
-  * input devices to Flare input devices (the touch screen);
   * block devices to the storage endpoint, so the Linux personality and
     components can use the eMMC.
 * USB device mode (for `fdb`), display and GPU, with the IOMMU and the

@@ -73,6 +73,8 @@ panic = "halt"                 # keep a panic on screen; default "power-off"
 format = "android-v0"          # kernel packaged (`cargo xtask image`)
 base = 0x80000000
 kernel-offset = 0x80000
+ramdisk-offset = 0x16000000    # where it copies the ramdisk ([linux] rootfs = "ramdisk")
+max-ramdisk-end = 0x9ff00000   # the packer refuses a ramdisk past this
 ...
 ```
 

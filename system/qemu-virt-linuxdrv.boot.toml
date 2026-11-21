@@ -1,8 +1,10 @@
-# Linux's own drivers in a Flare process: the reference phone board, with its
-# storage (virtio-blk), real-time clock (PL031) and keyboard (virtio-input)
-# given to Linux instead of Flare's native drivers. /etc/rc starts the driver host (linuxdrv), which
-# runs Linux's virtio-blk and rtc-pl031 drivers as a library.
-# `cargo xtask linuxdrv-test` boots it.
+# The Xiaomi Mi A1's full image (system/xiaomi-tissot-linuxdrv.boot.toml) in
+# the shape QEMU can run: the reference phone board with its storage
+# (virtio-blk), real-time clock (PL031), touch screen (virtio tablet) and
+# keyboard given to Linux's own drivers in the driver host (linuxdrv), which
+# hands touch and keys back to Flare as input devices; a display driver for
+# the panel; the quick boot path into the Arcan phone shell.
+# `cargo xtask linuxdrv-test` boots it and taps the screen.
 
 name = "qemu-virt-linuxdrv"
 board = "qemu/virt-phone"
@@ -18,10 +20,25 @@ grants = [
 restart = "on-failure"
 max-restarts = 3
 
+[component.display]
+manifest = "drivers/display/ramfb"
+grants = [
+    "fwcfg=mmio:fwcfg0",
+    "dma=dma:4k",
+    "fb=shm:display:4m",
+    "display=endpoint:display:recv",
+    "console=endpoint:console:send:badge=8",
+]
+restart = "on-failure"
+
 [linux]
 init = ["/bin/sh", "/etc/rc"]
-env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
+# FLARE_TEST_INPUT=1: rc prints the first event of /dev/input/event1 (keys).
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick", "FLARE_TEST_INPUT=1"]
 control = true
-rootfs = "minimal"
+rootfs = "full"
+display = "display"
 # Devices whose registers and interrupts only the Linux driver host may use.
-hardware = ["virtio31", "rtc0", "virtio29"]
+hardware = ["virtio31", "rtc0", "virtio30", "virtio29"]
+# Flare input devices the driver host feeds (event0, event1).
+inputs = ["touch", "keys"]

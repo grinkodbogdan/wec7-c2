@@ -1,0 +1,20 @@
+# The phone test double with a display driver that takes the panel over: the
+# kernel console starts on the boot loader's framebuffer, then follows the
+# panel into the display driver's shared memory (as on the Xiaomi Mi A1 with
+# drivers/qcom/mdp5-display). `cargo xtask fbcon-test --system
+# system/qemu-virt-fbcon-display.boot.toml` reads the shell from the panel.
+
+name = "qemu-virt-fbcon-display"
+board = "qemu/virt-fbcon"
+
+[component.display]
+manifest = "drivers/display/ramfb"
+grants = ["fwcfg=mmio:fwcfg0", "dma=dma:4k", "fb=shm:display:4m", "display=endpoint:display:recv"]
+restart = "on-failure"
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100"]
+control = true
+rootfs = "minimal"
+display = "display"

@@ -9,8 +9,9 @@
 # are Linux's (gpio-keys, pm8941-pwrkey) here, not the native TLMM driver's.
 #
 # Linux's drivers see only what is granted below; the panel and the CPUs
-# stay Flare's. The driver host reports what Linux found, then prints key
-# presses and touches (try them).
+# stay Flare's. The driver host reports what Linux found and hands the
+# touch screen and keys to Flare; then the Arcan phone shell starts on the
+# panel (FLARE_BOOT=quick in /etc/rc).
 
 name = "xiaomi-tissot-linuxdrv"
 board = "xiaomi/tissot"
@@ -20,13 +21,28 @@ board = "xiaomi/tissot"
 # register access with the clock off hangs the CPU (QRT 0.21.16). The log
 # is on the screen.
 
+# The panel: the display engine keeps the boot loader's setup, scanning
+# this shared memory as 32-bit pixels instead of the splash buffer (QRT's
+# way on this phone). Linux sees it as /dev/dri/card0; the kernel console
+# moves there until the phone shell draws.
+[component.display]
+manifest = "drivers/qcom/mdp5-display"
+grants = ["mdp=mmio:mdp", "fb=shm:display:9m", "display=endpoint:display:recv"]
+restart = "on-failure"
+
 [linux]
 init = ["/bin/sh", "/etc/rc"]
 # FLARE_BOOT=quick: the driver host first, no test suites (/etc/rc).
 env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
 control = true
-rootfs = "minimal"
+# The kernel carries the minimal root filesystem (and the driver host); the
+# boot image's ramdisk the full one: Arcan, Mesa, the phone shell, ART.
+rootfs = "ramdisk"
+display = "display"
 hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3"]
 # Linux's Qualcomm drivers make no firmware calls in this configuration
 # (QCOM_SCM is off); none are allowed.
 smc = []
+# Linux's touch screen and keys, handed back to Flare (/dev/input/event0, 1)
+# for the phone shell.
+inputs = ["touch", "keys"]

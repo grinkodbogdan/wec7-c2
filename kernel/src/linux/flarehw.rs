@@ -17,7 +17,10 @@
 //! * `ioctl(FLAREHW_IRQ)`: unmask, mask or set the trigger of a granted
 //!   interrupt; `read()` returns the ids of interrupts that fired (4 bytes
 //!   each), each masked until unmasked again;
-//! * `ioctl(FLAREHW_SMC)`: an allowed SMC Calling Convention call.
+//! * `ioctl(FLAREHW_SMC)`: an allowed SMC Calling Convention call;
+//! * `ioctl(FLAREHW_INPUT)`: feed the Linux input devices the composition
+//!   gives the host (`[linux] inputs`): name, describe, report events, as
+//!   an input driver component does with `INPUT_REPORT`.
 
 use super::abi::*;
 use super::Kernel;
@@ -31,6 +34,7 @@ pub const FLAREHW_INFO: u64 = 0x4600;
 pub const FLAREHW_DMA_ALLOC: u64 = 0x4601;
 pub const FLAREHW_IRQ: u64 = 0x4602;
 pub const FLAREHW_SMC: u64 = 0x4603;
+pub const FLAREHW_INPUT: u64 = 0x4604;
 /// mmap offset bit: map DMA memory non-cacheable.
 pub const NOCACHE: u64 = 1 << 62;
 
@@ -188,6 +192,31 @@ impl Kernel {
                     _ => return Err(EINVAL),
                 }
                 Ok(0)
+            }
+            FLAREHW_INPUT => {
+                // in: u32 index (into [linux] inputs), u32 op (0 describe,
+                // 1 events, 2 name), u64 ptr, u64 len
+                let v = self.uread(c, arg, 24)?;
+                let w32 = |i: usize| u32::from_le_bytes(v[i..i + 4].try_into().unwrap());
+                let w64 = |i: usize| u64::from_le_bytes(v[i..i + 8].try_into().unwrap());
+                let (idx, op, ptr, len) = (w32(0) as usize, w32(4) as u64, w64(8), w64(16));
+                let &dev = boot::LINUX_INPUTS.get(idx).ok_or(ENOENT)?;
+                if op == 2 {
+                    let name = boot::INPUT_DEVICES[dev].as_bytes();
+                    let mut out = [0u8; 32];
+                    let n = name.len().min(31);
+                    out[..n].copy_from_slice(&name[..n]);
+                    return self.uwrite(c, ptr, &out[..(len as usize).min(32)]).map(|_| 0);
+                }
+                if len > 8192 {
+                    return Err(EINVAL);
+                }
+                let bytes = self.uread(c, ptr, len as usize)?;
+                if self.linux_input_report(dev, op, &bytes) {
+                    Ok(0)
+                } else {
+                    Err(EINVAL)
+                }
             }
             FLAREHW_SMC => {
                 let v = self.uread(c, arg, 64)?;

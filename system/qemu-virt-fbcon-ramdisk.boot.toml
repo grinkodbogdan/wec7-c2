@@ -1,0 +1,13 @@
+# The phone test double booting like the Xiaomi Mi A1's full image: the
+# kernel carries the minimal root filesystem, the ramdisk (loaded where the
+# board's boot loader would put it) the full one, and the quick boot path.
+# `cargo xtask fbcon-test --system system/qemu-virt-fbcon-ramdisk.boot.toml`.
+
+name = "qemu-virt-fbcon-ramdisk"
+board = "qemu/virt-fbcon"
+
+[linux]
+init = ["/bin/sh", "/etc/rc"]
+env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
+control = true
+rootfs = "ramdisk"

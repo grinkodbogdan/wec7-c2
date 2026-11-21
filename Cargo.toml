@@ -13,6 +13,7 @@ members = [
     "drivers/common/gpio-keys-pl061",
     "drivers/qcom/gpio-keys-tlmm",
     "drivers/qcom/uart-msm",
+    "drivers/qcom/mdp5-display",
     "drivers/virtio/blk",
     "drivers/virtio/input",
     "drivers/virtio/console",

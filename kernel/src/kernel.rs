@@ -190,6 +190,8 @@ pub struct Kernel {
     pub(crate) ext_owner: [Option<usize>; MAX_CPUS],
     /// Shared-memory regions (physical base, length), as `boot::SHM_REGIONS`.
     pub(crate) shm: Vec<(u64, u64)>,
+    /// The display generation the kernel console follows (0: none).
+    console_gen: u32,
     /// Byte streams between drivers and Linux devices, as `boot::SERIAL_DEVICES`.
     pub(crate) serials: Vec<SerialPort>,
 }
@@ -236,6 +238,7 @@ pub fn start() -> ! {
         linux: None,
         ext_owner: [None; MAX_CPUS],
         shm: Vec::new(),
+        console_gen: 0,
         serials: boot::SERIAL_DEVICES.iter().map(|_| SerialPort::default()).collect(),
     };
     for (name, size) in boot::SHM_REGIONS {
@@ -473,6 +476,7 @@ impl Kernel {
                 if smp::cpu() == 0 {
                     self.ticks += 1;
                     self.fire_alarms();
+                    self.console_follow_display();
                 }
                 self.need_resched[smp::cpu()] = true;
             } else if self.linux.is_some() && crate::linux::flarehw::granted_irq(id) {
@@ -489,6 +493,36 @@ impl Kernel {
             }
             gic::eoi(iar);
         }
+    }
+
+    /// When the display driver brings the panel online on its own memory (a
+    /// phone: the boot loader's splash buffer is no longer scanned out), the
+    /// kernel console moves there. Checked every tick; again if the driver
+    /// restarts (a new generation).
+    fn console_follow_display(&mut self) {
+        let Some(i) = crate::boot::LINUX_DISPLAY else { return };
+        if !crate::console::is_screen() {
+            return;
+        }
+        let Some(&(pa, len)) = self.shm.get(i) else { return };
+        // SAFETY: the display's shared memory, through the direct map; the
+        // driver owns the header.
+        let h = unsafe { core::ptr::read_volatile(crate::arch::mmu::phys_to_virt(pa) as *const flare_abi::proto::display::Header) };
+        use flare_abi::proto::display as dp;
+        if h.magic != dp::MAGIC || h.state != dp::STATE_ONLINE || h.format != dp::XRGB8888 || h.generation == self.console_gen {
+            return;
+        }
+        if h.fb_offset as u64 + h.stride as u64 * h.height as u64 > len || h.stride < h.width * 4 {
+            return;
+        }
+        self.console_gen = h.generation;
+        crate::console::follow(
+            (crate::arch::mmu::phys_to_virt(pa) + h.fb_offset as u64) as usize,
+            h.width as usize,
+            h.height as usize,
+            h.stride as usize,
+        );
+        kprintln!("console: on the display driver's panel ({}x{}, generation {})", h.width, h.height, h.generation);
     }
 
     fn fire_alarms(&mut self) {

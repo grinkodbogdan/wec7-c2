@@ -54,7 +54,7 @@ local APPS = {
 
 local EVENTS = {
 	{"Flare OS", "Booted to the Arcan shell on the framekernel", "now", {255, 120, 40}},
-	{"Display", "480\u{00D7}854 panel, KMS over shared memory", "now", {150, 80, 200}},
+	{"Display", "the panel, KMS over shared memory", "now", {150, 80, 200}},
 	{"Touch", "QEMU Virtio Tablet connected as /dev/input/event0", "now", {41, 128, 230}},
 	{"Android", "hello, kotlin and selftest ran without Android", "1 min", {120, 190, 60}},
 	{"Linux", "busybox, Rust std, Binder: all checks passed", "1 min", {52, 168, 83}},

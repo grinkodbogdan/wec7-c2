@@ -102,6 +102,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdp5-display"
+version = "0.1.0"
+dependencies = [
+ "flare-rt",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

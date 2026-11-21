@@ -185,6 +185,19 @@ pub fn switch_to_kernel() {
     switch_to(t);
 }
 
+/// Write back the data cache lines of `[va, va + len)` to memory, for
+/// devices that read memory directly (a display engine scanning out).
+pub fn clean_dcache(va: u64, len: u64) {
+    let mut a = va & !63;
+    while a < va + len {
+        // SAFETY: cache maintenance on a mapped kernel address.
+        unsafe { core::arch::asm!("dc cvac, {}", in(reg) a, options(nostack)) };
+        a += 64;
+    }
+    // SAFETY: barrier only.
+    unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+}
+
 /// Make page-table stores visible to the table walker.
 pub fn table_barrier() {
     // SAFETY: barriers only.

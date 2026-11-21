@@ -172,6 +172,10 @@ impl Kernel {
                 done += n;
             }
         }
+        // The panel's display engine reads memory, not the CPU's caches.
+        crate::arch::mmu::clean_dcache(dst, p.stride as u64 * h as u64);
+        // A UI owns the screen now: the kernel console stops drawing on it.
+        crate::console::set_quiet(true);
         let d = self.drm();
         d.scanout = Some(fb_id);
         d.flips += 1;
@@ -600,6 +604,7 @@ impl Kernel {
         let n = (data.len() as u64).min(len.saturating_sub(pos)) as usize;
         // SAFETY: as above.
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), (va + pos) as *mut u8, n) };
+        crate::arch::mmu::clean_dcache(va + pos, n as u64);
         n
     }
 

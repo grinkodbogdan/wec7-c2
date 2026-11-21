@@ -54,6 +54,24 @@ portrait, 50×89 mm.
 Restarting the driver takes the panel offline and brings it back with the
 next generation number, which KMS clients see as a display hotplug.
 
+### Panel on a phone: `drivers/qcom/mdp5-display`
+
+On the Xiaomi Mi A1 the boot loader leaves the panel on, its display engine
+(Qualcomm MDP5) scanning a 24-bit splash buffer. The driver finds that
+source pipe (as the kernel console does) and re-points it at the `display`
+shared memory as 32-bit XRGB8888 with 4352-byte rows. It then publishes
+the same `flare.display@1.0` header. The rest of the stack is unchanged.
+A command-mode panel is kicked every 33 ms; the Mi A1's are video mode.
+
+Two things only real hardware needs:
+* KMS writes each presented frame back from the CPU's data cache
+  (`clean_dcache`); the display engine reads memory.
+* The kernel's framebuffer console follows the panel into the shared
+  memory when the driver brings it online. Once a client presents frames,
+  the console stops drawing (a panic draws again).
+  `cargo xtask fbcon-test --system system/qemu-virt-fbcon-display.boot.toml`
+  checks the move on QEMU with ramfb.
+
 ### Shared memory capabilities
 
 `shm:<name>:<size>` is a new grant kind. All grants with the same name map

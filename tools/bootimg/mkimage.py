@@ -142,7 +142,16 @@ def main():
     dtb = board_dtb(spec)
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, "board.dtb"), "wb").write(dtb)
-    img = android_v0(spec, kernel + dtb, empty_ramdisk())
+    # The ramdisk: Flare's root filesystem (kernel/src/ramdisk.rs) when one
+    # is given, which the boot loader copies to base + ramdisk-offset.
+    ramdisk = open(sys.argv[4], "rb").read() if len(sys.argv) > 4 else empty_ramdisk()
+    rd_start = spec["base"] + spec["ramdisk-offset"]
+    if len(sys.argv) > 4 and "max-ramdisk-end" in spec and rd_start + len(ramdisk) > spec["max-ramdisk-end"]:
+        sys.exit("mkimage.py: the ramdisk (%d MiB at %#x) would run past %#x (max-ramdisk-end)"
+                 % (len(ramdisk) >> 20, rd_start, spec["max-ramdisk-end"]))
+    if rd_start < end:
+        sys.exit("mkimage.py: the ramdisk at %#x would overlap the kernel (up to %#x)" % (rd_start, end))
+    img = android_v0(spec, kernel + dtb, ramdisk)
     path = os.path.join(out, "boot.img")
     open(path, "wb").write(img)
     check(path, spec)

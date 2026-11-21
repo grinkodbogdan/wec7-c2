@@ -213,6 +213,14 @@ impl Personality {
             Ok(n) => kprintln!("linux: initramfs unpacked: {} entries", n),
             Err(e) => kprintln!("linux: initramfs damaged: {}", e),
         }
+        // The boot image's ramdisk: the full root filesystem, over the
+        // kernel's own (minimal) one.
+        if let Some(a) = crate::ramdisk::archive() {
+            match vfs.unpack(a) {
+                Ok(n) => kprintln!("linux: ramdisk unpacked: {} entries", n),
+                Err(e) => kprintln!("linux: ramdisk damaged: {}", e),
+            }
+        }
         Personality {
             vfs,
             tty: Tty::new(),

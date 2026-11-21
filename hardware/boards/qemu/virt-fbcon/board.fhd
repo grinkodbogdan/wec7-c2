@@ -45,10 +45,16 @@ status = "okay"
 console = "fb0"
 panic = "halt"
 
+# A display the driver can take the panel over on (as the Mi A1's display
+# driver does), for system/qemu-virt-fbcon-display.boot.toml.
+[device.fwcfg0]
+status = "okay"
+
 [emulation]
 qemu-machine = "virt"
 qemu-cpu = "cortex-a53"
 memory-mib = 1024
+qemu-args = ["-device", "ramfb"]
 
 # A stand-in for a phone's TLMM key pin (its IN_OUT word reads 0: "pressed"),
 # so the polled key driver and its timer run here too.
@@ -56,3 +62,14 @@ memory-mib = 1024
 compatible = "flare,tlmm-gpio-key"
 reg = [0x09010000, 0x1000]
 status = "okay"
+
+# Where a boot loader would put the ramdisk (Flare's root filesystem with
+# [linux] rootfs = "ramdisk"); `cargo xtask fbcon-test` loads it there with
+# QEMU's loader device, as LK does from the boot image.
+[boot-image]
+format = "android-v0"
+page-size = 2048
+base = 0x40000000
+kernel-offset = 0x00080000
+ramdisk-offset = 0x08200000             # QEMU puts its device tree at +128 MiB
+tags-offset = 0x00000100

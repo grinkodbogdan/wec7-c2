@@ -191,9 +191,36 @@ phone-specific facts below.
 cargo xtask image --system system/xiaomi-tissot-linuxdrv.boot.toml
 ```
 
-This image (`target/images/xiaomi-tissot-linuxdrv/boot.img`) also runs the
-Linux driver host ([../linux-drivers.md](../linux-drivers.md)). It gives
-Linux:
+This is the full phone image (`target/images/xiaomi-tissot-linuxdrv/boot.img`,
+about 110 MB). It boots into the Arcan phone shell on the panel, driven by
+the touch screen:
+
+* **Display** (`drivers/qcom/mdp5-display`): the boot loader's display
+  setup stays. One source pipe of the display engine is re-pointed from the
+  24-bit splash buffer to the `display` shared memory as 32-bit XRGB8888
+  (QRT's recipe for this phone: address, stride, format and unpack
+  registers, then the pipe's CTL flush). That memory is
+  `/dev/dri/card0` for Linux; frames are written back from the CPU's caches
+  for the display engine. The kernel console moves onto it too, and steps
+  aside once the shell presents frames (a panic draws again).
+* **Touch and keys**: Linux's drivers (ft5x06, gpio-keys, the PMIC's power
+  key) in the driver host. The host hands them back to Flare
+  (`[linux] inputs`) as `/dev/input/event0` (the touch screen, as an
+  absolute pointer in 0..32767, as the shell takes touch) and `event1`
+  (all keys).
+* **Root filesystem**: the kernel carries the minimal one and the driver
+  host. The full one (Arcan, Mesa, the shell, ART: about 98 MB) is the boot
+  image's ramdisk. LK copies it to 0x96000000, where ~159 MB are free up to
+  ramoops (QRT's choice). The kernel finds it by its header and checksum,
+  keeps its memory and unpacks it over the minimal one
+  (`[linux] rootfs = "ramdisk"`).
+* **Quick boot**: the driver host first; the shell starts once the touch
+  screen and keys are handed over (about 10 s after the kernel).
+
+The image is too big for the phone's 64 MB boot partitions: use it with
+`fastboot boot` (RAM only). `xiaomi-tissot` (3 MB) is the one to flash.
+
+The driver host also gives Linux:
 * the eMMC, the SD card and the touch screen's I2C bus;
 * the clock controller, the pin controller, the RPM, SMEM, TCSR, the APCS
   mailbox and the PMICs, which those need.
@@ -256,11 +283,13 @@ with LKL):
 
 * the PMIC power key as a native driver (it is Linux's in the
   `-linuxdrv` composition);
-* Linux's input and block devices handed to Flare (touch, eMMC storage);
+* Linux's block devices handed to Flare (the eMMC as storage for the
+  Linux personality);
 * USB device mode, for `fdb`;
 * display control (MDSS/DSI), so the screen can be turned off or changed;
-* an MSM8953 user-space display driver, so the Arcan shell can run on the
-  panel.
+* the GPU (Adreno 506): the shell renders in software (Mesa softpipe) at
+  1080×1920;
+* a compressed ramdisk, so the full image fits the boot partition.
 
 Only the low 2 GiB of the 4 GiB fitted is used. CPU frequency and thermal
 management are left to the firmware's defaults.

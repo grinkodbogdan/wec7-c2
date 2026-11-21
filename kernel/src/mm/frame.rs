@@ -51,7 +51,9 @@ fn add_excluding(f: &mut Frames, start: u64, end: u64, excluded: &[(u64, u64)]) 
 }
 
 /// `heap`: the kernel heap's arena, which the frames must not overlap.
-pub fn init(heap: (u64, u64)) {
+/// `heap` and `keep` (a boot loader's ramdisk, or (0, 0)) are not RAM to
+/// hand out.
+pub fn init(heap: (u64, u64), keep: (u64, u64)) {
     extern "C" {
         static __kernel_start: u8;
         static __kernel_end: u8;
@@ -60,11 +62,12 @@ pub fn init(heap: (u64, u64)) {
     let (ks, ke) =
         unsafe { (virt_to_phys(&__kernel_start as *const u8 as u64), virt_to_phys(&__kernel_end as *const u8 as u64)) };
     let f = frames();
-    let mut excluded = [(0u64, 0u64); 34];
+    let mut excluded = [(0u64, 0u64); 35];
     excluded[0] = (0, ke); // everything below the kernel end: firmware/DTB area + image
     excluded[1] = heap;
+    excluded[2] = keep;
     for (i, r) in platform::RESERVED.iter().take(32).enumerate() {
-        excluded[i + 2] = (r.base, r.base + r.size);
+        excluded[i + 3] = (r.base, r.base + r.size);
     }
     for r in platform::RAM {
         add_excluding(f, r.base, r.base + r.size, &excluded);

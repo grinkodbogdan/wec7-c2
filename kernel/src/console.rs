@@ -39,6 +39,9 @@ struct Fb {
     col: usize,
     row: usize,
     escape: u8,
+    /// Drawn through a cacheable mapping (the display driver's shared
+    /// memory): written back after drawing.
+    cached: bool,
 }
 
 static CONSOLE: Global<Backend> = Global::new(Backend::None);
@@ -138,6 +141,7 @@ pub fn init() {
             col: 0,
             row: 0,
             escape: 0,
+            cached: false,
         };
         // Start from a black screen: the splash image is still there.
         for y in 0..height {
@@ -213,6 +217,9 @@ impl Fb {
                 let dst = self.base + (y + gy * s + k) * self.stride + x * self.bpp;
                 // SAFETY: inside the framebuffer (cols/rows fit its size).
                 unsafe { core::ptr::copy_nonoverlapping(line.as_ptr(), dst as *mut u8, w.min(line.len())) };
+                if self.cached {
+                    crate::arch::mmu::clean_dcache(dst as u64, w.min(line.len()) as u64);
+                }
             }
         }
     }
@@ -297,6 +304,7 @@ pub fn write_bytes(bytes: &[u8]) {
                 putc(*base, b);
             }
         }
+        Backend::Fb(_) if QUIET.load(core::sync::atomic::Ordering::Relaxed) => {}
         Backend::Fb(fb) => {
             // UTF-8 continuation bytes would each show as '?': show one per
             // character instead.
@@ -380,7 +388,37 @@ impl Write for Direct {
     }
 }
 
+static QUIET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// A user interface owns the screen (it presents frames): the console stops
+/// drawing on it, but keeps its place. A panic draws again.
+pub fn set_quiet(q: bool) {
+    QUIET.store(q, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The display driver re-pointed the panel at its own memory (a 32-bit
+/// XRGB8888 framebuffer at `va`, through the cacheable direct map): draw
+/// there from now on, from the top.
+pub fn follow(va: usize, width: usize, height: usize, stride: usize) {
+    // SAFETY: callers hold the kernel lock.
+    let Backend::Fb(fb) = (unsafe { CONSOLE.get() }) else { return };
+    let (cw, ch) = (font::WIDTH * fb.scale, font::HEIGHT * fb.scale);
+    fb.base = va;
+    fb.stride = stride;
+    fb.bpp = 4;
+    fb.byte_of = [2, 1, 0];
+    fb.kick = 0;
+    fb.cached = true;
+    fb.cols = (width / cw).max(1);
+    fb.rows = (height / ch).max(1);
+    fb.x0 = (width % cw) / 2;
+    fb.y0 = (height % ch) / 2;
+    fb.col = 0;
+    fb.row = 0;
+}
+
 /// Write straight to the console, bypassing the kernel log (panics).
 pub fn emergency(args: fmt::Arguments) {
+    set_quiet(false);
     let _ = Direct.write_fmt(args);
 }
