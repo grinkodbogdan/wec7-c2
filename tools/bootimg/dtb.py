@@ -4,6 +4,14 @@
     dtb.py info BOARD.dtb [--all]
         List the enabled nodes that have registers or interrupts.
 
+    dtb.py fhd BOARD.dtb NODE NAME
+        Print the FHD entry for a device of Linux's tree (NODE: its path, or
+        a unique part of it), to paste into the SoC's platform.fhd: its
+        compatible strings, register windows and GIC interrupts (as INTIDs).
+        Giving a device to Linux is then: this entry, `NAME` in the
+        composition's [linux] hardware, the node not dropped in linux.txt,
+        and its driver in the driver host's kernel config.
+
     dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...] [--delprop NAME...]
                [--setprop PATH:NAME=STRING...]
         Disable every device whose registers are not all inside an allowed
@@ -132,6 +140,51 @@ def info(path, everything):
                                       "" if enabled(n) else "  [disabled]"))
 
 
+def fhd(path, which, name):
+    root = parse(open(path, "rb").read())
+    nodes = ([n for n in walk(root) if n["path"] == which]
+             or [n for n in walk(root) if n["path"].rsplit("/", 1)[-1] == which]
+             or [n for n in walk(root) if which in n["path"].rsplit("/", 1)[-1]])
+    if len(nodes) != 1:
+        sys.exit("dtb.py: %d nodes match '%s'%s" % (len(nodes), which,
+                 "".join("\n  " + n["path"] for n in nodes[:20])))
+    n = nodes[0]
+    pr = n["props"]
+    # The GIC, by phandle: only its interrupts are Flare's to grant (others
+    # belong to an interrupt controller Linux itself drives: TLMM, SPMI...).
+    gics = {num(x, "phandle", None) for x in walk(root)
+            if "interrupt-controller" in x["props"] and set(strs(x["props"].get("compatible", b""))) & GIC}
+    up, parent = n, None
+    while up is not None and parent is None:
+        if "interrupt-parent" in up["props"]:
+            parent = cells(up["props"]["interrupt-parent"])[0]
+        up = up["parent"]
+    irqs, notes = [], []
+    if "interrupts" in pr:
+        c = cells(pr["interrupts"])
+        if parent in gics:
+            for i in range(0, len(c) - 2, 3):
+                kind, nr = c[i], c[i + 1]
+                irqs.append(nr + (32 if kind == 0 else 16))
+        else:
+            notes.append("its interrupts go to another controller (Linux's): none to grant")
+    if "interrupts-extended" in pr:
+        notes.append("interrupts-extended: check by hand")
+    print("[device.%s]" % name)
+    if "compatible" in pr:
+        print("compatible = [%s]" % ", ".join('"%s"' % x for x in strs(pr["compatible"])))
+    rs = regs(n)
+    if len(rs) == 1:
+        print("reg = [%#010x, %#x]" % rs[0])
+    elif rs:
+        print("reg = [%s]" % ", ".join("[%#010x, %#x]" % r for r in rs))
+    if irqs:
+        print("interrupts = [%s]    # from %s" % (", ".join(map(str, irqs)), n["path"]))
+    print('status = "disabled"    # the board enables it')
+    for x in notes:
+        print("# " + x)
+
+
 def emit(f, n):
     f.begin("" if n["parent"] is None else n["name"])
     for k, v in n["props"].items():
@@ -183,6 +236,8 @@ def main():
     a = sys.argv[1:]
     if len(a) >= 2 and a[0] == "info":
         info(a[1], "--all" in a)
+    elif len(a) == 4 and a[0] == "fhd":
+        fhd(a[1], a[2], a[3])
     elif len(a) >= 3 and a[0] == "trim":
         allow, drop, delprops, setprops, mode = [], [], [], [], None
         for x in a[3:]:

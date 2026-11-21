@@ -15,6 +15,9 @@ local STATUS_H = 32
 local FONT_THIN = "DejaVuSans-ExtraLight.ttf"
 local FONT = "DejaVuSans.ttf"
 local FONT_BOLD = "DejaVuSans-Bold.ttf"
+local FONT_MONO = "DejaVuSansMono.ttf"
+-- the on-screen keyboard's height
+local KBD_H = 232
 local PX_PER_PT = 3.4 -- measured at start-up for the panel's density
 
 local ORDER_HOME = 10
@@ -44,13 +47,25 @@ local APPS = {
 	{"Calendar", "19", {214, 48, 49}},
 	{"Clock", "\u{25F7}", {35, 52, 110}},
 	{"Settings", "\u{2699}", {110, 118, 129}},
-	{"Terminal", ">_", {24, 24, 24}},
+	{"Terminal", ">_", {24, 24, 24}, launch = {terminal = true}},
 	{"Store", "\u{2605}", {245, 180, 20}},
 	{"Weather", "\u{2600}", {60, 170, 230}},
 	{"Notes", "\u{270E}", {230, 160, 40}},
 	{"Contacts", "\u{263A}", {90, 70, 190}},
 	{"Android", "\u{25B2}", {120, 190, 60}},
 }
+
+-- Installed apps (written at boot by /etc/rc from /data/app/*.apk, each
+-- registered as an arcan_db target that runs atl-run on it): icons after
+-- the built-in ones, launched for real.
+do
+	local load = system_load("installed.lua", false)
+	local list = load and load() or {}
+	for _, x in ipairs(list) do
+		table.insert(APPS, {x.name, string.sub(x.name, 1, 1), x.color or {60, 130, 200},
+			launch = {target = x.target}, icon = x.icon})
+	end
+end
 
 local EVENTS = {
 	{"Flare OS", "Booted to the Arcan shell on the framekernel", "now", {255, 120, 40}},
@@ -314,8 +329,12 @@ local function build_launcher(page)
 		local x, y = math.floor(cx - icon / 2), top + row * cell_h
 		-- Icon art from icons/make_icons.py: an 88 px image holding the
 		-- 76 px tile plus a 6 px margin for its shadow. Shown 1:1.
-		local img = load_image("icons/" .. string.lower(a[1]) .. ".png")
-		if valid_vid(img) then
+		local img = load_image(a.icon or ("icons/" .. string.lower(a[1]) .. ".png"))
+		if valid_vid(img) and a.icon then
+			-- an app's own icon (from its APK): shown at the tile's size
+			resize_image(img, icon, icon)
+			place(img, page, x, y, 2)
+		elseif valid_vid(img) then
 			place(img, page, x - 6, y - 6, 2)
 		else
 			local tile = rounded(icon, icon, a[3], page, x, y, 2, shaders.tile)
@@ -324,7 +343,8 @@ local function build_launcher(page)
 			place(glyph, tile, math.floor((icon - gw) / 2), math.floor((icon - gh) / 2), 1)
 		end
 		centered(text(a[1], 17, "ffffff", FONT), page, cx, y + icon + 8, 2)
-		table.insert(apps, {name = a[1], glyph = a[2], color = a[3], x = x, y = y, w = icon, h = icon})
+		table.insert(apps, {name = a[1], glyph = a[2], color = a[3], x = x, y = y, w = icon, h = icon,
+			launch = a.launch})
 	end
 end
 
@@ -409,6 +429,8 @@ local function app_content(a)
 	return vids
 end
 
+local launch_app -- (below, with the external windows)
+
 local function open_app(a)
 	if current_app then
 		return
@@ -417,6 +439,9 @@ local function open_app(a)
 		if o.app == a then
 			return restore_app(o)
 		end
+	end
+	if a.launch then
+		return launch_app(a)
 	end
 	local rt = alloc_surface(W, H)
 	local vids = app_content(a)
@@ -563,19 +588,27 @@ local function show_window(o)
 	go_page(2, true)
 end
 
-function app_window(source, status)
+function app_window(source, status, app)
 	local o = windows[source]
+	-- (a terminal leaves room for the on-screen keyboard below it)
+	local kbd = app and app.launch and app.launch.terminal
+	local fh = H - STATUS_H - (kbd and KBD_H or 0)
 	if status.kind == "connected" then
 		listen() -- the next app gets a fresh connection point
 	elseif status.kind == "registered" or status.kind == "preroll" then
-		target_displayhint(source, W, H - STATUS_H)
+		target_displayhint(source, W, fh)
+		if kbd then
+			target_fonthint(source, FONT_MONO, 3.2, 2)
+		end
 	elseif status.kind == "ident" and o then
-		o.app.name = status.message
+		if not app then
+			o.app.name = status.message
+		end
 	elseif status.kind == "resized" then
 		if not o then
-			local icon = android_icon()
-			o = {app = {name = "Android app", x = icon.x, y = icon.y, w = icon.w, h = icon.h},
-				rt = source, external = true, fy = STATUS_H, fh = H - STATUS_H}
+			local icon = app or android_icon()
+			o = {app = app or {name = "Android app", x = icon.x, y = icon.y, w = icon.w, h = icon.h},
+				rt = source, external = true, fy = STATUS_H, fh = fh, kbd = kbd}
 			windows[source] = o
 			if current_app then
 				table.insert(open_apps, o)
@@ -583,7 +616,7 @@ function app_window(source, status)
 			else
 				show_window(o)
 			end
-			log("android window " .. status.width .. "x" .. status.height)
+			log((app and app.name or "android") .. " window " .. status.width .. "x" .. status.height)
 		end
 	elseif status.kind == "terminated" then
 		if o then
@@ -602,9 +635,164 @@ function app_window(source, status)
 				end
 			end
 			layout_open()
-			log("android window closed")
+			log((app and app.name or "android") .. " window closed")
 		end
 		delete_image(source)
+	end
+end
+
+-- Start an app for real: the terminal frameserver (a shell on a
+-- pseudo-terminal), or an installed app's arcan_db target (atl-run).
+launch_app = function(a)
+	for _, o in pairs(windows) do
+		if o.app == a then
+			return restore_app(o)
+		end
+	end
+	local handler = function(source, status)
+		app_window(source, status, a)
+	end
+	local vid
+	if a.launch.terminal then
+		vid = launch_avfeed("", "terminal", handler)
+	else
+		vid = launch_target(a.launch.target, LAUNCH_INTERNAL, handler)
+	end
+	if valid_vid(vid) then
+		log("launched " .. a.name)
+	else
+		log("cannot launch " .. a.name)
+	end
+end
+
+-- ---------------------------------------------------------------------
+-- On-screen keyboard (for apps that read keys: the terminal)
+-- ---------------------------------------------------------------------
+
+local KBD_LAYOUTS = {
+	letters = {
+		{"q", "w", "e", "r", "t", "y", "u", "i", "o", "p"},
+		{"a", "s", "d", "f", "g", "h", "j", "k", "l"},
+		{"shift", "z", "x", "c", "v", "b", "n", "m", "bksp"},
+		{"123", "ctrl", "-", "/", "space", ".", "enter"},
+	},
+	symbols = {
+		{"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+		{"|", "&", ";", "$", "*", "=", "(", ")", "\""},
+		{"tab", "~", "<", ">", "'", "_", ":", "!", "bksp"},
+		{"abc", "esc", "up", "down", "space", "?", "enter"},
+	},
+}
+local KBD_LABEL = {shift = "\u{21E7}", bksp = "\u{232B}", enter = "\u{21B5}", space = " ",
+	up = "\u{2191}", down = "\u{2193}"}
+local KBD_SYM = {enter = 13, bksp = 8, tab = 9, esc = 27, up = 273, down = 274}
+local kbd = {layout = "letters", shift = false, ctrl = false, keys = {}, root = nil}
+
+local function kbd_build()
+	if kbd.root then
+		delete_image(kbd.root)
+	end
+	kbd.keys = {}
+	local root = color_surface(W, KBD_H, 30, 32, 36)
+	order_image(root, ORDER_APP + 5)
+	move_image(root, 0, H - KBD_H)
+	kbd.root = root
+	local rows = KBD_LAYOUTS[kbd.layout]
+	local kh = math.floor(KBD_H / #rows)
+	for r, row in ipairs(rows) do
+		local units = 0
+		for _, k in ipairs(row) do
+			units = units + (k == "space" and 3 or 1)
+		end
+		local kw = W / units
+		local x = 0
+		for _, k in ipairs(row) do
+			local w = math.floor(kw * (k == "space" and 3 or 1))
+			local y = (r - 1) * kh
+			local on = (k == "shift" and kbd.shift) or (k == "ctrl" and kbd.ctrl)
+			local c = on and {90, 140, 220} or (#k > 1 and {58, 62, 70} or {78, 82, 90})
+			local cap = color_surface(w - 6, kh - 8, c[1], c[2], c[3])
+			link_image(cap, root)
+			image_inherit_order(cap, true)
+			order_image(cap, 1)
+			move_image(cap, x + 3, y + 4)
+			show_image(cap)
+			local label = KBD_LABEL[k] or ((kbd.shift and #k == 1) and string.upper(k) or k)
+			local t = text(label, #label > 1 and 16 or 22, "ffffff", FONT)
+			local tw, th = size(t)
+			link_image(t, cap)
+			image_inherit_order(t, true)
+			order_image(t, 1)
+			move_image(t, math.floor((w - 6 - tw) / 2), math.floor((kh - 8 - th) / 2))
+			show_image(t)
+			table.insert(kbd.keys, {k = k, x = x, y = H - KBD_H + y, w = w, h = kh})
+			x = x + w
+		end
+	end
+end
+
+local function kbd_send(o, k)
+	local sym, utf8, mods = KBD_SYM[k] or 0, "", 0
+	if k == "space" then
+		sym, utf8 = 32, " "
+	elseif #k == 1 then
+		utf8 = kbd.shift and string.upper(k) or k
+		sym = string.byte(string.lower(k))
+	end
+	if kbd.ctrl and #k == 1 then
+		-- Ctrl+letter: the terminal sends the control character
+		mods, utf8 = 0x40, ""
+	end
+	for _, active in ipairs({true, false}) do
+		target_input(o.rt, {kind = "digital", translated = true, devid = 0, subid = sym,
+			keysym = sym, modifiers = mods, active = active, utf8 = active and utf8 or "", number = sym})
+	end
+	if kbd.shift or kbd.ctrl then
+		kbd.shift, kbd.ctrl = false, false
+		kbd_build()
+		show_image(kbd.root)
+	end
+end
+
+-- a tap on the keyboard; true if it was there
+local function kbd_tap(x, y)
+	local o = current_app
+	if not (o and o.kbd and kbd.root) or y < H - KBD_H then
+		return false
+	end
+	for _, key in ipairs(kbd.keys) do
+		if x >= key.x and x < key.x + key.w and y >= key.y and y < key.y + key.h then
+			local k = key.k
+			if k == "shift" then
+				kbd.shift = not kbd.shift
+			elseif k == "ctrl" then
+				kbd.ctrl = not kbd.ctrl
+			elseif k == "123" or k == "abc" then
+				kbd.layout = k == "123" and "symbols" or "letters"
+			else
+				kbd_send(o, k)
+				return true
+			end
+			kbd_build()
+			show_image(kbd.root)
+			return true
+		end
+	end
+	return true
+end
+
+-- shown while an app that needs it is in front
+local function kbd_sync()
+	local want = current_app and current_app.kbd and not (touch.edge and touch.moved)
+	if want and not kbd.root then
+		kbd_build()
+	end
+	if kbd.root then
+		if want then
+			show_image(kbd.root)
+		else
+			hide_image(kbd.root)
+		end
 	end
 end
 
@@ -612,6 +800,9 @@ end
 local function forward_touch(active)
 	local o = current_app
 	if not (o and o.external) or touch.edge then
+		return false
+	end
+	if o.kbd and touch.sy >= H - KBD_H then
 		return false
 	end
 	target_input(o.rt, {kind = "touch", devid = 0, subid = 0, active = active and 1 or 0,
@@ -628,6 +819,7 @@ local function on_tap(x, y)
 		return
 	end
 	if current_app then
+		kbd_tap(x, y)
 		return
 	end
 	if home.page == 2 then
@@ -814,6 +1006,7 @@ end
 
 function flarehome_clock_pulse()
 	ticks = ticks + 1
+	kbd_sync()
 	for i = #pending, 1, -1 do
 		if pending[i].at <= ticks then
 			local p = table.remove(pending, i)

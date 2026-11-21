@@ -88,6 +88,36 @@ addresses given to devices are therefore right, with no IOMMU needed.
   (`cmdline`). `dtb.py info` lists a tree's devices, windows and
   interrupts, which is how the FHD entries for Linux's devices are written.
 
+## Adding a driver
+
+Any driver in Linux's tree can run in the driver host. On a real board:
+
+1. **The device**: `python3 tools/bootimg/dtb.py fhd hardware/boards/<board>/linux.dtb <node> <name>`
+   prints its FHD entry from mainline's device tree (compatible, register
+   windows, GIC interrupts as INTIDs). Paste it into the SoC's
+   `platform.fhd`, and enable it in the board's `board.fhd`.
+2. **The grant**: add `<name>` to the composition's `[linux] hardware`.
+   The build checks it against everything Flare's own drivers hold.
+3. **The node**: make sure `linux.txt` does not `drop` it (or its parent).
+4. **The driver**: its `CONFIG_` option in
+   `compat/linux/linuxdrv/lkl/config-flare` (the build fails if Kconfig
+   drops it). QRT's `ports/lkl/config-arm64` is a known-good set for the Mi
+   A1: GPU, Wi-Fi, Bluetooth, audio, sensors, fuel gauge, backlight and
+   vibrator.
+
+Devices on buses Linux owns (I2C, SPMI, GPIO interrupts) need no grant of
+their own: their controller's grant covers them.
+
+**Why not a `.ko`?** A module is machine code for one exact kernel: one
+architecture, configuration, structure layout and set of symbol versions
+(`vermagic`, `modversions`). The driver host's Linux is LKL, which is
+architecture `lkl`, with its own configuration, so a module built for an
+arm64 phone kernel cannot load into it, any more than into another arm64
+kernel built differently. LKL also has no module loader. Drivers are built
+into the driver host from source instead; a driver that is in Linux's tree
+needs only the steps above. An out-of-tree driver's source goes next to
+the LKL patches and is built the same way.
+
 ## Tested
 
 `cargo xtask linuxdrv-test` boots `system/qemu-virt-linuxdrv.boot.toml`,

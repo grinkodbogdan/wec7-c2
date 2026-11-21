@@ -49,7 +49,7 @@ def pull(path):
         pull(src)
 
 
-for b in ["arcan", "arcan_frameserver", "afsrv_avfeed", "arcan_db"]:
+for b in ["arcan", "arcan_frameserver", "afsrv_avfeed", "afsrv_terminal", "arcan_db"]:
     copy(f"{aroot}/usr/bin/{b}", f"{out}/usr/bin/{b}")
     pull(f"{aroot}/usr/bin/{b}")
 for b in extra:

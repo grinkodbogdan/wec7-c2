@@ -119,6 +119,35 @@ interface: `EVIOCGBIT`, `EVIOCGABS`, `EVIOCGNAME`, `EVIOCGID`, grabs and
 clock selection. The board has a virtio tablet as its touchscreen and a
 virtio keyboard for hardware keys.
 
+## Apps on the launcher
+
+Icons on flarehome's launcher start real programs:
+
+* **Terminal**: Arcan's terminal frameserver (`afsrv_terminal`) running
+  `/bin/sh` on a pseudo-terminal, with an on-screen keyboard below it
+  (letters, a symbols layer with `|&;$*=()`, Tab, Esc, arrows, and
+  Ctrl). The kernel's pseudo-terminals are `/dev/ptmx` and `/dev/pts/N`.
+  They provide the console's line discipline (echo, erase, ^C as SIGINT
+  to the foreground group), `\n` sent as `\r\n`, raw mode, window size
+  with SIGWINCH, and the controlling terminal (`/dev/tty`). The
+  `pty` Linux ABI test checks them.
+* **Installed apps**: every `/opt/apps/ID.apk` (with `ID.name` and
+  `ID.png`). At start, `flare-ui` registers each as an Arcan target
+  running `atl-run` on it (`arcan_db add_target`) and lists it in
+  flarehome's `installed.lua`. Its icon opens it as a window, with the
+  same zoom, minimise and open-applications behaviour as the built-in
+  ones. The images carry **Calculator** (Arity 1.27, unmodified from
+  F-Droid, pinned by checksum in `xtask`'s `LAUNCHER_APPS`), with its
+  icon taken from the APK (`tools/apk_icon.py`). To add an app, add a line
+  there; or push one to a running phone and restart the shell:
+
+  ```sh
+  cargo fdb push app.apk /opt/apps/myapp.apk
+  cargo fdb shell 'echo "My app" > /opt/apps/myapp.name; flare-ui'
+  ```
+
+The other icons still open placeholder pages.
+
 ## Building Arcan and Mesa
 
 `compat/arcan/build.sh` runs when `cargo xtask build` first needs it, and

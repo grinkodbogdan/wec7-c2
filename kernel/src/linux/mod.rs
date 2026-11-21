@@ -89,6 +89,8 @@ pub struct Process {
     /// Live threads.
     pub threads: u32,
     pub execed: bool,
+    /// The controlling terminal, if a pseudo-terminal (/dev/tty opens it).
+    pub ctty: Option<tty::PtyRef>,
 }
 
 impl Process {
@@ -146,6 +148,8 @@ pub struct Personality {
     pub binder_ctx: BTreeMap<String, binder::NodeRef>,
     /// The supervisor's last answer, read back from /dev/flarectl.
     pub ctl_response: Vec<u8>,
+    /// Pseudo-terminals by index (/dev/pts/N).
+    pub ptys: BTreeMap<u32, tty::PtyRef>,
     /// Program whose system calls are traced to the console (`trace`).
     pub trace: Option<String>,
     /// /dev/dri/card0 (when the composition gives Linux a display).
@@ -233,6 +237,7 @@ impl Personality {
             unix_names: BTreeMap::new(),
             binder_ctx: BTreeMap::new(),
             ctl_response: Vec::new(),
+            ptys: BTreeMap::new(),
             trace: None,
             drm: drm::Drm::default(),
             inputs: boot::INPUT_DEVICES.iter().map(|_| input::InputDev::new()).collect(),
@@ -522,6 +527,7 @@ impl Kernel {
             mm: Mm::default(),
             sig: ProcSig::default(),
             status: None,
+            ctty: None,
             threads: 1,
             execed: false,
         }));
@@ -784,7 +790,7 @@ impl Kernel {
         let pid = self.proc(c).pid;
         // The display server ending is worth a line (the phone's screen
         // depends on it).
-        if self.comps[c].name.contains("arcan") {
+        if self.comps[c].name == "arcan" {
             kprintln!("linux: pid {} ({}) exits: status {:#x}", pid, self.comps[c].name, status);
         }
         for t in self.group(c) {
@@ -899,22 +905,7 @@ impl Kernel {
         lx.tty.input(bytes);
         if core::mem::take(&mut lx.tty.interrupt) {
             let pg = lx.tty.fg_pgrp;
-            let targets: Vec<usize> = (0..self.comps.len())
-                .filter(|&i| self.live_task(i))
-                .filter(|&i| {
-                    let t = self.comps[i].linux.as_ref().unwrap();
-                    let p = t.p.borrow();
-                    t.tid == p.pid && p.pgid == pg && p.pid != 1
-                })
-                .collect();
-            for t in targets {
-                if self.live_task(t) {
-                    self.sig_send_proc(
-                        t,
-                        SigInfo { signo: SIGINT as i32, code: signal::SI_KERNEL, ..Default::default() },
-                    );
-                }
-            }
+            self.signal_pgrp(pg, SIGINT);
         }
     }
 
@@ -1457,6 +1448,7 @@ impl Kernel {
                 let mut p = self.proc(c);
                 p.sid = p.pid;
                 p.pgid = p.pid;
+                p.ctty = None;
                 Ok(p.pid as i64)
             }
             nr::SET_TID_ADDRESS => {
@@ -1585,6 +1577,7 @@ impl Kernel {
                     status: None,
                     threads: 1,
                     execed: false,
+                    ctty: p.ctty.clone(),
                 }
             };
             (self.new_task(&name, Rc::new(RefCell::new(child)), tid), Rc::new(RefCell::new(vs)))

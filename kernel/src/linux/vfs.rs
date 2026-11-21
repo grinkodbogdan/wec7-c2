@@ -24,6 +24,9 @@ pub const DEV_ZERO: u64 = (1 << 8) | 5;
 pub const DEV_URANDOM: u64 = (1 << 8) | 9;
 pub const DEV_TTY: u64 = 5 << 8;
 pub const DEV_CONSOLE: u64 = (5 << 8) | 1;
+/// Pseudo-terminals: /dev/ptmx, and /dev/pts/N (major 136, minor N).
+pub const DEV_PTMX: u64 = (5 << 8) | 2;
+pub const DEV_PTS0: u64 = 136 << 8;
 pub const DEV_KMSG: u64 = (1 << 8) | 11;
 /// Binder devices (misc major 10).
 pub const DEV_BINDER: u64 = (10 << 8) | 60;
@@ -165,7 +168,7 @@ pub fn split_parent(path: &str) -> (&str, &str) {
 impl Vfs {
     pub fn new() -> Vfs {
         let mut v = Vfs { root: Rc::new(RefCell::new(Node::dir(1, 0o755))), next_ino: 2 };
-        for d in ["/dev", "/dev/shm", "/proc", "/tmp", "/root", "/etc", "/bin"] {
+        for d in ["/dev", "/dev/shm", "/dev/pts", "/proc", "/tmp", "/root", "/etc", "/bin"] {
             let _ = v.mkdir_p(d, 0o755);
         }
         for (name, rdev, mode) in [
@@ -175,6 +178,7 @@ impl Vfs {
             ("random", DEV_URANDOM, 0o444),
             ("tty", DEV_TTY, 0o666),
             ("console", DEV_CONSOLE, 0o600),
+            ("ptmx", DEV_PTMX, 0o666),
             ("kmsg", DEV_KMSG, 0o644),
             ("binder", DEV_BINDER, 0o666),
             ("hwbinder", DEV_HWBINDER, 0o666),
@@ -228,6 +232,13 @@ impl Vfs {
         n.borrow_mut().rdev = rdev;
         if let Ok(d) = self.mkdir_p(dir, 0o755) {
             d.borrow_mut().children.insert(name.to_string(), n);
+        }
+    }
+
+    /// Remove `dir/name` (a pseudo-terminal's slave node once it is gone).
+    pub fn remove_at(&mut self, dir: &str, name: &str) {
+        if let Ok(d) = self.lookup("/", dir, true) {
+            d.node.borrow_mut().children.remove(name);
         }
     }
 

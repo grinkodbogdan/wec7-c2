@@ -1,0 +1,23 @@
+--- a/src/gallium/auxiliary/gallivm/lp_bld_const.h
++++ b/src/gallium/auxiliary/gallivm/lp_bld_const.h
+@@ -40,6 +40,7 @@
+ #include "util/compiler.h"
+ #include "gallivm/lp_bld.h"
+ #include "gallivm/lp_bld_init.h"
++#include "gallivm/lp_bld_misc.h"
+ 
+ 
+ 
+@@ -154,6 +155,12 @@
+    LLVMTypeRef int_type;
+    LLVMValueRef v;
+ 
++   /* An address of this process baked into the code: the code must not go
++    * to the shader cache, where another process (with the library loaded
++    * elsewhere) would run it. */
++   if (gallivm->cache)
++      gallivm->cache->dont_cache = true;
++
+    /* int type large enough to hold a pointer */
+    int_type = LLVMIntTypeInContext(gallivm->context, 8 * sizeof(void *));
+    v = LLVMConstInt(int_type, (uintptr_t) ptr, 0);

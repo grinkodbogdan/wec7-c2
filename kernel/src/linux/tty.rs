@@ -1,12 +1,17 @@
-//! The console TTY of the Linux personality.
+//! TTYs of the Linux personality: the console and pseudo-terminals.
 //!
-//! Input arrives from the user-space console driver (`TTY_INPUT`); output
-//! goes to the kernel log, which that same driver prints. This file is the
-//! line discipline: canonical editing, echo, erase/kill, ^C and ^D.
+//! The console's input arrives from the user-space console driver
+//! (`TTY_INPUT`); its output goes to the kernel log, which that same driver
+//! prints. A pseudo-terminal's input is what its master writes; its output
+//! (and echo) is queued for the master to read, with `\n` sent as `\r\n`
+//! (OPOST|ONLCR) as terminal emulators expect. This file is the line
+//! discipline: canonical editing, echo, erase/kill, ^C and ^D.
 
 use super::abi::*;
 use crate::klog;
 use alloc::collections::VecDeque;
+use alloc::rc::Rc;
+use core::cell::RefCell;
 use alloc::vec::Vec;
 
 /// struct termios (asm-generic): 4 flag words, line, 19 control chars.
@@ -77,6 +82,8 @@ pub struct Tty {
     pub cols: u16,
     /// ^C typed: the kernel delivers SIGINT to the foreground group.
     pub interrupt: bool,
+    /// A pseudo-terminal's output, for its master (None: the console).
+    pub out: Option<VecDeque<u8>>,
 }
 
 impl Tty {
@@ -90,12 +97,36 @@ impl Tty {
             rows: 24,
             cols: 80,
             interrupt: false,
+            out: None,
         }
     }
 
-    fn echo(&self, bytes: &[u8]) {
+    /// A pseudo-terminal's line discipline (output queued for the master).
+    pub fn new_pty() -> Tty {
+        let mut t = Tty::new();
+        t.out = Some(VecDeque::new());
+        t.fg_pgrp = 0;
+        t
+    }
+
+    fn emit(&mut self, bytes: &[u8]) {
+        let onlcr = self.termios.oflag & (OPOST | ONLCR) == OPOST | ONLCR;
+        match self.out.as_mut() {
+            None => klog::write(bytes),
+            Some(q) => {
+                for &b in bytes {
+                    if b == b'\n' && onlcr {
+                        q.push_back(b'\r');
+                    }
+                    q.push_back(b);
+                }
+            }
+        }
+    }
+
+    fn echo(&mut self, bytes: &[u8]) {
         if self.termios.lflag & ECHO != 0 {
-            klog::write(bytes);
+            self.emit(bytes);
         }
     }
 
@@ -173,7 +204,42 @@ impl Tty {
         self.ready.len()
     }
 
-    pub fn write(&self, bytes: &[u8]) {
-        klog::write(bytes);
+    pub fn write(&mut self, bytes: &[u8]) {
+        self.emit(bytes);
+    }
+
+    /// A pseudo-terminal's output waiting for its master.
+    pub fn take_output(&mut self, max: usize) -> Vec<u8> {
+        match self.out.as_mut() {
+            Some(q) => {
+                let n = max.min(q.len());
+                q.drain(..n).collect()
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub fn output_pending(&self) -> usize {
+        self.out.as_ref().map_or(0, |q| q.len())
+    }
+}
+
+/// A pseudo-terminal: `/dev/ptmx` opens a master, `/dev/pts/N` its slave.
+pub struct Pty {
+    pub tty: Tty,
+    pub index: u32,
+    /// Slaves cannot be opened until the master unlocks (unlockpt).
+    pub locked: bool,
+    pub masters: u32,
+    pub slaves: u32,
+    /// A slave has been opened (once all are closed, the master reads EOF).
+    pub had_slave: bool,
+}
+
+pub type PtyRef = Rc<RefCell<Pty>>;
+
+impl Pty {
+    pub fn new(index: u32) -> PtyRef {
+        Rc::new(RefCell::new(Pty { tty: Tty::new_pty(), index, locked: true, masters: 1, slaves: 0, had_slave: false }))
     }
 }

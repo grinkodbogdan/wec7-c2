@@ -117,7 +117,7 @@ const BUSYBOX_APPLETS: &[&str] = &[
 ];
 /// Linux ABI conformance tests (C, from QRT's tests/linux), built with the
 /// musl SDK in compat/linux/sdk and installed in /usr/libexec/flare-tests.
-const LINUX_TESTS: &[&str] = &["hello", "memory", "procs", "threads", "signals", "events", "binder"];
+const LINUX_TESTS: &[&str] = &["hello", "memory", "procs", "threads", "signals", "events", "binder", "pty"];
 const BUSYBOX_SBIN: &[&str] = &["init", "poweroff", "reboot", "halt"];
 const DEFAULT_SYSTEM: &str = "system/qemu-virt-phone.boot.toml";
 
@@ -178,6 +178,8 @@ const EXPECTED: &[&str] = &[
     "dynamic: ok",
     "binder: death notification ok",
     "binder: ok",
+    "pty: shell on a terminal ok",
+    "pty: ok",
     "droid: org.flare.hello: launching org.flare.hello.MainActivity",
     "I/FlareHello: onCreate on Flare virt-phone, API 35",
     "I/FlareHello: sum 1..100 = 5050, fib(20) = 6765, 7/2.0 = 3.5",
@@ -204,14 +206,19 @@ const EXPECTED: &[&str] = &[
     "driver flare: Flare display (shared-memory KMS)",
     "GL renderer llvmpipe (LLVM 20.1.8, 128 bits), version OpenGL ES 3.2 Mesa 25.1.9",
     "frame 2 flipped",
-    "flarehome: ready on a 480x854 panel, 16 apps, 6 events",
+    "flarehome: ready on a 480x854 panel, 17 apps, 6 events",
     "flarehome: unlocked",
     "flarehome: page events",
     "flarehome: page applications",
     "flarehome: launched Terminal",
+    // a shell on a pseudo-terminal, in Arcan's terminal, above the keyboard
+    "flarehome: Terminal window 480x590",
     "flarehome: minimized Terminal (1 open)",
     "flarehome: launched Phone",
     "flarehome: minimized Phone (2 open)",
+    // an installed app (Arity from F-Droid) launched from its icon
+    "flarehome: launched Calculator",
+    "flarehome: Calculator window",
     "virtio-console: port online (incarnation 0, user-space driver)",
     "art: Hello from ART on Flare: Dalvik 2.1.0",
     "art: words {brown=1, dog=1, end=1, fox=1, jumps=1, lazy=1, over=1, quick=1, the=3}",
@@ -395,6 +402,15 @@ fn busybox() -> PathBuf {
         .unwrap_or_else(|e| die(&format!("busybox.static not found in package: {}", e)));
     bin
 }
+
+/// The launcher's apps: (id, name on the launcher, APK, its sha256).
+/// Unmodified F-Droid builds, run by ART with Android Translation Layer.
+const LAUNCHER_APPS: &[(&str, &str, &str, &str)] = &[(
+    "arity",
+    "Calculator",
+    "https://f-droid.org/archive/arity.calculator_27.apk",
+    "7b494b4c0fa0ec3c3047fc980d12b82b8049e125c91baf571df8071e3126dcc9",
+)];
 
 /// Download (once) a file and verify its checksum.
 fn fetch((url, sha256): (&str, &str)) -> PathBuf {
@@ -921,6 +937,18 @@ fn assemble_rootfs_at(full: bool, rootfs: &Path) -> PathBuf {
         }
         std::fs::create_dir_all(rootfs.join("data/local/tmp")).unwrap();
         std::fs::copy(&views, rootfs.join("data/local/tmp/views.apk")).unwrap();
+        // Apps on the launcher (/opt/apps): unmodified APKs from F-Droid,
+        // each with its name and icon; /etc/rc registers them with Arcan.
+        let apps = rootfs.join("opt/apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        for (id, name, url, sha256) in LAUNCHER_APPS {
+            let apk = fetch((url, sha256));
+            std::fs::copy(&apk, apps.join(format!("{}.apk", id))).unwrap();
+            std::fs::write(apps.join(format!("{}.name", id)), name).unwrap();
+            let mut c = Command::new("python3");
+            c.arg("-I").arg(root().join("tools/apk_icon.py")).arg(&apk).arg(apps.join(format!("{}.png", id)));
+            run(c);
+        }
         // fdbd, the device end of the debug bridge.
         let mut c = cargo();
         c.args(["build", "--release", "--target", LINUX_TARGET, "-p", "fdbd"]);
@@ -1499,7 +1527,6 @@ fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
     let dir = root().join("target/screenshots");
     let _ = std::fs::create_dir_all(&dir);
     let shot = |q: &mut Qmp, name: &str| q.screenshot(&dir.join(format!("{}.png", name)));
-    let (left, right) = ((60.0, 500.0), (420.0, 500.0));
     shot(qmp, "1-lock");
     qmp.swipe((60.0, 600.0), (400.0, 600.0));
     wait_output(output, "flarehome: unlocked", 30);
@@ -1520,6 +1547,14 @@ fn ui_walk(qmp: &mut Qmp, output: &Mutex<Vec<u8>>, shot: &dyn Fn(&mut Qmp, &str)
     // Terminal: third row, third column of the launcher
     qmp.tap(300.0, 356.0);
     wait_output(output, "flarehome: launched Terminal", 30);
+    wait_output(output, "flarehome: Terminal window", 30);
+    std::thread::sleep(Duration::from_secs(3));
+    // "ls" and Enter on the on-screen keyboard (rows of 58 px from y 622)
+    for (x, y) in [(453.0, 709.0), (80.0, 709.0), (454.0, 825.0)] {
+        qmp.tap(x, y);
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    std::thread::sleep(Duration::from_secs(3));
     shot(qmp, "4-terminal");
     qmp.swipe((470.0, 400.0), (150.0, 400.0));
     wait_output(output, "flarehome: minimized Terminal", 30);
@@ -1533,6 +1568,17 @@ fn ui_walk(qmp: &mut Qmp, output: &Mutex<Vec<u8>>, shot: &dyn Fn(&mut Qmp, &str)
     qmp.swipe((5.0, 400.0), (330.0, 400.0));
     wait_output(output, "flarehome: minimized Phone (2 open)", 30);
     shot(qmp, "5-open-applications");
+    // The calculator (Arity, from F-Droid): the first icon after the
+    // built-in ones, fifth row
+    qmp.swipe(left, right);
+    std::thread::sleep(Duration::from_secs(1));
+    qmp.tap(60.0, 628.0);
+    wait_output(output, "flarehome: launched Calculator", 30);
+    wait_output(output, "flarehome: Calculator window", 180);
+    std::thread::sleep(Duration::from_secs(5));
+    shot(qmp, "6-calculator");
+    qmp.swipe((5.0, 400.0), (330.0, 400.0));
+    wait_output(output, "flarehome: minimized Calculator", 30);
 }
 
 /// Keep the phone shell's Mesa shader cache (target/mesa-shader-cache),

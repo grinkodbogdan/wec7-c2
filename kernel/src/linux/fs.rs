@@ -91,6 +91,9 @@ pub enum FileKind {
     Fb,
     /// /dev/flarehw: hardware for a Linux driver host.
     FlareHw,
+    /// A pseudo-terminal's master (/dev/ptmx) and slave (/dev/pts/N).
+    PtyMaster(super::tty::PtyRef),
+    PtySlave(super::tty::PtyRef),
 }
 
 pub struct OpenFile {
@@ -106,6 +109,8 @@ impl Drop for OpenFile {
             FileKind::PipeR(p) => p.borrow_mut().readers -= 1,
             FileKind::PipeW(p) => p.borrow_mut().writers -= 1,
             FileKind::Socket(s) => s.borrow_mut().close(),
+            FileKind::PtyMaster(p) => p.borrow_mut().masters -= 1,
+            FileKind::PtySlave(p) => p.borrow_mut().slaves -= 1,
             _ => {}
         }
     }
@@ -165,6 +170,16 @@ impl Kernel {
             FileKind::Tty => {
                 let readable = self.linux.as_ref().unwrap().tty.readable();
                 (if readable { EPOLLIN } else { 0 }) | EPOLLOUT
+            }
+            FileKind::PtyMaster(p) => {
+                let p = p.borrow();
+                (if p.tty.output_pending() > 0 { EPOLLIN } else { 0 })
+                    | (if p.had_slave && p.slaves == 0 { EPOLLHUP } else { 0 })
+                    | EPOLLOUT
+            }
+            FileKind::PtySlave(p) => {
+                let p = p.borrow();
+                (if p.tty.readable() { EPOLLIN } else { 0 }) | (if p.masters == 0 { EPOLLHUP } else { EPOLLOUT })
             }
             FileKind::PipeR(p) => {
                 let p = p.borrow();
@@ -227,6 +242,23 @@ impl Kernel {
             FileKind::Tty => {
                 drop(f);
                 Ok(self.lx().tty.read(max))
+            }
+            FileKind::PtyMaster(p) => {
+                let mut p = p.borrow_mut();
+                let out = p.tty.take_output(max);
+                if !out.is_empty() || (p.had_slave && p.slaves == 0) {
+                    Ok(Some(out))
+                } else {
+                    Ok(None)
+                }
+            }
+            FileKind::PtySlave(p) => {
+                let mut p = p.borrow_mut();
+                match p.tty.read(max) {
+                    Some(v) => Ok(Some(v)),
+                    None if p.masters == 0 => Ok(Some(Vec::new())),
+                    None => Ok(None),
+                }
             }
             FileKind::Null | FileKind::Kmsg => Ok(Some(Vec::new())),
             FileKind::Zero => Ok(Some(vec![0; max.min(65536)])),
@@ -366,6 +398,27 @@ impl Kernel {
             FileKind::Tty => {
                 drop(f);
                 self.lx().tty.write(data);
+                return Ok(data.len());
+            }
+            FileKind::PtyMaster(p) => {
+                let p = p.clone();
+                drop(f);
+                let (int, pg) = {
+                    let mut p = p.borrow_mut();
+                    p.tty.input(data);
+                    (core::mem::take(&mut p.tty.interrupt), p.tty.fg_pgrp)
+                };
+                if int {
+                    self.signal_pgrp(pg, SIGINT);
+                }
+                return Ok(data.len());
+            }
+            FileKind::PtySlave(p) => {
+                let mut p = p.borrow_mut();
+                if p.masters == 0 {
+                    return Err(EIO);
+                }
+                p.tty.write(data);
                 return Ok(data.len());
             }
             FileKind::Serial(d) => {
@@ -661,6 +714,22 @@ impl Kernel {
             return Err(ENOTDIR);
         } else if n.mode & S_IFMT == S_IFCHR {
             match n.rdev {
+                vfs::DEV_PTMX => {
+                    drop(n);
+                    let k = FileKind::PtyMaster(self.pty_new());
+                    let f = open_file(k, flags, "/dev/ptmx");
+                    return self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64);
+                }
+                d if (vfs::DEV_PTS0..vfs::DEV_PTS0 + 256).contains(&d) => {
+                    drop(n);
+                    let p = self.lx().ptys.get(&((d - vfs::DEV_PTS0) as u32)).cloned().ok_or(super::abi::ENXIO)?;
+                    return self.pty_open_slave(c, p, flags, &r.path);
+                }
+                vfs::DEV_TTY if self.proc(c).ctty.is_some() => {
+                    drop(n);
+                    let p = self.proc(c).ctty.clone().unwrap();
+                    return self.pty_open_slave(c, p, flags | O_NOCTTY, "/dev/tty");
+                }
                 vfs::DEV_FLARECTL => FileKind::FlareCtl,
                 vfs::DEV_FB0 => FileKind::Fb,
                 vfs::DEV_FLAREHW => FileKind::FlareHw,
@@ -793,6 +862,11 @@ impl Kernel {
         Ok(match &f.kind {
             FileKind::Reg(n) | FileKind::Dir(n) => node_stat(n),
             FileKind::Tty => stat_bytes(3, S_IFCHR | 0o620, 0, vfs::DEV_CONSOLE, 0),
+            FileKind::PtyMaster(_) => stat_bytes(10, S_IFCHR | 0o666, 0, vfs::DEV_PTMX, 0),
+            FileKind::PtySlave(p) => {
+                let i = p.borrow().index as u64;
+                stat_bytes(0x100 + i, S_IFCHR | 0o620, 0, vfs::DEV_PTS0 + i, 0)
+            }
             FileKind::Null => stat_bytes(4, S_IFCHR | 0o666, 0, vfs::DEV_NULL, 0),
             FileKind::Zero => stat_bytes(5, S_IFCHR | 0o666, 0, vfs::DEV_ZERO, 0),
             FileKind::Random => stat_bytes(6, S_IFCHR | 0o444, 0, vfs::DEV_URANDOM, 0),
@@ -1031,6 +1105,8 @@ impl Kernel {
         if req == FIONREAD {
             let n = match &file.borrow().kind {
                 FileKind::Tty => self.linux.as_ref().unwrap().tty.pending() as u32,
+                FileKind::PtyMaster(p) => p.borrow().tty.output_pending() as u32,
+                FileKind::PtySlave(p) => p.borrow().tty.pending() as u32,
                 FileKind::PipeR(p) => p.borrow().buf.len() as u32,
                 FileKind::Socket(s) => s.borrow().pending() as u32,
                 _ => 0,
@@ -1053,44 +1129,177 @@ impl Kernel {
             Some(Err(e)) => return self.evdev_ioctl(c, &e, req, arg),
             None => {}
         }
-        if !matches!(file.borrow().kind, FileKind::Tty) {
-            return Err(ENOTTY);
-        }
+        // The console, or a pseudo-terminal (either end).
+        let (pty, master) = match &file.borrow().kind {
+            FileKind::Tty => (None, false),
+            FileKind::PtyMaster(p) => (Some(p.clone()), true),
+            FileKind::PtySlave(p) => (Some(p.clone()), false),
+            _ => return Err(ENOTTY),
+        };
+        const TIOCGPTN: u64 = 0x8004_5430;
+        const TIOCSPTLCK: u64 = 0x4004_5431;
+        const TCSBRK: u64 = 0x5409;
+        const TCXONC: u64 = 0x540a;
+        const TCFLSH: u64 = 0x540b;
+        const TIOCOUTQ: u64 = 0x5411;
         match req {
             TCGETS => {
-                let t = self.lx().tty.termios.to_bytes();
-                self.uwrite(c, arg, &t).map(|_| 0)
+                let t = match &pty {
+                    Some(p) => p.borrow().tty.termios,
+                    None => self.lx().tty.termios,
+                };
+                self.uwrite(c, arg, &t.to_bytes()).map(|_| 0)
             }
             TCSETS | TCSETSW | TCSETSF => {
                 let b = self.uread(c, arg, super::tty::TERMIOS_SIZE)?;
-                self.lx().tty.termios = super::tty::Termios::from_bytes(&b);
+                let t = super::tty::Termios::from_bytes(&b);
+                match &pty {
+                    Some(p) => p.borrow_mut().tty.termios = t,
+                    None => self.lx().tty.termios = t,
+                }
                 Ok(0)
             }
             TIOCGWINSZ => {
-                let t = &self.lx().tty;
+                let (rows, cols) = match &pty {
+                    Some(p) => {
+                        let p = p.borrow();
+                        (p.tty.rows, p.tty.cols)
+                    }
+                    None => (self.lx().tty.rows, self.lx().tty.cols),
+                };
                 let mut ws = [0u8; 8];
-                ws[0..2].copy_from_slice(&t.rows.to_le_bytes());
-                ws[2..4].copy_from_slice(&t.cols.to_le_bytes());
+                ws[0..2].copy_from_slice(&rows.to_le_bytes());
+                ws[2..4].copy_from_slice(&cols.to_le_bytes());
                 self.uwrite(c, arg, &ws).map(|_| 0)
             }
             TIOCSWINSZ => {
                 let b = self.uread(c, arg, 4)?;
-                let t = &mut self.lx().tty;
-                t.rows = u16::from_le_bytes([b[0], b[1]]);
-                t.cols = u16::from_le_bytes([b[2], b[3]]);
+                let (rows, cols) = (u16::from_le_bytes([b[0], b[1]]), u16::from_le_bytes([b[2], b[3]]));
+                let pg = match &pty {
+                    Some(p) => {
+                        let mut p = p.borrow_mut();
+                        let changed = (p.tty.rows, p.tty.cols) != (rows, cols);
+                        p.tty.rows = rows;
+                        p.tty.cols = cols;
+                        if changed { p.tty.fg_pgrp } else { 0 }
+                    }
+                    None => {
+                        let t = &mut self.lx().tty;
+                        t.rows = rows;
+                        t.cols = cols;
+                        0
+                    }
+                };
+                // (a terminal resized: its programs redraw)
+                if pg != 0 {
+                    self.signal_pgrp(pg, SIGWINCH);
+                }
                 Ok(0)
             }
             TIOCGPGRP => {
-                let pg = self.lx().tty.fg_pgrp;
+                let pg = match &pty {
+                    Some(p) => p.borrow().tty.fg_pgrp,
+                    None => self.lx().tty.fg_pgrp,
+                };
                 self.uwrite(c, arg, &pg.to_le_bytes()).map(|_| 0)
             }
             TIOCSPGRP => {
                 let b = self.uread(c, arg, 4)?;
-                self.lx().tty.fg_pgrp = u32::from_le_bytes(b.try_into().unwrap());
+                let pg = u32::from_le_bytes(b.try_into().unwrap());
+                match &pty {
+                    Some(p) => p.borrow_mut().tty.fg_pgrp = pg,
+                    None => self.lx().tty.fg_pgrp = pg,
+                }
                 Ok(0)
             }
-            TIOCSCTTY | TIOCNOTTY => Ok(0),
+            TIOCSCTTY => {
+                if let (Some(p), false) = (&pty, master) {
+                    let mut pr = self.proc(c);
+                    pr.ctty = Some(p.clone());
+                    let pg = pr.pgid;
+                    drop(pr);
+                    p.borrow_mut().tty.fg_pgrp = pg;
+                }
+                Ok(0)
+            }
+            TIOCNOTTY => {
+                self.proc(c).ctty = None;
+                Ok(0)
+            }
+            TIOCGPTN if master => {
+                let n = pty.as_ref().unwrap().borrow().index;
+                self.uwrite(c, arg, &n.to_le_bytes()).map(|_| 0)
+            }
+            TIOCSPTLCK if master => {
+                let b = self.uread(c, arg, 4)?;
+                pty.as_ref().unwrap().borrow_mut().locked = b != [0, 0, 0, 0];
+                Ok(0)
+            }
+            TIOCOUTQ => self.uwrite(c, arg, &0u32.to_le_bytes()).map(|_| 0),
+            TCSBRK | TCXONC | TCFLSH => Ok(0),
             _ => Err(EINVAL),
+        }
+    }
+
+    /// A new pseudo-terminal (its master open): /dev/pts/N appears.
+    fn pty_new(&mut self) -> super::tty::PtyRef {
+        let lx = self.lx();
+        // (pseudo-terminals nobody has open any more go, with their nodes)
+        let gone: Vec<u32> = lx.ptys.iter().filter(|(_, p)| {
+            let p = p.borrow();
+            p.masters == 0 && p.slaves == 0
+        }).map(|(&i, _)| i).collect();
+        for i in gone {
+            lx.ptys.remove(&i);
+            lx.vfs.remove_at("/dev/pts", &alloc::format!("{}", i));
+        }
+        let index = (0u32..).find(|i| !lx.ptys.contains_key(i)).unwrap();
+        let p = super::tty::Pty::new(index);
+        lx.ptys.insert(index, p.clone());
+        lx.vfs.add_device_at("/dev/pts", &alloc::format!("{}", index), vfs::DEV_PTS0 + index as u64, 0o620);
+        p
+    }
+
+    /// Open a pseudo-terminal's slave. A session leader without a
+    /// controlling terminal gets this one (unless O_NOCTTY).
+    fn pty_open_slave(&mut self, c: usize, p: super::tty::PtyRef, flags: u32, path: &str) -> Result<i64, i64> {
+        if p.borrow().locked {
+            return Err(EIO);
+        }
+        {
+            let mut pr = self.proc(c);
+            let mut pt = p.borrow_mut();
+            pt.slaves += 1;
+            pt.had_slave = true;
+            if flags & O_NOCTTY == 0 && pr.ctty.is_none() && pr.sid == pr.pid {
+                pr.ctty = Some(p.clone());
+                pt.tty.fg_pgrp = pr.pgid;
+            }
+            if pt.tty.fg_pgrp == 0 {
+                pt.tty.fg_pgrp = pr.pgid;
+            }
+        }
+        let f = open_file(FileKind::PtySlave(p), flags, path);
+        self.proc(c).install_fd(f, flags & O_CLOEXEC != 0, 0).map(|n| n as i64)
+    }
+
+    /// A signal to every process in group `pg` (a terminal's ^C, resize).
+    pub(crate) fn signal_pgrp(&mut self, pg: u32, sig: u64) {
+        let targets: Vec<usize> = (0..self.comps.len())
+            .filter(|&i| self.live_task(i))
+            .filter(|&i| {
+                let t = self.comps[i].linux.as_ref().unwrap();
+                let p = t.p.borrow();
+                t.tid == p.pid && p.pgid == pg && p.pid != 1
+            })
+            .collect();
+        for t in targets {
+            if self.live_task(t) {
+                self.sig_send_proc(
+                    t,
+                    super::signal::SigInfo { signo: sig as i32, code: super::signal::SI_KERNEL, ..Default::default() },
+                );
+            }
         }
     }
 

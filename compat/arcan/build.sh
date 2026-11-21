@@ -107,7 +107,7 @@ mkdir -p "$out/arcan-build"
         -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_C_FLAGS="-DEGL_NO_X11 -DMESA_EGL_NO_X11_HEADERS" \
         -DVIDEO_PLATFORM=egl-dri -DAGP_PLATFORM=gles2 -DAUDIO_PLATFORM=stub -DDISABLE_WAYLAND=ON \
         -DENABLE_LWA=OFF -DSTATIC_LIBUVC=OFF -DDISABLE_FSRV_ENCODE=ON -DDISABLE_FSRV_DECODE=ON \
-        -DDISABLE_FSRV_NET=ON -DDISABLE_FSRV_REMOTING=ON -DDISABLE_FSRV_GAME=ON -DDISABLE_FSRV_TERMINAL=ON \
+        -DDISABLE_FSRV_NET=ON -DDISABLE_FSRV_REMOTING=ON -DDISABLE_FSRV_GAME=ON -DDISABLE_FSRV_TERMINAL=OFF \
         -DOPENGL_egl_LIBRARY="$sys/usr/lib/libEGL.so" -DOPENGL_EGL_INCLUDE_DIR="$sys/usr/include" \
         -DOPENGL_opengl_LIBRARY="$sys/usr/lib/libGLESv2.so" -DOPENGL_INCLUDE_DIR="$sys/usr/include" \
         "$src/src" >"$out/arcan-setup.log" 2>&1
@@ -122,7 +122,7 @@ clang --target=aarch64-alpine-linux-musl --sysroot="$sys" --gcc-toolchain="$sys/
 echo "arcan/build.sh: staging"
 python3 "$here/stage.py" "$sys" "$out/arcan-root" "$out/mesa-root" "$out/stage" "$out/kmstest"
 fonts="$out/stage/usr/share/arcan/resources/fonts"
-for f in DejaVuSans-ExtraLight DejaVuSans DejaVuSans-Bold; do
+for f in DejaVuSans-ExtraLight DejaVuSans DejaVuSans-Bold DejaVuSansMono; do
     cp "$sys/usr/share/fonts/dejavu/$f.ttf" "$fonts/"
 done
 touch "$out/stage/.stamp"
