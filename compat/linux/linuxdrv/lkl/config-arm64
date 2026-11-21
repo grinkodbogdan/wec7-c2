@@ -100,3 +100,12 @@ CONFIG_PINCTRL_QCOM_SPMI_PMIC=y
 # Not the interconnect drivers: their bus nodes are not Linux's, and with them
 # the SDHC would wait for providers that never appear (without them, a
 # device's interconnect paths are simply none).
+# USB device mode: the DWC3 controller and its PHY, with the serial gadget
+# (/dev/ttyGS0, the host's /dev/ttyACM0) that carries fdb
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_DWC3_GADGET=y
+CONFIG_USB_DWC3_QCOM=y
+CONFIG_PHY_QCOM_QUSB2=y
+CONFIG_USB_G_SERIAL=y

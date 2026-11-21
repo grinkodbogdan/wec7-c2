@@ -173,6 +173,8 @@ fn main() {
             let _ = writeln!(g, "pub const RAMDISK_PHYS: Option<u64> = {:?};", ramdisk);
             let li: Vec<usize> = l.inputs.iter().filter_map(|n| inputs.iter().position(|m| m == n)).collect();
             let _ = writeln!(g, "pub const LINUX_INPUTS: &[usize] = &{:?};", li);
+            let ls: Vec<usize> = l.serials.iter().filter_map(|n| serials.iter().position(|m| m == n)).collect();
+            let _ = writeln!(g, "pub const LINUX_SERIALS: &[usize] = &{:?};", ls);
             let _ = writeln!(
                 g,
                 "pub static INITRAMFS: &[u8] = include_bytes!({:?});",
@@ -192,6 +194,7 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &[];");
             let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &[];");
             let _ = writeln!(g, "pub const LINUX_INPUTS: &[usize] = &[];");
+            let _ = writeln!(g, "pub const LINUX_SERIALS: &[usize] = &[];");
             let _ = writeln!(g, "pub const RAMDISK_PHYS: Option<u64> = None;");
             let _ = writeln!(g, "pub static INITRAMFS: &[u8] = &[];");
         }

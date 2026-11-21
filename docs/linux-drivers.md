@@ -141,10 +141,25 @@ go to the one whose name contains `key`. Then it writes
 `/tmp/linuxdrv.ready`, which `/etc/rc` waits for before starting a user
 interface.
 
+## Storage and serial devices for Flare
+
+* `[linux] rootfs = "userdata"`: the full root filesystem is on storage,
+  in the format of `kernel/src/ramdisk.rs` (zlib-compressed). The host
+  reads it through Linux's block driver from the GPT partition named
+  `userdata` (or, in QEMU, a disk that is the image). It reads it into its
+  own DMA memory, and `ioctl(FLAREHW_ROOTFS, {phys, len})` has the kernel
+  check it, inflate it into fresh memory and add its files.
+* `[linux] serials = ["fdb"]`: a Flare serial device carried over a tty
+  of the host's Linux: the USB serial gadget (`ttyGS0`) on a phone, the
+  virtio console (`hvc0`) in QEMU. `ioctl(FLAREHW_SERIAL, {index, op,
+  ptr, len})` with op 0 (bytes for Linux programs) or op 1 (what they
+  wrote). The test runs fdb's checks over it.
+
 ## Not yet
 
-* Linux's block devices are visible only inside the driver host. Next is
-  bridging them to Flare:
+* The GPU, through Linux's own driver: [gpu.md](gpu.md).
+* Linux's block devices as writable Flare storage (today the host reads
+  the root filesystem from them). Next is bridging them to Flare:
   * block devices to the storage endpoint, so the Linux personality and
     components can use the eMMC.
 * USB device mode (for `fdb`), display and GPU, with the IOMMU and the

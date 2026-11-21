@@ -42,6 +42,9 @@ control = true
 rootfs = "userdata"
 display = "display"
 # Devices whose registers and interrupts only the Linux driver host may use.
-hardware = ["virtio31", "rtc0", "virtio30", "virtio29"]
+hardware = ["virtio31", "rtc0", "virtio30", "virtio29", "virtio28"]
 # Flare input devices the driver host feeds (event0, event1).
 inputs = ["touch", "keys"]
+# The debug bridge over Linux's virtio console driver (a phone: its USB
+# serial gadget): Flare's /dev/fdb.
+serials = ["fdb"]

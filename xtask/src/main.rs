@@ -721,13 +721,21 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
     if own.exists() {
         // The board's own (mainline) tree, with everything Linux was not
         // given disabled, and the board's notes for Linux (linux.txt).
-        let (mut drop, mut cmdline, mut delprop) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut drop, mut cmdline, mut delprop, mut setprop) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         if let Ok(text) = std::fs::read_to_string(board_dir.join("linux.txt")) {
             for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
                 match l.split_once(' ') {
                     Some(("drop", p)) => drop.push(p.trim().to_string()),
                     Some(("cmdline", a)) => cmdline.push(a.trim().to_string()),
                     Some(("delprop", a)) => delprop.push(a.trim().to_string()),
+                    // setprop <path> <name> <string value>
+                    Some(("setprop", a)) => {
+                        let f: Vec<&str> = a.split_whitespace().collect();
+                        if f.len() != 3 {
+                            die(&format!("{}/linux.txt: setprop needs <path> <name> <value>: '{}'", comp.board, l));
+                        }
+                        setprop.push(format!("{}:{}={}", f[0], f[1], f[2]));
+                    }
                     _ => die(&format!("{}/linux.txt: cannot read '{}'", comp.board, l)),
                 }
             }
@@ -745,6 +753,9 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
         }
         if !delprop.is_empty() {
             c.arg("--delprop").args(&delprop);
+        }
+        if !setprop.is_empty() {
+            c.arg("--setprop").args(&setprop);
         }
         c.stdout(Stdio::null());
         run(c);
@@ -1397,6 +1408,8 @@ fn linuxdrv_test(o: &Opts) -> bool {
         "is Flare's touch screen",
         "flarehome: ready",
         "flarehome: unlocked",
+        // fdb over Linux's virtio console driver (checked below).
+        "linuxdrv: Flare's serial device carried over Linux's /dev/hvc0",
     ];
     let fatal = ["KERNEL PANIC", "' faulted:", "kernel: restarting", "linuxdrv: Linux did not start", "linuxdrv: Linux panicked"];
     let deadline = Instant::now() + Duration::from_secs(600);
@@ -1425,10 +1438,17 @@ fn linuxdrv_test(o: &Opts) -> bool {
         }
         std::thread::sleep(Duration::from_millis(500));
     };
+    // The debug bridge end to end: fdbd in Flare, /dev/fdb, the driver host,
+    // Linux's virtio console driver, QEMU's socket.
+    let fdb_fails = if ok { fdb_checks("display") } else { Vec::new() };
+    let ok = ok && fdb_fails.is_empty();
     let _ = child.kill();
     let _ = child.wait();
     let seen = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     println!();
+    for f in &fdb_fails {
+        println!("linuxdrv-test: {}", f);
+    }
     for e in expected {
         println!("linuxdrv-test: {} {:?}", if seen.contains(e) { "ok     " } else { "MISSING" }, e);
     }
@@ -1475,7 +1495,8 @@ fn ui_script(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) {
 
 /// Exercise the debug bridge from the host, as a developer would; returns
 /// what failed.
-fn fdb_checks() -> Vec<String> {
+/// The debug bridge end to end; `component`: one the supervisor must list.
+fn fdb_checks(component: &str) -> Vec<String> {
     let mut fails = Vec::new();
     let sock = root().join("target/fdb.sock");
     let stream = match std::os::unix::net::UnixStream::connect(&sock) {
@@ -1509,7 +1530,7 @@ fn fdb_checks() -> Vec<String> {
     check(
         "supervisor",
         c.exec("echo list > /dev/flarectl && cat /dev/flarectl")
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains("debug-bridge"))
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(component))
             .unwrap_or(false),
     );
     fails
@@ -1624,10 +1645,10 @@ fn qemu_test(o: &Opts) -> bool {
         if !ui_done && seen.contains("flarehome: ready") {
             if let Some(mut q) = Qmp::connect(&qmp) {
                 ui_script(&mut q, &output);
-                fdb_fails = fdb_checks();
+                fdb_fails = fdb_checks("debug-bridge");
                 fdb_fails.extend(android_app_check(&mut q, &output));
             } else {
-                fdb_fails = fdb_checks();
+                fdb_fails = fdb_checks("debug-bridge");
             }
             ui_done = true;
         }

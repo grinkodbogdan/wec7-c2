@@ -22,7 +22,10 @@
 //!   gives the host (`[linux] inputs`): name, describe, report events, as
 //!   an input driver component does with `INPUT_REPORT`;
 //! * `ioctl(FLAREHW_ROOTFS)`: a root filesystem archive the host read from
-//!   storage into its DMA memory (crate::ramdisk), added to Linux's files.
+//!   storage into its DMA memory (crate::ramdisk), added to Linux's files;
+//! * `ioctl(FLAREHW_SERIAL)`: carry a serial device the composition gives
+//!   the host (`[linux] serials`): bytes for Linux programs reading it, and
+//!   what they wrote, as a serial driver component does with `SERIAL_IO`.
 
 use super::abi::*;
 use super::Kernel;
@@ -38,6 +41,7 @@ pub const FLAREHW_IRQ: u64 = 0x4602;
 pub const FLAREHW_SMC: u64 = 0x4603;
 pub const FLAREHW_INPUT: u64 = 0x4604;
 pub const FLAREHW_ROOTFS: u64 = 0x4605;
+pub const FLAREHW_SERIAL: u64 = 0x4606;
 /// mmap offset bit: map DMA memory non-cacheable.
 pub const NOCACHE: u64 = 1 << 62;
 
@@ -249,6 +253,31 @@ impl Kernel {
                         kprintln!("linux: root filesystem from storage damaged: {}", e);
                         Err(EINVAL)
                     }
+                }
+            }
+            FLAREHW_SERIAL => {
+                // in: u32 index (into [linux] serials), u32 op (0 push: bytes
+                // for Linux; 1 pull: what Linux wrote), u64 ptr, u64 len;
+                // out: bytes moved
+                let v = self.uread(c, arg, 24)?;
+                let w32 = |i: usize| u32::from_le_bytes(v[i..i + 4].try_into().unwrap());
+                let w64 = |i: usize| u64::from_le_bytes(v[i..i + 8].try_into().unwrap());
+                let (idx, op, ptr, len) = (w32(0) as usize, w32(4), w64(8), w64(16));
+                let &dev = boot::LINUX_SERIALS.get(idx).ok_or(ENOENT)?;
+                match op {
+                    0 => {
+                        let room = crate::kernel::SERIAL_BUF.saturating_sub(self.serials[dev].rx.len());
+                        let bytes = self.uread(c, ptr, (len as usize).min(room).min(65536))?;
+                        self.serials[dev].rx.extend(bytes.iter());
+                        Ok(bytes.len() as i64)
+                    }
+                    1 => {
+                        let n = (len as usize).min(self.serials[dev].tx.len()).min(65536);
+                        let bytes: Vec<u8> = self.serials[dev].tx.drain(..n).collect();
+                        self.uwrite(c, ptr, &bytes)?;
+                        Ok(n as i64)
+                    }
+                    _ => Err(EINVAL),
                 }
             }
             FLAREHW_SMC => {

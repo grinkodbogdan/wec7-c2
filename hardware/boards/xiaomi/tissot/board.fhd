@@ -178,3 +178,9 @@ status = "okay"
 
 [device.smem]
 status = "okay"
+
+[device.usb]
+status = "okay"
+
+[device.usb-phy]
+status = "okay"

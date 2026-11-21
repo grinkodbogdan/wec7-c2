@@ -1,9 +1,14 @@
 # The Xiaomi Mi A1 with Linux's own drivers for the hard hardware: what
 # system/xiaomi-tissot.boot.toml runs, plus the Linux driver host
 # (docs/linux-drivers.md) given the eMMC, the SD card, the touch screen's
-# I2C bus and what those need: the clock controller, the pin controller, the
-# RPM co-processor (power rails), SMEM and the PMICs. Linux probes them with
-# mainline's device tree for this phone, trimmed to exactly that.
+# I2C bus, USB, and what those need: the clock controller, the pin
+# controller, the RPM co-processor (power rails), SMEM and the PMICs. Linux
+# probes them with mainline's device tree for this phone, trimmed to exactly
+# that.
+#
+# Two images: boot.img (the kernel, the minimal root filesystem, the driver
+# host) and userdata.img (the full root filesystem, compressed):
+#   fastboot flash boot_b boot.img && fastboot flash userdata userdata.img
 #
 # The pin controller goes to Linux as a whole, so the volume and power keys
 # are Linux's (gpio-keys, pm8941-pwrkey) here, not the native TLMM driver's.
@@ -36,13 +41,17 @@ init = ["/bin/sh", "/etc/rc"]
 env = ["PATH=/bin:/sbin:/usr/bin", "HOME=/root", "TERM=vt100", "FLARE_BOOT=quick"]
 control = true
 # The kernel carries the minimal root filesystem (and the driver host); the
-# boot image's ramdisk the full one: Arcan, Mesa, the phone shell, ART.
-rootfs = "ramdisk"
+# full one (Arcan, Mesa, the phone shell, ART) is userdata.img on the
+# userdata partition, read through Linux's eMMC driver at boot.
+rootfs = "userdata"
 display = "display"
-hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3"]
+hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3", "usb", "usb-phy"]
 # Linux's Qualcomm drivers make no firmware calls in this configuration
 # (QCOM_SCM is off); none are allowed.
 smc = []
 # Linux's touch screen and keys, handed back to Flare (/dev/input/event0, 1)
 # for the phone shell.
 inputs = ["touch", "keys"]
+# fdb over USB: Linux's DWC3 controller in device mode, its serial gadget
+# (the computer's /dev/ttyACM0) carrying Flare's /dev/fdb.
+serials = ["fdb"]

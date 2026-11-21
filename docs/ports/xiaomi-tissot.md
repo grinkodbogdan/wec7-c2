@@ -191,34 +191,46 @@ phone-specific facts below.
 cargo xtask image --system system/xiaomi-tissot-linuxdrv.boot.toml
 ```
 
-This is the full phone image (`target/images/xiaomi-tissot-linuxdrv/boot.img`,
-about 110 MB). It boots into the Arcan phone shell on the panel, driven by
-the touch screen:
+This is the full phone. It is two images, because one did not fit
+(`fastboot` failed sending 112 MB with "too many links"):
 
+| File | Size | What | Where |
+| --- | --- | --- | --- |
+| `boot.img` | ~9 MB | the kernel, the minimal root filesystem, the Linux driver host | a boot slot |
+| `userdata.img` | ~48 MB | the full root filesystem (Arcan, Mesa, the shell, ART), compressed | the `userdata` partition |
+
+```sh
+fastboot flash userdata target/images/xiaomi-tissot-linuxdrv/userdata.img   # erases Android's data
+fastboot flash boot_b target/images/xiaomi-tissot-linuxdrv/boot.img
+fastboot --set-active=b && fastboot reboot
+# or try it once from RAM, after flashing userdata:
+fastboot boot target/images/xiaomi-tissot-linuxdrv/boot.img
+```
+
+What runs:
+
+* **Storage.** Linux's eMMC driver finds the GPT partition named
+  `userdata` and reads the root filesystem (46 MB compressed) into memory
+  the driver host owns. The kernel checks it, inflates it (zlib,
+  `miniz_oxide`) and adds its files (`[linux] rootfs = "userdata"`,
+  `FLAREHW_ROOTFS`). Then the shell starts.
 * **Display** (`drivers/qcom/mdp5-display`): the boot loader's display
   setup stays. One source pipe of the display engine is re-pointed from the
   24-bit splash buffer to the `display` shared memory as 32-bit XRGB8888
-  (QRT's recipe for this phone: address, stride, format and unpack
-  registers, then the pipe's CTL flush). That memory is
-  `/dev/dri/card0` for Linux; frames are written back from the CPU's caches
-  for the display engine. The kernel console moves onto it too, and steps
-  aside once the shell presents frames (a panic draws again).
+  (QRT's recipe for this phone). That memory is `/dev/dri/card0` for Linux
+  programs. The kernel console moves onto it too, and steps aside once the
+  shell presents frames.
 * **Touch and keys**: Linux's drivers (ft5x06, gpio-keys, the PMIC's power
-  key) in the driver host. The host hands them back to Flare
-  (`[linux] inputs`) as `/dev/input/event0` (the touch screen, as an
-  absolute pointer in 0..32767, as the shell takes touch) and `event1`
-  (all keys).
-* **Root filesystem**: the kernel carries the minimal one and the driver
-  host. The full one (Arcan, Mesa, the shell, ART: about 98 MB) is the boot
-  image's ramdisk. LK copies it to 0x96000000, where ~159 MB are free up to
-  ramoops (QRT's choice). The kernel finds it by its header and checksum,
-  keeps its memory and unpacks it over the minimal one
-  (`[linux] rootfs = "ramdisk"`).
-* **Quick boot**: the driver host first; the shell starts once the touch
-  screen and keys are handed over (about 10 s after the kernel).
+  key) in the driver host, handed to Flare (`[linux] inputs`) as
+  `/dev/input/event0` (the touch screen, as an absolute pointer in
+  0..32767) and `event1` (all keys).
+* **fdb over USB**: Linux's DWC3 controller in device mode with its serial
+  gadget, carrying Flare's `/dev/fdb` (`[linux] serials`). On the computer:
+  `FDB_SOCKET=/dev/ttyACM0 cargo fdb shell`.
+* **Quick boot**: the driver host first; the shell starts once the root
+  filesystem, touch and keys are there.
 
-The image is too big for the phone's 64 MB boot partitions: use it with
-`fastboot boot` (RAM only). `xiaomi-tissot` (3 MB) is the one to flash.
+The GPU is next: [../gpu.md](../gpu.md).
 
 The driver host also gives Linux:
 * the eMMC, the SD card and the touch screen's I2C bus;
@@ -283,13 +295,11 @@ with LKL):
 
 * the PMIC power key as a native driver (it is Linux's in the
   `-linuxdrv` composition);
-* Linux's block devices handed to Flare (the eMMC as storage for the
-  Linux personality);
-* USB device mode, for `fdb`;
+* writable storage: the eMMC is read (the root filesystem) but not yet a
+  Flare block device or file system for programs;
 * display control (MDSS/DSI), so the screen can be turned off or changed;
 * the GPU (Adreno 506): the shell renders in software (Mesa softpipe) at
-  1080×1920;
-* a compressed ramdisk, so the full image fits the boot partition.
+  1080×1920. The plan: [../gpu.md](../gpu.md).
 
 Only the low 2 GiB of the 4 GiB fitted is used. CPU frequency and thermal
 management are left to the firmware's defaults.

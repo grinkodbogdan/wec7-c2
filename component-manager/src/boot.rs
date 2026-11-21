@@ -121,6 +121,9 @@ pub struct LinuxConfig {
     /// (`/dev/flarehw`) with what its Linux drivers report: a phone's touch
     /// screen and keys.
     pub inputs: Vec<String>,
+    /// Linux serial devices (/dev/<name>) carried by the driver host over a
+    /// tty of its Linux (a phone's USB serial gadget): fdb.
+    pub serials: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +183,11 @@ impl Composition {
                         out.push(name.clone());
                     }
                 }
+            }
+        }
+        for name in self.linux.iter().flat_map(|l| l.serials.iter()) {
+            if !out.contains(name) {
+                out.push(name.clone());
             }
         }
         out
@@ -297,7 +305,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control", "display", "rootfs", "hardware", "smc", "inputs"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display", "rootfs", "hardware", "smc", "inputs", "serials"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -337,6 +345,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                         hardware,
                         smc,
                         inputs: list("inputs").unwrap_or_default(),
+                        serials: list("serials").unwrap_or_default(),
                     })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
@@ -605,6 +614,19 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
             }
             if let Some(owner) = input_owner.get(name) {
                 errs.push(format!("input device '{}' fed by both '{}' and the Linux driver host", name, owner));
+            }
+        }
+    }
+    if let Some(l) = &comp.linux {
+        for name in &l.serials {
+            if l.hardware.is_empty() {
+                errs.push(format!("[linux] serials '{}' needs [linux] hardware (a driver host to carry it)", name));
+            }
+            if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+                errs.push(format!("[linux] serials name '{}' must be [A-Za-z0-9_-]", name));
+            }
+            if let Some(owner) = input_owner.get(&format!("serial:{}", name)) {
+                errs.push(format!("serial device '{}' carried by both '{}' and the Linux driver host", name, owner));
             }
         }
     }

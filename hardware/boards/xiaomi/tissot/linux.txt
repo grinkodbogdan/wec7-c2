@@ -40,6 +40,12 @@ delprop interconnect-names
 delprop opp-peak-kBps
 delprop opp-avg-kBps
 
+# USB in device mode only (fdb over the USB serial gadget): the controller's
+# role would follow the charger's ID detection (extcon), which Linux does
+# not get here.
+setprop /soc@0/usb@70f8800/usb@7000000 dr_mode peripheral
+delprop extcon
+
 # Linux must not switch off what it does not know is in use: the panel's
 # clocks and power domain and the UART's clock (Flare's console), and the
 # rails the boot loader left on.

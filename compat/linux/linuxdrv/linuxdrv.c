@@ -458,6 +458,7 @@ static struct lkl_host_operations ops = {
 #define NR_GETDENTS 61
 #define NR_READ     63
 #define NR_PREAD64  67
+#define NR_WRITE    64
 #define L_BLKFLSBUF 0x1261 /* drop the device's cached blocks */
 #define AT_FDCWD    (-100)
 static long l_sys(long nr, long a, long b, long c, long d, long e)
@@ -874,6 +875,108 @@ static void load_rootfs(char *all)
 	munmap(buf, size);
 }
 
+/* ---- a serial device for Flare over a Linux tty ----
+ * [linux] serials = ["fdb"]: Flare's /dev/fdb carried over a tty of this
+ * Linux: the USB serial gadget on a phone (the computer's /dev/ttyACM0),
+ * QEMU's virtio console in tests. Raw mode; bytes both ways. */
+#define FLAREHW_SERIAL 0x4606
+
+static long flare_serial(int op, void *p, size_t len)
+{
+	struct { uint32_t index, op; uint64_t ptr, len; } r = { 0, (uint32_t)op, (uint64_t)(uintptr_t)p, len };
+	return ioctl(hw, FLAREHW_SERIAL, &r);
+}
+
+static long tty_fd = -1;
+
+static void *serial_from_tty(void *p)
+{
+	(void)p;
+	for (;;) {
+		char b[4096];
+		long n = l_read((int)tty_fd, b, sizeof b);
+		if (n <= 0) {
+			usleep(10000);
+			continue;
+		}
+		for (long done = 0; done < n;) {
+			long m = flare_serial(0, b + done, (size_t)(n - done));
+			if (m <= 0) {
+				usleep(1000); /* Flare's buffer is full: let its reader catch up */
+				continue;
+			}
+			done += m;
+		}
+	}
+	return NULL;
+}
+
+static void *serial_to_tty(void *p)
+{
+	(void)p;
+	for (;;) {
+		char b[4096];
+		long n = flare_serial(1, b, sizeof b);
+		if (n <= 0) {
+			usleep(2000);
+			continue;
+		}
+		for (long done = 0; done < n;) {
+			long m = l_sys(NR_WRITE, tty_fd, (long)(b + done), n - done, 0, 0);
+			if (m <= 0) {
+				usleep(1000);
+				continue;
+			}
+			done += m;
+		}
+	}
+	return NULL;
+}
+
+static void bridge_serial(void)
+{
+	char probe[1];
+	if (flare_serial(1, probe, 0) < 0)
+		return; /* no [linux] serials */
+	static const char *const ttys[] = { "ttyGS0", "hvc0" };
+	const char *name = NULL;
+	/* the USB gadget's tty appears once the controller is up */
+	for (int i = 0; i < 20 && !name; i++) {
+		for (unsigned k = 0; k < sizeof ttys / sizeof ttys[0] && !name; k++) {
+			char path[32];
+			snprintf(path, sizeof path, "/dev/%s", ttys[k]);
+			long fd = l_open(path, 2 /* O_RDWR */ | 0400 /* O_NOCTTY */);
+			if (fd >= 0) {
+				tty_fd = fd;
+				name = ttys[k];
+			}
+		}
+		if (!name)
+			usleep(500000);
+	}
+	if (!name) {
+		printf("linuxdrv: no tty for Flare's serial device (USB gadget not up)\n");
+		return;
+	}
+	/* raw: struct termios (asm-generic): iflag, oflag, cflag, lflag, line, cc[19] */
+	struct { uint32_t iflag, oflag, cflag, lflag; uint8_t line, cc[19]; } t;
+	if (l_sys(NR_IOCTL, tty_fd, 0x5401 /* TCGETS */, (long)&t, 0, 0) == 0) {
+		t.iflag = 0;
+		t.oflag = 0;
+		t.lflag = 0;
+		t.cflag = (t.cflag & ~0x30u) | 0x30 /* CS8 */ | 0x80 /* CREAD */ | 0x800 /* CLOCAL */;
+		t.cc[6] = 1; /* VMIN */
+		t.cc[5] = 0; /* VTIME */
+		l_sys(NR_IOCTL, tty_fd, 0x5402 /* TCSETS */, (long)&t, 0, 0);
+	}
+	pthread_t a, b;
+	pthread_create(&a, NULL, serial_from_tty, NULL);
+	pthread_create(&b, NULL, serial_to_tty, NULL);
+	pthread_detach(a);
+	pthread_detach(b);
+	printf("linuxdrv: Flare's serial device carried over Linux's /dev/%s\n", name);
+}
+
 static void report(void)
 {
 	static char names[4096];
@@ -968,6 +1071,7 @@ static void report(void)
 		devs[ndev++] = n;
 	}
 	printf(ndev ? "\n" : "linuxdrv: input devices: none\n");
+	bridge_serial();
 	bridge_inputs(devs, ndev);
 	/* Bring-up: what each device Linux has not probed yet still waits for. */
 	l_cat("/sys/kernel/debug/devices_deferred", "linuxdrv: waiting: ");

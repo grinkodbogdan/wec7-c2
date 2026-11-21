@@ -5,6 +5,7 @@
         List the enabled nodes that have registers or interrupts.
 
     dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...] [--delprop NAME...]
+               [--setprop PATH:NAME=STRING...]
         Disable every device whose registers are not all inside an allowed
         window, and the nodes named by --drop (with what is under them). The
         interrupt controller is kept. --delprop removes a property from every
@@ -140,13 +141,16 @@ def emit(f, n):
     f.end()
 
 
-def trim(src, dst, allow, drop, delprops=()):
+def trim(src, dst, allow, drop, delprops=(), setprops=()):
     root = parse(open(src, "rb").read())
     off = []
     for n in walk(root):
         pr = n["props"]
         for p in delprops:
             pr.pop(p, None)
+        for path, name, value in setprops:
+            if n["path"] == path:
+                pr[name] = value.encode() + b"\0"
         if n["parent"] is None:
             continue
         # Every node under a dropped path, not just the top one: Linux
@@ -180,10 +184,14 @@ def main():
     if len(a) >= 2 and a[0] == "info":
         info(a[1], "--all" in a)
     elif len(a) >= 3 and a[0] == "trim":
-        allow, drop, delprops, mode = [], [], [], None
+        allow, drop, delprops, setprops, mode = [], [], [], [], None
         for x in a[3:]:
-            if x in ("--allow", "--drop", "--delprop"):
+            if x in ("--allow", "--drop", "--delprop", "--setprop"):
                 mode = x
+            elif mode == "--setprop":
+                path, _, rest = x.partition(":")
+                name, _, value = rest.partition("=")
+                setprops.append((path, name, value))
             elif mode == "--allow":
                 allow.append(window(x))
             elif mode == "--drop":
@@ -192,7 +200,7 @@ def main():
                 delprops.append(x)
             else:
                 sys.exit("dtb.py: unexpected '%s'" % x)
-        trim(a[1], a[2], allow, drop, delprops)
+        trim(a[1], a[2], allow, drop, delprops, setprops)
     else:
         sys.exit(__doc__)
 

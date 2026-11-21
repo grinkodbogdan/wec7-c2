@@ -119,3 +119,16 @@ compatible = "qcom,smem"
 reg = [0x86300000, 0x100000]
 mapping = "memory"
 status = "disabled"
+
+# USB: the DWC3 controller (its Qualcomm glue and the core) and its QUSB2
+# PHY: USB device mode for Linux's gadget drivers (fdb over USB serial).
+[device.usb]
+compatible = ["qcom,msm8953-dwc3", "qcom,dwc3"]
+reg = [[0x070f8800, 0x400], [0x07000000, 0xcc00]]
+interrupts = [166, 168, 252, 172] # SPI 134 (pwr_event), 136 (qusb2_phy), 220 (ss_phy), 140 (dwc3)
+status = "disabled"
+
+[device.usb-phy]
+compatible = "qcom,msm8953-qusb2-phy"
+reg = [0x00079000, 0x180]
+status = "disabled"

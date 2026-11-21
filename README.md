@@ -147,5 +147,6 @@ Follows the illustrative layout of the project specification (§7):
 * [fdb](docs/fdb.md) — the debug bridge: shell, files, apps, screenshots, UI reload
 * [Drivers: native and Linux's own](docs/linux-drivers.md) — small native drivers, and the
   driver host that runs Linux's drivers (LKL) for hard hardware
+* [GPU](docs/gpu.md) — Linux's GPU driver shared through a proxied render node (design)
 * [Decisions](docs/decisions.md) — positions taken on the spec's open questions
 * [Roadmap](docs/roadmap.md) — milestone status and next steps

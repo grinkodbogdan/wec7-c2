@@ -14,18 +14,20 @@
 //! fdb screenshot [out.png]        save the display
 //! ```
 //!
-//! The connection is `$FDB_SOCKET` (a Unix socket path, or `tcp:host:port`),
-//! by default the socket `cargo xtask run` gives QEMU: target/fdb.sock.
+//! The connection is `$FDB_SOCKET` (a Unix socket path, `tcp:host:port`, or
+//! a serial device such as `/dev/ttyACM0`: a phone over USB), by default
+//! the socket `cargo xtask run` gives QEMU: target/fdb.sock.
 
 use fdb::{kind, read_frame, write_frame, Client};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-/// A Unix or TCP connection.
+/// A Unix, TCP or serial (USB ACM) connection.
 enum Conn {
     Unix(std::os::unix::net::UnixStream),
     Tcp(std::net::TcpStream),
+    Serial(std::fs::File),
 }
 
 impl Conn {
@@ -33,6 +35,25 @@ impl Conn {
         let spec = std::env::var("FDB_SOCKET").unwrap_or_else(|_| {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/fdb.sock").display().to_string()
         });
+        // A serial device (a phone's USB serial gadget): raw, 8 bits.
+        let is_serial = std::fs::metadata(&spec)
+            .map(|m| {
+                use std::os::unix::fs::FileTypeExt;
+                m.file_type().is_char_device()
+            })
+            .unwrap_or(false);
+        if is_serial {
+            let ok = std::process::Command::new("stty")
+                .args(["-F", &spec, "raw", "-echo", "-echoe", "-echok", "-icrnl", "-onlcr", "-ixon", "cs8"])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                return Err(io::Error::other(format!("{}: cannot set raw mode (stty)", spec)));
+            }
+            let f = std::fs::OpenOptions::new().read(true).write(true).open(&spec)?;
+            return Ok(Conn::Serial(f));
+        }
         match spec.strip_prefix("tcp:") {
             Some(addr) => Ok(Conn::Tcp(std::net::TcpStream::connect(addr)?)),
             None => std::os::unix::net::UnixStream::connect(&spec)
@@ -44,6 +65,7 @@ impl Conn {
         Ok(match self {
             Conn::Unix(s) => Conn::Unix(s.try_clone()?),
             Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
+            Conn::Serial(f) => Conn::Serial(f.try_clone()?),
         })
     }
 }
@@ -53,6 +75,7 @@ impl Read for Conn {
         match self {
             Conn::Unix(s) => s.read(b),
             Conn::Tcp(s) => s.read(b),
+            Conn::Serial(f) => f.read(b),
         }
     }
 }
@@ -62,12 +85,14 @@ impl Write for Conn {
         match self {
             Conn::Unix(s) => s.write(b),
             Conn::Tcp(s) => s.write(b),
+            Conn::Serial(f) => f.write(b),
         }
     }
     fn flush(&mut self) -> io::Result<()> {
         match self {
             Conn::Unix(s) => s.flush(),
             Conn::Tcp(s) => s.flush(),
+            Conn::Serial(f) => f.flush(),
         }
     }
 }
@@ -262,7 +287,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: fdb <command>\n\n  devices | shell [cmd...] | push <local> <remote> | pull <remote> [local]\n  install <apk> | run <apk> | appl <dir> [name] | ui [appl] | log\n  ctl <supervisor command> | screenshot [out.png]\n\nconnection: $FDB_SOCKET (unix path or tcp:host:port), default target/fdb.sock"
+                "usage: fdb <command>\n\n  devices | shell [cmd...] | push <local> <remote> | pull <remote> [local]\n  install <apk> | run <apk> | appl <dir> [name] | ui [appl] | log\n  ctl <supervisor command> | screenshot [out.png]\n\nconnection: $FDB_SOCKET (unix path, tcp:host:port, or a serial device: /dev/ttyACM0 for a phone over USB), default target/fdb.sock"
             );
             2
         }
