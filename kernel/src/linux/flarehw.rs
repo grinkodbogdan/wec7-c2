@@ -236,6 +236,7 @@ impl Kernel {
                     return Err(EPERM);
                 }
                 let va = crate::arch::mmu::phys_to_virt(pa) as *const u8;
+                let t0 = crate::arch::timer::now_ns();
                 let a = crate::ramdisk::check(va, len).map_err(|e| {
                     kprintln!("linux: root filesystem from storage: {}", e);
                     EINVAL
@@ -244,9 +245,17 @@ impl Kernel {
                     kprintln!("linux: root filesystem from storage: {}", e);
                     ENOMEM
                 })?;
+                let t1 = crate::arch::timer::now_ns();
                 match self.lx().vfs.unpack(data) {
                     Ok(n) => {
-                        kprintln!("linux: root filesystem from storage: {} entries ({} MiB)", n, data.len() >> 20);
+                        let t2 = crate::arch::timer::now_ns();
+                        kprintln!(
+                            "linux: root filesystem from storage: {} entries ({} MiB), inflated in {} ms, unpacked in {} ms",
+                            n,
+                            data.len() >> 20,
+                            (t1 - t0) / 1_000_000,
+                            (t2 - t1) / 1_000_000
+                        );
                         Ok(n as i64)
                     }
                     Err(e) => {

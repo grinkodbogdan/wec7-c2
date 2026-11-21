@@ -1387,13 +1387,13 @@ fn linuxdrv_test(o: &Opts) -> bool {
         }
     });
     let expected = [
-        "linuxdrv: Linux is up",
+        "s] Linux is up",
         "linuxdrv: virtio31: 0xa003e00+0x200 irq 79",
-        "linuxdrv: block devices: vda (and 1 partitions)",
+        "s] block devices: vda (and 1 partitions)",
         // The userdata disk starts with "FLAR".
         // (the disk's protective MBR, as a phone's eMMC)
         "linuxdrv: vda: first sector read through Linux's driver: 00 00 00 00 ... boot signature 55aa",
-        "linuxdrv: vda1: ",
+        "s] vda1: ",
         // The full root filesystem: read through Linux's driver, inflated
         // and added by the kernel (the shell below comes from it).
         "root filesystem added to Flare:",

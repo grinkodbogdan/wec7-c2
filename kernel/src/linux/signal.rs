@@ -277,6 +277,50 @@ impl Kernel {
             addr,
             pc
         );
+        // Where the address and the code were: the mapping (or the gap
+        // between two), so a crash on a phone can be read from a photo.
+        {
+            let mm = &self.proc(c).mm;
+            let describe = |va: u64| -> alloc::string::String {
+                use super::mm::Backing;
+                let kind = |v: &super::mm::Vma| match &v.backing {
+                    Backing::Anon => alloc::format!("anon"),
+                    Backing::Shared(o, off) => alloc::format!("shared+{:#x} of {:#x}", off, o.borrow().size),
+                    Backing::File(d, off) => alloc::format!("file+{:#x} of {:#x}", off, d.len()),
+                    Backing::Private(o, off) => alloc::format!("pfile+{:#x} of {:#x}", off, o.borrow().size),
+                    Backing::Phys(b, _) => alloc::format!("phys {:#x}", b),
+                };
+                match mm.find(va) {
+                    Some(v) => alloc::format!("in {:#x}-{:#x} p{} {} at +{:#x}", v.start, v.end, v.prot, kind(v), va - v.start),
+                    None => {
+                        let below = mm.vmas.iter().rev().find(|v| v.end <= va);
+                        let above = mm.vmas.iter().find(|v| v.start > va);
+                        alloc::format!(
+                            "unmapped: {} below, {} above",
+                            below.map_or(alloc::format!("nothing"), |v| alloc::format!(
+                                "{:#x}-{:#x} p{} {} ({:#x} back)",
+                                v.start,
+                                v.end,
+                                v.prot,
+                                kind(v),
+                                va - v.end
+                            )),
+                            above.map_or(alloc::format!("nothing"), |v| alloc::format!(
+                                "{:#x}-{:#x} {} ({:#x} on)",
+                                v.start,
+                                v.end,
+                                kind(v),
+                                v.start - va
+                            ))
+                        )
+                    }
+                }
+            };
+            kprintln!("linux:   addr {}", describe(addr));
+            kprintln!("linux:   pc {}", describe(pc));
+            let free = crate::mm::frame::total().saturating_sub(crate::mm::frame::in_use()) * 4 / 1024;
+            kprintln!("linux:   {} MiB of memory free", free);
+        }
         self.linux_exit_group(c, sig as i32 | 0x80);
     }
 

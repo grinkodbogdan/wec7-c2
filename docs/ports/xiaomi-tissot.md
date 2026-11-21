@@ -272,14 +272,24 @@ Once Linux's devices have settled (up to 30 s after the shell appears), the
 driver host prints what Linux found:
 
 ```
-linuxdrv: Linux is up (RAM 64 MiB at ...)
-linuxdrv: block devices: mmcblk0 ... (and N partitions)
+linuxdrv: [2.4 s] Linux is up (RAM 160 MiB at ...)
+linuxdrv: [4.0 s] mmcblk0p..: 71 MiB root filesystem read through Linux's driver in ... ms
+linuxdrv: [8.4 s] block devices: mmcblk0 ... (and N partitions)
 linuxdrv: mmcblk0: first sector read through Linux's driver: ...
 linuxdrv: mmcblk0: 8 of 8 uncached reads (one device interrupt each)
 linuxdrv: rtc0 (Linux's driver): ...
 linuxdrv: input devices: event0 (...), event1 (...), ...
 linuxdrv: waiting: <device> <what it waits for>
 ```
+
+Timeline: each line on the screen starts with the seconds since power-on
+(`[54.6] ...`), and the kernel says how fast the boot CPU runs
+(`cpu: the boot CPU runs at about N MHz`) and how long the root
+filesystem took to inflate. `rc: phone shell ready at N s since boot`
+also gives the free memory then. A program killed by a fault is followed
+by the mappings around its address and its code (`linux:   addr in ...`,
+`linux:   pc in ... file+off of size`: the size names the library) and the
+free memory.
 
 After that it prints each key press and each new touch
 (`linuxdrv: <device>: touch 1 at x,y`). It only reads storage; nothing is

@@ -51,6 +51,23 @@ pub extern "C" fn kmain() -> ! {
     console::init();
     kprintln!();
     kprintln!("Flare OS framekernel {} (arm64)", env!("CARGO_PKG_VERSION"));
+    // The boot CPU's clock, measured: a chain of dependent additions runs
+    // at one per cycle. (A phone's boot loader may leave the cores slow.)
+    {
+        let n: u64 = 20_000_000;
+        let t0 = arch::timer::now_ns();
+        let mut x: u64 = 0;
+        // SAFETY: register arithmetic only.
+        unsafe {
+            core::arch::asm!(
+                "2:", "add {x}, {x}, #1", "add {x}, {x}, #1", "add {x}, {x}, #1", "add {x}, {x}, #1",
+                "subs {n}, {n}, #4", "b.ne 2b",
+                x = inout(reg) x, n = inout(reg) n => _, options(nomem, nostack)
+            );
+        }
+        let ns = (arch::timer::now_ns() - t0).max(1);
+        kprintln!("cpu: the boot CPU runs at about {} MHz", x * 1000 / ns);
+    }
     kprintln!(
         "fhd: board '{}' on soc '{}', {} RAM region(s), {} devices",
         platform::BOARD,

@@ -76,6 +76,14 @@ struct hw_info {
 
 static int hw;
 
+/* Seconds since boot (Flare's clock), for the boot timeline. */
+static double since_boot(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return ts.tv_sec + ts.tv_nsec / 1e9;
+}
+
 static int dma_alloc(uint64_t size, uint64_t *phys)
 {
 	uint64_t a[2] = { size, 0 };
@@ -762,6 +770,7 @@ static void bridge_inputs(char *devs[], int n)
 	}
 	free(kd);
 	/* /etc/rc waits for this before starting a user interface. */
+	printf("linuxdrv: [%.2f s] inputs ready\n", since_boot());
 	FILE *f = fopen("/tmp/linuxdrv.ready", "w");
 	if (f)
 		fclose(f);
@@ -892,8 +901,8 @@ static void load_rootfs(void)
 		       (unsigned long long)total);
 		return;
 	}
-	printf("linuxdrv: %s: %llu MiB root filesystem read through Linux's driver in %ld ms\n", found,
-	       (unsigned long long)(total >> 20), ms);
+	printf("linuxdrv: [%.2f s] %s: %llu MiB root filesystem read through Linux's driver in %ld ms\n", since_boot(),
+	       found, (unsigned long long)(total >> 20), ms);
 	uint64_t req[2] = { phys, total };
 	int n = ioctl(hw, FLAREHW_ROOTFS, req);
 	if (n < 0)
@@ -1015,18 +1024,28 @@ static void report(void)
 	 * clocks, then eMMC, I2C...), each probe deferred until the last: wait
 	 * until nothing is waiting any more (the touch screen among them), or
 	 * 10 s. */
+	static char deferred[256];
+	long ndeferred = 0;
 	for (int i = 0; i < 50; i++) {
-		static char d[256];
-		long fd = l_open("/sys/kernel/debug/devices_deferred", 0), n = 0;
+		long fd = l_open("/sys/kernel/debug/devices_deferred", 0);
+		ndeferred = 0;
 		if (fd >= 0) {
-			n = l_read((int)fd, d, sizeof d);
+			ndeferred = l_read((int)fd, deferred, sizeof deferred - 1);
 			l_close((int)fd);
 		}
 		l_list("/sys/class/block", names, sizeof names);
-		if (n <= 0 && names[0])
+		if (ndeferred <= 0 && names[0])
 			break;
 		struct timespec ts = { 0, 200000000 };
 		nanosleep(&ts, NULL);
+	}
+	/* (what kept the user interface waiting the whole 10 s) */
+	if (ndeferred > 0) {
+		deferred[ndeferred] = 0;
+		for (char *c = deferred; *c; c++)
+			if (*c == '\n' || *c == '\t')
+				*c = ' ';
+		printf("linuxdrv: still deferred after 10 s: %s\n", deferred);
 	}
 	/* (again: the partitions are there now) */
 	l_list("/sys/class/block", names, sizeof names);
@@ -1043,7 +1062,7 @@ static void report(void)
 			nparts++;
 		}
 	}
-	printf("linuxdrv: block devices: %s", disks[0] ? disks : "none");
+	printf("linuxdrv: [%.2f s] block devices: %s", since_boot(), disks[0] ? disks : "none");
 	if (nparts)
 		printf(" (and %d partitions)", nparts);
 	printf("\n");
@@ -1173,14 +1192,14 @@ int main(int argc, char **argv)
 		fprintf(stderr, "linuxdrv: Linux did not start\n");
 		return 1;
 	}
-	printf("linuxdrv: Linux is up (RAM %llu MiB at %#llx, coherent pool %#llx)\n",
-	       (unsigned long long)(ram_size >> 20), (unsigned long long)ram_phys, (unsigned long long)pool_phys);
+	printf("linuxdrv: [%.2f s] Linux is up (RAM %llu MiB at %#llx, coherent pool %#llx)\n",
+	       since_boot(), (unsigned long long)(ram_size >> 20), (unsigned long long)ram_phys,
+	       (unsigned long long)pool_phys);
 	l_sys(NR_MKDIRAT, AT_FDCWD, (long)"/dev", 0755, 0, 0);
 	l_sys(NR_MOUNT, (long)"devtmpfs", (long)"/dev", (long)"devtmpfs", 0, 0);
 	l_sys(NR_MKDIRAT, AT_FDCWD, (long)"/sys", 0755, 0, 0);
 	l_sys(NR_MOUNT, (long)"sysfs", (long)"/sys", (long)"sysfs", 0, 0);
 	l_sys(NR_MOUNT, (long)"debugfs", (long)"/sys/kernel/debug", (long)"debugfs", 0, 0);
-	sleep(2); /* deferred probes */
 	report();
 	/* keep the drivers running */
 	for (;;)

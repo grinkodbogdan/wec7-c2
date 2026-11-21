@@ -291,6 +291,9 @@ pub fn is_screen() -> bool {
     matches!(unsafe { CONSOLE.get() }, Backend::Fb(_))
 }
 
+/// Whether the screen console's next character starts a line.
+static LINE_START: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
 pub fn write_bytes(bytes: &[u8]) {
     // SAFETY: the console is set up at boot; after that, callers hold the
     // kernel lock (or are panicking).
@@ -308,10 +311,37 @@ pub fn write_bytes(bytes: &[u8]) {
         Backend::Fb(fb) => {
             // UTF-8 continuation bytes would each show as '?': show one per
             // character instead.
+            // Each line on the screen starts with the seconds since boot
+            // ("[54.6] "): a photo of the screen is the boot's timeline.
+            use core::sync::atomic::Ordering::Relaxed;
             for &b in bytes {
-                if b & 0xc0 != 0x80 {
-                    fb.write(b);
+                if b & 0xc0 == 0x80 {
+                    continue;
                 }
+                if LINE_START.load(Relaxed) && b != b'\n' {
+                    let ds = crate::arch::timer::now_ns() / 100_000_000;
+                    let mut digits = [0u8; 20];
+                    let mut n = 0;
+                    let mut v = ds / 10;
+                    loop {
+                        digits[n] = b'0' + (v % 10) as u8;
+                        n += 1;
+                        v /= 10;
+                        if v == 0 {
+                            break;
+                        }
+                    }
+                    fb.write(b'[');
+                    for i in (0..n).rev() {
+                        fb.write(digits[i]);
+                    }
+                    fb.write(b'.');
+                    fb.write(b'0' + (ds % 10) as u8);
+                    fb.write(b']');
+                    fb.write(b' ');
+                }
+                LINE_START.store(b == b'\n', Relaxed);
+                fb.write(b);
             }
             fb.flush();
         }
