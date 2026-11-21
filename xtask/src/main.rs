@@ -1352,8 +1352,12 @@ fn linuxdrv_test(o: &Opts) -> bool {
     let mut cmd = qemu_command(&o2, &kernel);
     let (comp, _) = load_composition(&o2.system);
     if comp.linux.as_ref().is_some_and(|l| l.rootfs == "userdata") {
+        // As on a phone: a GPT disk whose partition named userdata holds it.
         let disk = root().join("target/linuxdrv-disk.img");
-        std::fs::copy(root().join("target/flare-userdata.img"), &disk).unwrap();
+        let mut g = Command::new("python3");
+        g.arg("-I").arg(root().join("tools/bootimg/gptdisk.py")).arg(&disk).arg("userdata");
+        g.arg(root().join("target/flare-userdata.img"));
+        run(g);
         let old = disk_image().display().to_string();
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().replace(&old, &disk.display().to_string())).collect();
         let mut c = Command::new(cmd.get_program());
@@ -1385,9 +1389,11 @@ fn linuxdrv_test(o: &Opts) -> bool {
     let expected = [
         "linuxdrv: Linux is up",
         "linuxdrv: virtio31: 0xa003e00+0x200 irq 79",
-        "linuxdrv: block devices: vda",
+        "linuxdrv: block devices: vda (and 1 partitions)",
         // The userdata disk starts with "FLAR".
-        "linuxdrv: vda: first sector read through Linux's driver: 46 4c 41 52",
+        // (the disk's protective MBR, as a phone's eMMC)
+        "linuxdrv: vda: first sector read through Linux's driver: 00 00 00 00 ... boot signature 55aa",
+        "linuxdrv: vda1: ",
         // The full root filesystem: read through Linux's driver, inflated
         // and added by the kernel (the shell below comes from it).
         "root filesystem added to Flare:",

@@ -812,24 +812,48 @@ static int has_rootfs_header(const char *dev, uint64_t *total)
 	return 1;
 }
 
-static void load_rootfs(char *all)
+/* The userdata partition, else (QEMU) a disk that is the image itself; ""
+ * if neither. `*part`: a partition named userdata exists (with or without
+ * the image). */
+static void find_rootfs(char *found, size_t cap, uint64_t *total, int *part)
 {
-	/* the userdata partition, else (QEMU) a disk that is the image itself */
-	char found[32] = "";
-	uint64_t total = 0;
+	static char all[4096];
+	l_list("/sys/class/block", all, sizeof all);
+	found[0] = 0;
+	*part = 0;
 	char *save = NULL, *list = strdup(all);
 	for (char *n = strtok_r(list, " ", &save); n && !found[0]; n = strtok_r(NULL, " ", &save))
-		if (partname_is(n, "userdata") && has_rootfs_header(n, &total))
-			snprintf(found, sizeof found, "%s", n);
+		if (partname_is(n, "userdata")) {
+			*part = 1;
+			if (has_rootfs_header(n, total))
+				snprintf(found, cap, "%s", n);
+		}
 	free(list);
 	list = strdup(all);
 	save = NULL;
 	for (char *n = strtok_r(list, " ", &save); n && !found[0]; n = strtok_r(NULL, " ", &save))
-		if (is_disk(n) && has_rootfs_header(n, &total))
-			snprintf(found, sizeof found, "%s", n);
+		if (is_disk(n) && has_rootfs_header(n, total))
+			snprintf(found, cap, "%s", n);
 	free(list);
+}
+
+static void load_rootfs(void)
+{
+	/* A disk shows before Linux has read its partition table: look again
+	 * until the userdata partition is there (or 20 s). */
+	char found[32] = "";
+	uint64_t total = 0;
+	int part = 0;
+	for (int i = 0; i < 40; i++) {
+		find_rootfs(found, sizeof found, &total, &part);
+		if (found[0] || part)
+			break;
+		struct timespec ts = { 0, 500000000 };
+		nanosleep(&ts, NULL);
+	}
 	if (!found[0]) {
-		printf("linuxdrv: no Flare root filesystem on storage (userdata)\n");
+		printf(part ? "linuxdrv: the userdata partition has no Flare root filesystem (flash userdata.img)\n"
+			    : "linuxdrv: no userdata partition (and no disk with a Flare root filesystem)\n");
 		return;
 	}
 	struct timespec t0, t1;
@@ -997,7 +1021,9 @@ static void report(void)
 		struct timespec ts = { 0, 500000000 };
 		nanosleep(&ts, NULL);
 	}
-	load_rootfs(names);
+	load_rootfs();
+	/* (again: the partitions are there now) */
+	l_list("/sys/class/block", names, sizeof names);
 	/* The whole disks (a phone's eMMC has dozens of partitions). */
 	static char disks[512];
 	int nparts = 0, at = 0;
