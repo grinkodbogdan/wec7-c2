@@ -15,6 +15,7 @@ pub const EAGAIN: i64 = 11;
 pub const ENOMEM: i64 = 12;
 pub const EACCES: i64 = 13;
 pub const EFAULT: i64 = 14;
+pub const EINPROGRESS: i64 = 115;
 pub const EBUSY: i64 = 16;
 pub const EEXIST: i64 = 17;
 pub const ENODEV: i64 = 19;

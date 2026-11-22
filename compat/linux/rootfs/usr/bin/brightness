@@ -1,0 +1,11 @@
+#!/bin/sh
+# brightness [PERCENT]: the panel's backlight, through Linux's driver
+# (/sys/class/backlight); without an argument, the current level.
+b=$(ls -d /sys/class/backlight/* 2>/dev/null | head -1)
+[ -n "$b" ] || { echo "brightness: no backlight (Linux's driver is not up)" >&2; exit 1; }
+max=$(cat "$b/max_brightness")
+if [ -z "$1" ]; then
+    echo "$(( $(cat "$b/brightness") * 100 / max ))%"
+else
+    echo $(( $1 * max / 100 )) > "$b/brightness"
+fi

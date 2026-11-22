@@ -44,6 +44,9 @@ pub const DEV_SERIAL0: u64 = 229 << 8;
 pub const DEV_FB0: u64 = 29 << 8;
 /// /dev/flarehw: hardware for a Linux driver host (misc major 10, minor 240).
 pub const DEV_FLAREHW: u64 = (10 << 8) | 240;
+/// /dev/flarelk: the driver host serves Linux's files and sockets to
+/// Flare's programs (linux/remote.rs) (misc major 10, minor 241).
+pub const DEV_FLARELK: u64 = (10 << 8) | 241;
 
 pub struct Node {
     pub ino: u64,

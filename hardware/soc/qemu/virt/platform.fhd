@@ -78,3 +78,9 @@ compatible = "virtio,mmio"
 reg = [0x0a003800, 0x200]
 interrupts = [76]
 status = "disabled"
+
+[device.virtio27]
+compatible = "virtio,mmio"
+reg = [0x0a003600, 0x200]
+interrupts = [75]
+status = "disabled"

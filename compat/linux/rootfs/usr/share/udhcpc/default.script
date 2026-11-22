@@ -1,0 +1,20 @@
+#!/bin/sh
+# udhcpc's script: the address, routes and name servers it was given, set
+# on the driver host's Linux (its network stack carries every socket).
+case "$1" in
+    deconfig)
+        ifconfig "$interface" 0.0.0.0 up
+        ;;
+    bound|renew)
+        ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}" up
+        if [ -n "$router" ]; then
+            i=0
+            while route del default 2>/dev/null && [ $i -lt 8 ]; do i=$((i + 1)); done
+            for r in $router; do route add default gw "$r" dev "$interface"; done
+        fi
+        : > /etc/resolv.conf
+        for d in $dns; do echo "nameserver $d" >> /etc/resolv.conf; done
+        echo "udhcpc: $interface is $ip (router $router, dns $dns)"
+        ;;
+esac
+exit 0

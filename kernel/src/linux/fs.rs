@@ -94,6 +94,10 @@ pub enum FileKind {
     /// A pseudo-terminal's master (/dev/ptmx) and slave (/dev/pts/N).
     PtyMaster(super::tty::PtyRef),
     PtySlave(super::tty::PtyRef),
+    /// A file or socket of the driver host's Linux (remote.rs).
+    Remote(super::remote::RemoteRef),
+    /// /dev/flarelk: the driver host's end of that.
+    FlareLk,
 }
 
 pub struct OpenFile {
@@ -181,6 +185,8 @@ impl Kernel {
                 let p = p.borrow();
                 (if p.tty.readable() { EPOLLIN } else { 0 }) | (if p.masters == 0 { EPOLLHUP } else { EPOLLOUT })
             }
+            FileKind::Remote(r) => super::remote::remote_poll(r),
+            FileKind::FlareLk => (if self.flarelk_readable() { EPOLLIN } else { 0 }) | EPOLLOUT,
             FileKind::PipeR(p) => {
                 let p = p.borrow();
                 (if !p.buf.is_empty() { EPOLLIN } else { 0 }) | (if p.writers == 0 { EPOLLHUP } else { 0 })
@@ -243,6 +249,11 @@ impl Kernel {
                 drop(f);
                 Ok(self.lx().tty.read(max))
             }
+            FileKind::FlareLk => {
+                drop(f);
+                Ok(self.flarelk_read(max))
+            }
+            FileKind::Remote(_) => Err(EIO),
             FileKind::PtyMaster(p) => {
                 let mut p = p.borrow_mut();
                 let out = p.tty.take_output(max);
@@ -399,6 +410,10 @@ impl Kernel {
                 drop(f);
                 self.lx().tty.write(data);
                 return Ok(data.len());
+            }
+            FileKind::FlareLk => {
+                drop(f);
+                return Ok(self.flarelk_write(data));
             }
             FileKind::PtyMaster(p) => {
                 let p = p.clone();
@@ -733,6 +748,7 @@ impl Kernel {
                 vfs::DEV_FLARECTL => FileKind::FlareCtl,
                 vfs::DEV_FB0 => FileKind::Fb,
                 vfs::DEV_FLAREHW => FileKind::FlareHw,
+                vfs::DEV_FLARELK => FileKind::FlareLk,
                 d if (vfs::DEV_SERIAL0..vfs::DEV_SERIAL0 + 16).contains(&d) => {
                     FileKind::Serial((d - vfs::DEV_SERIAL0) as usize)
                 }

@@ -1,0 +1,22 @@
+#!/bin/sh
+# flare-statusd: the phone's state for the shell's status bar, from Linux's
+# drivers (the battery gauge in /sys/class/power_supply, the Wi-Fi network
+# from wpa_supplicant), written as flarehome's status.lua every few seconds.
+out=/usr/share/arcan/appl/flarehome/status.lua
+last=
+while :; do
+    bat= chg=false
+    for p in /sys/class/power_supply/*; do
+        [ "$(cat "$p/type" 2>/dev/null)" = Battery ] || continue
+        bat=$(cat "$p/capacity" 2>/dev/null)
+        [ "$(cat "$p/status" 2>/dev/null)" = Charging ] && chg=true
+        break
+    done
+    ssid=$(wpa_cli -p /var/run/wpa_supplicant -i wlan0 status 2>/dev/null | sed -n 's/^ssid=//p' | tr -d '"\\')
+    now="return {battery = ${bat:-nil}, charging = $chg, wifi = \"$ssid\"}"
+    if [ "$now" != "$last" ]; then
+        echo "$now" > "$out.tmp" && mv "$out.tmp" "$out"
+        last=$now
+    fi
+    sleep 5
+done

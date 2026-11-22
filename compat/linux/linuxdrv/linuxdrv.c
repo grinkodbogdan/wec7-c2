@@ -474,6 +474,11 @@ static long l_sys(long nr, long a, long b, long c, long d, long e)
 	long p[6] = { a, b, c, d, e, 0 };
 	return lkl_syscall(nr, p);
 }
+static long l_sys6(long nr, long a, long b, long c, long d, long e, long f)
+{
+	long p[6] = { a, b, c, d, e, f };
+	return lkl_syscall(nr, p);
+}
 static long l_open(const char *path, int flags) { return l_sys(NR_OPENAT, AT_FDCWD, (long)path, flags, 0, 0); }
 static long l_read(int fd, void *b, long n) { return l_sys(NR_READ, fd, (long)b, n, 0, 0); }
 static long l_close(int fd) { return l_sys(NR_CLOSE, fd, 0, 0, 0, 0); }
@@ -1534,6 +1539,358 @@ static void *bring_up(void *arg)
 	return NULL;
 }
 
+/* ---- Linux's files and sockets for Flare's programs (kernel/src/linux/remote.rs) ----
+ * The Flare kernel queues each system call a Flare program makes on one of
+ * them as a request on /dev/flarelk; this makes the same call here, on this
+ * Linux, in a thread of its own (calls block: recv, accept, a sound card's
+ * write), and writes the reply back. A poller reports each descriptor's
+ * readiness, for poll, epoll and select on the Flare side. */
+#define NR_FCNTL 25
+#define NR_LSEEK 62
+#define NR_PPOLL 73
+#define NR_PWRITE64 68
+#define NR_FSTAT 80
+#define NR_NEWFSTATAT 79
+#define NR_FACCESSAT 48
+#define NR_READLINKAT 78
+#define NR_GETDENTS64 61
+#define NR_SOCKET 198
+#define NR_BIND 200
+#define NR_LISTEN 201
+#define NR_CONNECT 203
+#define NR_GETSOCKNAME 204
+#define NR_GETPEERNAME 205
+#define NR_SENDTO 206
+#define NR_RECVFROM 207
+#define NR_SETSOCKOPT 208
+#define NR_GETSOCKOPT 209
+#define NR_SHUTDOWN 210
+#define NR_SENDMSG 211
+#define NR_RECVMSG 212
+#define NR_ACCEPT4 242
+
+enum { OP_OPEN = 1, OP_CLOSE, OP_READ, OP_WRITE, OP_IOCTL, OP_FSTAT, OP_LSEEK, OP_GETDENTS, OP_SOCKET, OP_CONNECT,
+       OP_BIND, OP_LISTEN, OP_ACCEPT, OP_SENDTO, OP_RECVFROM, OP_GETSOCKOPT, OP_SETSOCKOPT, OP_SOCKNAME, OP_SHUTDOWN,
+       OP_SETFL, OP_STAT, OP_ACCESS, OP_READLINK };
+
+struct lk_req {
+	uint64_t id;
+	uint32_t op;
+	int32_t handle;
+	uint64_t a[3];
+	uint32_t len, pad;
+	unsigned char data[];
+};
+
+static int lk = -1;
+static pthread_mutex_t lk_wlock = PTHREAD_MUTEX_INITIALIZER;
+
+/* the descriptors Flare's programs hold, for the poller */
+#define LK_MAX 1024
+static struct { int fd; short last; } lk_fds[LK_MAX];
+static int lk_nfds;
+static pthread_mutex_t lk_fdlock = PTHREAD_MUTEX_INITIALIZER;
+
+static void lk_reply(uint64_t id, int64_t res, const void *data, uint32_t len, uint32_t kind)
+{
+	unsigned char hdr[24];
+	memcpy(hdr, &id, 8);
+	memcpy(hdr + 8, &res, 8);
+	memcpy(hdr + 16, &len, 4);
+	memcpy(hdr + 20, &kind, 4);
+	pthread_mutex_lock(&lk_wlock);
+	if (len) {
+		unsigned char *b = malloc(24 + len);
+		if (b) {
+			memcpy(b, hdr, 24);
+			memcpy(b + 24, data, len);
+			if (write(lk, b, 24 + len) < 0)
+				perror("linuxdrv: flarelk");
+			free(b);
+		}
+	} else if (write(lk, hdr, 24) < 0) {
+		perror("linuxdrv: flarelk");
+	}
+	pthread_mutex_unlock(&lk_wlock);
+}
+
+static void lk_track(int fd, int add)
+{
+	pthread_mutex_lock(&lk_fdlock);
+	if (add && lk_nfds < LK_MAX) {
+		lk_fds[lk_nfds].fd = fd;
+		lk_fds[lk_nfds].last = -1;
+		lk_nfds++;
+	} else if (!add) {
+		for (int i = 0; i < lk_nfds; i++)
+			if (lk_fds[i].fd == fd) {
+				lk_fds[i] = lk_fds[--lk_nfds];
+				break;
+			}
+	}
+	pthread_mutex_unlock(&lk_fdlock);
+}
+
+static void *lk_poller(void *arg)
+{
+	(void)arg;
+	static struct { int fd; short events, revents; } pf[LK_MAX];
+	for (;;) {
+		pthread_mutex_lock(&lk_fdlock);
+		int n = lk_nfds;
+		for (int i = 0; i < n; i++) {
+			pf[i].fd = lk_fds[i].fd;
+			pf[i].events = 0x1 | 0x4 | 0x2; /* POLLIN | POLLOUT | POLLPRI */
+			pf[i].revents = 0;
+		}
+		pthread_mutex_unlock(&lk_fdlock);
+		struct { long s, ns; } ts = { 0, 30000000 };
+		long r = n ? l_sys(NR_PPOLL, (long)pf, n, (long)&ts, 0, 0) : 0;
+		if (!n || r < 0)
+			usleep(30000);
+		pthread_mutex_lock(&lk_fdlock);
+		for (int i = 0; i < n && i < lk_nfds; i++) {
+			if (lk_fds[i].fd != pf[i].fd || lk_fds[i].last == pf[i].revents)
+				continue;
+			lk_fds[i].last = pf[i].revents;
+			lk_reply((uint64_t)pf[i].fd, (uint16_t)pf[i].revents, NULL, 0, 1);
+		}
+		pthread_mutex_unlock(&lk_fdlock);
+		/* (readiness without a change waits for the next round) */
+		if (r == 0 && n)
+			continue;
+		usleep(5000);
+	}
+	return NULL;
+}
+
+static void *lk_serve(void *arg)
+{
+	struct lk_req *q = arg;
+	long h = q->handle, r = -38 /* ENOSYS */;
+	unsigned char *out = NULL;
+	uint32_t olen = 0;
+	switch (q->op) {
+	case OP_OPEN:
+		r = l_sys(NR_OPENAT, AT_FDCWD, (long)q->data, (long)q->a[0], (long)q->a[1], 0);
+		if (r >= 0)
+			lk_track((int)r, 1);
+		break;
+	case OP_CLOSE:
+		lk_track((int)h, 0);
+		l_close((int)h);
+		free(q);
+		return NULL; /* no reply */
+	case OP_READ:
+	case OP_GETDENTS:
+		out = malloc(q->a[0] + 1);
+		if (q->op == OP_GETDENTS)
+			r = l_sys(NR_GETDENTS64, h, (long)out, (long)q->a[0], 0, 0);
+		else if (q->a[1] != UINT64_MAX)
+			r = l_sys(NR_PREAD64, h, (long)out, (long)q->a[0], (long)q->a[1], 0);
+		else
+			r = l_sys(NR_READ, h, (long)out, (long)q->a[0], 0, 0);
+		olen = r > 0 ? (uint32_t)r : 0;
+		break;
+	case OP_WRITE:
+		if (q->a[1] != UINT64_MAX)
+			r = l_sys(NR_PWRITE64, h, (long)q->data, q->len, (long)q->a[1], 0);
+		else
+			r = l_sys(NR_WRITE, h, (long)q->data, q->len, 0, 0);
+		break;
+	case OP_IOCTL: {
+		uint64_t cmd = q->a[0], outb = q->a[2] & 0xffffffff, frames = q->a[2] >> 32;
+		if (cmd == 0x40184150 || cmd == 0x80184151) {
+			/* ALSA frames: struct snd_xferi pointing at our copy; the
+			 * reply is the frames moved (i64), then (reads) the frames */
+			uint64_t fb = q->a[1] ? q->a[1] : 1;
+			out = malloc(8 + (cmd == 0x80184151 ? frames * fb : 0));
+			struct { int64_t result; void *buf; uint64_t frames; } x = { 0, cmd == 0x80184151 ? out + 8 : q->data, frames };
+			r = l_sys(NR_IOCTL, h, (long)cmd, (long)&x, 0, 0);
+			memcpy(out, &x.result, 8);
+			olen = 8;
+			if (cmd == 0x80184151 && r == 0 && x.result > 0)
+				olen = 8 + (uint32_t)((uint64_t)x.result * fb);
+			break;
+		}
+		if (outb || q->len) {
+			size_t sz = outb > q->len ? outb : q->len;
+			out = calloc(1, sz ? sz : 1);
+			memcpy(out, q->data, q->len);
+			r = l_sys(NR_IOCTL, h, (long)cmd, (long)out, 0, 0);
+			olen = (uint32_t)outb;
+		} else {
+			r = l_sys(NR_IOCTL, h, (long)cmd, (long)q->a[1], 0, 0);
+		}
+		break;
+	}
+	case OP_FSTAT:
+		out = calloc(1, 128);
+		r = l_sys(NR_FSTAT, h, (long)out, 0, 0, 0);
+		olen = r == 0 ? 128 : 0;
+		break;
+	case OP_STAT:
+		out = calloc(1, 128);
+		r = l_sys(NR_NEWFSTATAT, AT_FDCWD, (long)q->data, (long)out, (long)q->a[0], 0);
+		olen = r == 0 ? 128 : 0;
+		break;
+	case OP_ACCESS:
+		r = l_sys(NR_FACCESSAT, AT_FDCWD, (long)q->data, (long)q->a[0], 0, 0);
+		break;
+	case OP_READLINK:
+		out = malloc(q->a[0] + 1);
+		r = l_sys(NR_READLINKAT, AT_FDCWD, (long)q->data, (long)out, (long)q->a[0], 0);
+		olen = r > 0 ? (uint32_t)r : 0;
+		break;
+	case OP_LSEEK:
+		r = l_sys(NR_LSEEK, h, (long)q->a[0], (long)q->a[1], 0, 0);
+		break;
+	case OP_SOCKET:
+		r = l_sys(NR_SOCKET, (long)q->a[0], (long)q->a[1], (long)q->a[2], 0, 0);
+		if (r >= 0)
+			lk_track((int)r, 1);
+		break;
+	case OP_CONNECT:
+		r = l_sys(NR_CONNECT, h, (long)q->data, q->len, 0, 0);
+		break;
+	case OP_BIND:
+		r = l_sys(NR_BIND, h, (long)q->data, q->len, 0, 0);
+		break;
+	case OP_LISTEN:
+		r = l_sys(NR_LISTEN, h, (long)q->a[0], 0, 0, 0);
+		break;
+	case OP_SHUTDOWN:
+		r = l_sys(NR_SHUTDOWN, h, (long)q->a[0], 0, 0, 0);
+		break;
+	case OP_SETFL:
+		r = l_sys(NR_FCNTL, h, 4 /* F_SETFL */, (long)q->a[0], 0, 0);
+		break;
+	case OP_ACCEPT: {
+		unsigned char addr[128];
+		uint32_t al = sizeof addr;
+		r = l_sys(NR_ACCEPT4, h, (long)addr, (long)&al, (long)q->a[0], 0);
+		if (r >= 0) {
+			lk_track((int)r, 1);
+			out = malloc(al);
+			memcpy(out, addr, al);
+			olen = al;
+		}
+		break;
+	}
+	case OP_SOCKNAME: {
+		unsigned char addr[128];
+		uint32_t al = sizeof addr;
+		r = l_sys(q->a[0] ? NR_GETPEERNAME : NR_GETSOCKNAME, h, (long)addr, (long)&al, 0, 0);
+		if (r == 0) {
+			out = malloc(al);
+			memcpy(out, addr, al);
+			olen = al;
+		}
+		break;
+	}
+	case OP_SENDTO: {
+		uint64_t len = q->a[0], alen = q->a[2];
+		r = l_sys6(NR_SENDTO, h, (long)q->data, (long)len, (long)q->a[1], alen ? (long)(q->data + len) : 0,
+			   (long)alen);
+		break;
+	}
+	case OP_RECVFROM: {
+		/* reply: u32 address length, the address, (recvmsg: u32 flags),
+		 * the bytes */
+		uint64_t len = q->a[0];
+		out = malloc(4 + 128 + 4 + len);
+		unsigned char addr[128];
+		uint32_t al = sizeof addr, mflags = 0;
+		unsigned char *body = out + 4 + 128 + 4;
+		if (q->a[2] == 1) {
+			struct { void *b; size_t l; } iov = { body, len };
+			struct { void *name; uint32_t namelen, p0; void *iov; size_t iovlen; void *ctl; size_t ctllen; int flags, p1; } m =
+				{ addr, sizeof addr, 0, &iov, 1, NULL, 0, 0, 0 };
+			r = l_sys(NR_RECVMSG, h, (long)&m, (long)q->a[1], 0, 0);
+			al = m.namelen;
+			mflags = (uint32_t)m.flags;
+		} else {
+			r = l_sys6(NR_RECVFROM, h, (long)body, (long)len, (long)q->a[1], (long)addr, (long)&al);
+		}
+		if (r < 0)
+			break;
+		if (al > sizeof addr)
+			al = sizeof addr;
+		/* packed: [alen][addr][flags?][bytes] */
+		unsigned char *p = out;
+		memcpy(p, &al, 4);
+		memcpy(p + 4, addr, al);
+		uint32_t at = 4 + al;
+		if (q->a[2] == 1) {
+			memcpy(p + at, &mflags, 4);
+			at += 4;
+		}
+		memmove(p + at, body, (size_t)r);
+		olen = at + (uint32_t)r;
+		break;
+	}
+	case OP_GETSOCKOPT: {
+		uint32_t ol = (uint32_t)q->a[2];
+		out = calloc(1, ol + 1);
+		r = l_sys(NR_GETSOCKOPT, h, (long)q->a[0], (long)q->a[1], (long)out, (long)&ol);
+		olen = r == 0 ? ol : 0;
+		break;
+	}
+	case OP_SETSOCKOPT:
+		if (q->a[0] == 1 && q->a[1] == 26 /* SO_ATTACH_FILTER */ && q->len >= 2) {
+			struct { uint16_t len; uint16_t p[3]; void *filter; } prog;
+			memcpy(&prog.len, q->data, 2);
+			prog.filter = q->data + 2;
+			r = l_sys(NR_SETSOCKOPT, h, 1, 26, (long)&prog, sizeof prog);
+		} else {
+			r = l_sys(NR_SETSOCKOPT, h, (long)q->a[0], (long)q->a[1], (long)q->data, q->len);
+		}
+		break;
+	}
+	lk_reply(q->id, r, out, olen, 0);
+	free(out);
+	free(q);
+	return NULL;
+}
+
+static void *lk_dispatch(void *arg)
+{
+	(void)arg;
+	static unsigned char buf[(1 << 20) + 4096];
+	for (;;) {
+		long n = read(lk, buf, sizeof buf);
+		if (n < (long)sizeof(struct lk_req)) {
+			if (n < 0 && errno != EINTR && errno != EAGAIN) {
+				perror("linuxdrv: flarelk");
+				return NULL;
+			}
+			continue;
+		}
+		struct lk_req *q = malloc((size_t)n + 1);
+		memcpy(q, buf, (size_t)n);
+		((unsigned char *)q)[n] = 0; /* paths end */
+		pthread_t t;
+		pthread_attr_t at;
+		pthread_attr_init(&at);
+		pthread_attr_setstacksize(&at, 256 << 10);
+		pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+		if (pthread_create(&t, &at, lk_serve, q))
+			lk_serve(q);
+		pthread_attr_destroy(&at);
+	}
+}
+
+static void serve_flare(void)
+{
+	lk = open("/dev/flarelk", O_RDWR);
+	if (lk < 0)
+		return;
+	pthread_t a, b;
+	pthread_create(&a, NULL, lk_dispatch, NULL);
+	pthread_create(&b, NULL, lk_poller, NULL);
+	printf("linuxdrv: Linux's files and sockets are Flare's (/linux, /sys/class, /dev/snd, network)\n");
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
@@ -1605,7 +1962,10 @@ int main(int argc, char **argv)
 	l_sys(NR_MKDIRAT, AT_FDCWD, (long)"/sys", 0755, 0, 0);
 	l_sys(NR_MOUNT, (long)"sysfs", (long)"/sys", (long)"sysfs", 0, 0);
 	l_sys(NR_MOUNT, (long)"debugfs", (long)"/sys/kernel/debug", (long)"debugfs", 0, 0);
+	l_sys(NR_MKDIRAT, AT_FDCWD, (long)"/proc", 0555, 0, 0);
+	l_sys(NR_MOUNT, (long)"proc", (long)"/proc", (long)"proc", 0, 0);
 	report();
+	serve_flare();
 	pthread_t up;
 	pthread_create(&up, NULL, bring_up, NULL);
 	/* keep the drivers running */

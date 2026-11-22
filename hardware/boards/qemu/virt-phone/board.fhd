@@ -39,6 +39,10 @@ role = "keyboard"          # virtio-keyboard: hardware keys
 status = "okay"
 role = "debug"             # virtio console: the fdb debug bridge (a USB port on a phone)
 
+[device.virtio27]
+status = "okay"
+role = "network"           # virtio-net: QEMU's user network (Wi-Fi's stand-in)
+
 [device.fwcfg0]
 status = "okay"
 role = "display"           # ramfb: 480x854 portrait panel
@@ -60,4 +64,6 @@ qemu-args = ["-global", "virtio-mmio.force-legacy=false",
              "-device", "virtio-serial-device",
              "-chardev", "socket,id=fdb,path=@fdb,server=on,wait=off",
              "-device", "virtconsole,chardev=fdb",
+             "-netdev", "user,id=net0",
+             "-device", "virtio-net-device,netdev=net0",
              "-device", "ramfb"]

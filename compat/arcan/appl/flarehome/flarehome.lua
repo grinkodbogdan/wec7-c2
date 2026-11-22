@@ -214,16 +214,53 @@ local function build_status()
 		local b = color_surface(4, h, 255, 255, 255)
 		place(b, status.bg, 10 + (i - 1) * 7, 24 - h, 1)
 	end
-	place(text("Flare", 18, "ffffff", FONT), status.bg, 44, 6, 1)
+	status.label_text = "Flare"
+	status.label = place(text("Flare", 18, "ffffff", FONT), status.bg, 44, 6, 1)
 	-- battery
 	local bat = color_surface(26, 13, 255, 255, 255)
 	place(bat, status.bg, W - 98, 10, 1)
 	local hole = color_surface(22, 9, 0, 0, 0)
 	place(hole, bat, 2, 2, 2)
-	local level = color_surface(16, 9, 120, 220, 90)
-	place(level, bat, 2, 2, 3)
+	status.level = color_surface(16, 9, 120, 220, 90)
+	place(status.level, bat, 2, 2, 3)
 	place(color_surface(3, 5, 255, 255, 255), bat, 26, 4, 1)
 	status.clock_min = -1
+end
+
+-- The phone's own state, from Linux's drivers (flare-statusd writes
+-- status.lua: battery percent, charging, the Wi-Fi network joined).
+local function update_hw()
+	local load = system_load("status.lua", false)
+	if not load then
+		return
+	end
+	local ok, s = pcall(load)
+	if not ok or type(s) ~= "table" then
+		return
+	end
+	if s.battery then
+		local w = math.max(1, math.floor(22 * math.min(100, s.battery) / 100))
+		resize_image(status.level, w, 9)
+		if s.charging then
+			image_color(status.level, 90, 170, 255)
+		elseif s.battery <= 15 then
+			image_color(status.level, 230, 70, 60)
+		else
+			image_color(status.level, 120, 220, 90)
+		end
+		if status.pct then
+			delete_image(status.pct)
+		end
+		status.pct = text(string.format("%d%%", s.battery), 14, "ffffff", FONT)
+		local pw = size(status.pct)
+		place(status.pct, status.bg, W - 104 - pw, 9, 1)
+	end
+	local label = (s.wifi and s.wifi ~= "") and s.wifi or "Flare"
+	if label ~= status.label_text then
+		status.label_text = label
+		delete_image(status.label)
+		status.label = place(text(label, 18, "ffffff", FONT), status.bg, 44, 6, 1)
+	end
 end
 
 local function update_status()
@@ -1015,5 +1052,8 @@ function flarehome_clock_pulse()
 	end
 	if ticks % 25 == 0 then
 		update_status()
+	end
+	if ticks % 125 == 1 then
+		update_hw()
 	end
 end

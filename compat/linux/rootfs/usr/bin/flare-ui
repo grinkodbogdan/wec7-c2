@@ -43,6 +43,8 @@ if [ "$appl" = flarehome ] && [ -d /opt/apps ]; then
     done
     echo "}" >> "$appl_dir/installed.lua"
 fi
+# the phone's state for the status bar (battery, Wi-Fi), once
+[ "$appl" = flarehome ] && ! pidof flare-statusd > /dev/null && (flare-statusd > /dev/null 2>&1 &)
 if pidof arcan > /dev/null; then
     killall arcan
     while pidof arcan > /dev/null; do usleep 100000; done

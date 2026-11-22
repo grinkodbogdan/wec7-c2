@@ -128,6 +128,47 @@ After the phone shell is up, `linuxdrv`:
 The driver set is QRT's for the Mi A1 (`lkl/config-qrt`), with the options
 the phone needs checked in `lkl/config-flare`.
 
+## Linux's devices for every program
+
+What the driver host's Linux drives is the whole system's
+(`kernel/src/linux/remote.rs`, served by `linuxdrv` over `/dev/flarelk`):
+
+| In Flare | Is the driver host's |
+| --- | --- |
+| `/linux/PATH` | its `PATH`: `/linux/sys/...`, `/linux/dev/...`, `/linux/proc/...` |
+| `/sys/class/power_supply`, `backlight`, `leds`, `net`, `rfkill` | its sysfs classes (battery, brightness, LEDs, network interfaces) |
+| `/proc/net` | its network tables (`ifconfig`, `route`, `netstat` read them) |
+| `/dev/snd` | its sound cards (ALSA) |
+| sockets: IPv4, IPv6, netlink, packet | its network stack: Wi-Fi, DHCP, DNS, TCP and UDP |
+
+A system call on one of these becomes a request; the driver host makes the
+same call on its Linux, in a thread of its own (calls may block), and
+replies. The caller waits meanwhile. No pointer crosses: the kernel copies
+what a call reads and writes:
+* ioctls by the size their number encodes; interface ioctls as `struct
+  ifreq`;
+* ALSA's frame transfers (`WRITEI`/`READI`) by the stream's frame size,
+  taken from its `HW_PARAMS`;
+* socket filters (`SO_ATTACH_FILTER`) as their instructions;
+* `sendmsg`/`recvmsg` gathered and scattered (no control messages).
+
+The host reports every descriptor's readiness, so `poll`, `epoll` and
+`select` work on them. Unchanged programs use it: busybox's `udhcpc`,
+`ifconfig`, `route`, `wget` and `nslookup`, and `wpa_supplicant` and
+`wpa_cli` from Alpine (`compat/linux/wifi`). On top:
+* `wifi scan`, `wifi connect SSID [PASSWORD]`, `wifi status`, `wifi off`:
+  wpa_supplicant (nl80211) and DHCP;
+* `brightness [PERCENT]`;
+* `flare-statusd`: the shell's status bar shows the battery (and charging)
+  and the Wi-Fi network.
+
+`cargo xtask linuxdrv-test` checks it end to end on QEMU. The driver host
+drives a virtio network card there. A Flare program reads its `/proc` and
+`/sys`, gets an address by DHCP and fetches a page from the host over TCP.
+
+Not through this yet: the GPU. Its ioctls carry pointers to tables and
+its buffers must be mapped, not copied ([gpu.md](gpu.md)).
+
 ## Adding a driver
 
 Any driver in Linux's tree can run in the driver host. On a real board:

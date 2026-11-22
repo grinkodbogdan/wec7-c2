@@ -226,11 +226,22 @@ linuxdrv: still waiting: ...
 linuxdrv: [..] bring-up done
 ```
 
+Using them from the shell (Terminal, or `fdb shell`):
+
+```sh
+wifi scan
+wifi connect "My network" "password"
+wget -O - http://example.com/
+brightness 60
+cat /sys/class/power_supply/*/capacity
+ls /dev/snd /linux/sys/bus/iio/devices
+```
+
+The status bar shows the battery and the Wi-Fi network once Linux's
+drivers report them.
+
 If the phone resets during one stage, the last stage printed is the one to
-leave out: put its line in `linux.txt` as `drop` instead of `hide`. What
-Flare's programs can use of these is the next step: the GPU through
-[gpu.md](../gpu.md), and Wi-Fi, audio, battery and brightness bridged like
-the touch screen and fdb are.
+leave out: put its line in `linux.txt` as `drop` instead of `hide`.
 
 ### Troubleshooting
 

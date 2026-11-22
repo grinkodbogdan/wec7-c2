@@ -1,0 +1,69 @@
+#!/bin/sh
+# wifi: the phone's Wi-Fi, with wpa_supplicant and udhcpc running as Flare
+# programs over the driver host's Linux (its wcn36xx driver has the radio;
+# kernel/src/linux/remote.rs carries their sockets there).
+#
+#   wifi scan                   networks in range
+#   wifi connect SSID [PASS]    join (WPA-PSK with PASS, open without), then DHCP
+#   wifi status                 state and address
+#   wifi off
+IF=${WIFI_IF:-wlan0}
+CONF=/etc/wpa_supplicant.conf
+RUN=/var/run/wpa_supplicant
+cli() { wpa_cli -p $RUN -i $IF "$@"; }
+start() {
+    if ! [ -e /sys/class/net/$IF ]; then
+        echo "wifi: no $IF (is Wi-Fi up? the driver host's log says: linuxdrv: network ...)" >&2
+        exit 1
+    fi
+    if ! cli ping > /dev/null 2>&1; then
+        mkdir -p $RUN
+        [ -e $CONF ] || printf 'ctrl_interface=%s\nupdate_config=1\n' $RUN > $CONF
+        wpa_supplicant -B -D nl80211 -i $IF -c $CONF > /tmp/wpa_supplicant.log 2>&1
+        i=0
+        while ! cli ping > /dev/null 2>&1 && [ $i -lt 50 ]; do usleep 100000; i=$((i + 1)); done
+    fi
+}
+case "$1" in
+    scan)
+        start
+        cli scan > /dev/null
+        sleep 4
+        cli scan_results | tail -n +2 | awk -F'\t' '{ printf "%-32s %s dBm  %s\n", $5, $3, $4 }'
+        ;;
+    connect)
+        [ -n "$2" ] || { echo "usage: wifi connect SSID [PASSWORD]" >&2; exit 2; }
+        start
+        cli remove_network all > /dev/null
+        id=$(cli add_network)
+        cli set_network $id ssid "\"$2\"" > /dev/null
+        if [ -n "$3" ]; then
+            cli set_network $id psk "\"$3\"" > /dev/null
+        else
+            cli set_network $id key_mgmt NONE > /dev/null
+        fi
+        cli enable_network $id > /dev/null
+        cli select_network $id > /dev/null
+        cli save_config > /dev/null
+        i=0
+        while ! cli status | grep -q "wpa_state=COMPLETED" && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
+        if ! cli status | grep -q "wpa_state=COMPLETED"; then
+            echo "wifi: could not join '$2' ($(cli status | grep wpa_state))" >&2
+            exit 1
+        fi
+        echo "wifi: joined '$2'"
+        udhcpc -i $IF -n -q -t 8 -s /usr/share/udhcpc/default.script
+        ;;
+    status)
+        start
+        cli status | grep -E "^(ssid|wpa_state|ip_address|freq)="
+        ;;
+    off)
+        cli terminate > /dev/null 2>&1
+        ifconfig $IF down 2>/dev/null
+        echo "wifi: off"
+        ;;
+    *)
+        sed -n '6,10p' "$0" | sed 's/^# *//'
+        ;;
+esac

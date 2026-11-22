@@ -24,6 +24,7 @@ pub mod input;
 pub mod mm;
 pub mod net;
 pub mod prof;
+pub mod remote;
 pub mod signal;
 pub mod tty;
 pub mod vfs;
@@ -132,6 +133,9 @@ pub struct Task {
     pub clear_tid: u64,
     pub wait: Wait,
     pub vfork_child: Option<u32>,
+    /// A call on the driver host's files waiting for its reply: (request
+    /// id, the call's signature) (remote.rs).
+    pub remote: Option<(u64, u64)>,
 }
 
 /// Personality-wide state.
@@ -150,6 +154,8 @@ pub struct Personality {
     pub ctl_response: Vec<u8>,
     /// Pseudo-terminals by index (/dev/pts/N).
     pub ptys: BTreeMap<u32, tty::PtyRef>,
+    /// Linux's files and sockets, served by the driver host (remote.rs).
+    pub remote: remote::Remote,
     /// Program whose system calls are traced to the console (`trace`).
     pub trace: Option<String>,
     /// /dev/dri/card0 (when the composition gives Linux a display).
@@ -210,6 +216,7 @@ impl Personality {
         }
         if !boot::LINUX_HARDWARE.is_empty() || !boot::LINUX_DT.is_empty() {
             vfs.add_device("flarehw", vfs::DEV_FLAREHW, 0o600);
+            vfs.add_device("flarelk", vfs::DEV_FLARELK, 0o600);
         }
         for (i, _) in boot::INPUT_DEVICES.iter().enumerate() {
             vfs.add_device_at("/dev/input", &format!("event{}", i), vfs::DEV_INPUT_EVENT0 + i as u64, 0o660);
@@ -248,6 +255,7 @@ impl Personality {
             binder_ctx: BTreeMap::new(),
             ctl_response: Vec::new(),
             ptys: BTreeMap::new(),
+            remote: remote::Remote::default(),
             trace: None,
             drm: drm::Drm::default(),
             inputs: boot::INPUT_DEVICES.iter().map(|_| input::InputDev::new()).collect(),
@@ -512,6 +520,7 @@ impl Kernel {
             sig: ThreadSig::default(),
             clear_tid: 0,
             wait: Wait::default(),
+            remote: None,
             vfork_child: None,
         }));
         c
@@ -1208,6 +1217,10 @@ impl Kernel {
     fn linux_dispatch(&mut self, c: usize) -> Out {
         let f = self.comps[c].frame;
         let a = [f.x[0], f.x[1], f.x[2], f.x[3], f.x[4], f.x[5]];
+        // the driver host's Linux files and sockets (remote.rs)
+        if let Some(out) = self.remote_dispatch(c, f.x[8], &a) {
+            return out;
+        }
         let r = match f.x[8] {
             nr::READ => return self.sys_read(c, a[0], a[1], a[2]),
             nr::WRITE => self.sys_write(c, a[0], a[1], a[2]),

@@ -28,6 +28,7 @@ if [ "$FLARE_BOOT" = quick ]; then
     fi
     # (tests: the first event that reaches Flare's input device eventN,
     # N = $FLARE_TEST_INPUT; its type, code and value, after the time)
+    [ -n "$FLARE_TEST_INPUT" ] && (sh /etc/net-test > /dev/console 2>&1 &)
     [ -n "$FLARE_TEST_INPUT" ] && \
         (echo "rc: event$FLARE_TEST_INPUT read:$(head -c 24 /dev/input/event$FLARE_TEST_INPUT | od -An -tx1 -j16)" \
             > /dev/console &)

@@ -40,6 +40,14 @@ const KOTLIN_COMPILER: (&str, &str) = (
     "b6698d5728ad8f9edcdd01617d638073191d8a03139cc538a391b4e3759ad297",
 );
 const BUSYBOX_APPLETS: &[&str] = &[
+    // the network, through the driver host's Linux (kernel/src/linux/remote.rs)
+    "udhcpc",
+    "ifconfig",
+    "route",
+    "wget",
+    "nslookup",
+    "ping",
+    "netstat",
     "sh",
     "ash",
     "ls",
@@ -665,6 +673,39 @@ fn art_stage() -> PathBuf {
 
 /// Build and stage (when its inputs change) Android Translation Layer
 /// with Flare's native backend as /opt/atl.
+/// Wi-Fi's user space: wpa_supplicant and wpa_cli from Alpine
+/// (compat/linux/wifi/alpine.lock) with the libraries they need. They run
+/// as Flare programs; their nl80211 and interface calls go to the driver
+/// host's Linux, whose wcn36xx driver has the radio.
+fn wifi_stage(rootfs: &Path) {
+    let dir = root().join("target/wifi");
+    let sys = dir.join("sysroot");
+    if !sys.join("sbin/wpa_supplicant").exists() {
+        let mut c = Command::new("python3");
+        c.arg("-I").arg(root().join("compat/arcan/alpine.py")).arg(dir.join("cache")).arg(&sys);
+        c.arg(root().join("compat/linux/wifi/alpine.lock")).arg("wpa_supplicant");
+        run(c);
+    }
+    for b in ["wpa_supplicant", "wpa_cli", "wpa_passphrase"] {
+        std::fs::copy(sys.join("sbin").join(b), rootfs.join("usr/bin").join(b)).unwrap();
+    }
+    for l in [
+        "libcrypto.so.3",
+        "libssl.so.3",
+        "libdbus-1.so.3",
+        "libnl-3.so.200",
+        "libnl-genl-3.so.200",
+        "libpcsclite.so.1",
+        "libpcsclite_real.so.1",
+    ] {
+        let dst = rootfs.join("usr/lib").join(l);
+        if !dst.exists() {
+            // (symlinks followed: the file itself)
+            std::fs::copy(sys.join("usr/lib").join(l), &dst).unwrap();
+        }
+    }
+}
+
 fn atl_stage() -> PathBuf {
     let dir = root().join("compat/android/atl");
     let out = root().join("target").join("atl");
@@ -973,6 +1014,7 @@ fn assemble_rootfs_at(full: bool, rootfs: &Path) -> PathBuf {
         }
         std::fs::create_dir_all(rootfs.join("data/local/tmp")).unwrap();
         std::fs::copy(&views, rootfs.join("data/local/tmp/views.apk")).unwrap();
+        wifi_stage(&rootfs);
         // Apps on the launcher (/opt/apps): unmodified APKs from F-Droid,
         // each with its name and icon; /etc/rc registers them with Arcan.
         let apps = rootfs.join("opt/apps");
@@ -1412,7 +1454,29 @@ fn wait_output(output: &Mutex<Vec<u8>>, text: &str, secs: u64) -> bool {
 
 /// Boot a composition that gives hardware to Linux and check that Linux's
 /// own drivers, running in the driver host, reached it.
+/// A web server for the network test: every request gets one line.
+fn net_test_server() {
+    let Ok(l) = std::net::TcpListener::bind("127.0.0.1:18765") else {
+        println!("xtask: port 18765 busy: the network test will fail");
+        return;
+    };
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut s = s;
+            let mut buf = [0u8; 2048];
+            let _ = std::io::Read::read(&mut s, &mut buf);
+            let body = "flare-net: hello over the driver host's network\n";
+            let _ = std::io::Write::write_all(
+                &mut s,
+                format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n{}", body.len(), body)
+                    .as_bytes(),
+            );
+        }
+    });
+}
+
 fn linuxdrv_test(o: &Opts) -> bool {
+    net_test_server();
     let mut o2 = Opts { system: "system/qemu-virt-linuxdrv.boot.toml".into(), release: o.release, rest: Vec::new() };
     if o.system != DEFAULT_SYSTEM {
         o2.system = o.system.clone();
@@ -1461,7 +1525,16 @@ fn linuxdrv_test(o: &Opts) -> bool {
     });
     let expected = [
         "s] Linux is up",
-        "linuxdrv: 5 devices from Flare",
+        "linuxdrv: 6 devices from Flare",
+        // Linux's files and network for Flare's programs: its /proc and
+        // /sys, DHCP over its packet and netlink sockets, then HTTP from
+        // the host over its TCP (net-test; QEMU's user network).
+        "net-test: Linux version 6.12",
+        "net-test: eth0 52:54:00:12:34:56",
+        "udhcpc: eth0 is 10.0.2.15",
+        "net-test: flare-net: hello over the driver host's network",
+        // Wi-Fi's user space runs (wpa_supplicant from Alpine)
+        "net-test: wpa_supplicant v2.11",
         "s] block devices: vda (and 1 partitions)",
         // The userdata disk starts with "FLAR".
         // (the disk's protective MBR, as a phone's eMMC)
@@ -1734,7 +1807,9 @@ fn android_app_check(qmp: &mut Qmp, output: &Mutex<Vec<u8>>) -> Vec<String> {
     check("click", log_has(&mut c, "FlareViews.*click 1", 60));
     std::thread::sleep(Duration::from_secs(3));
     qmp.screenshot(&dir.join("7-android-app-clicked.png"));
-    let _ = c.exec("killall ld-musl-aarch64.so.1");
+    // (only this app: the Calculator, also atl-run, stays open; closing
+    // two app windows in the same frame can still crash Arcan)
+    let _ = c.exec("pkill -f views.apk");
     check("close", wait_output(output, "flarehome: android window closed", 60));
     fails
 }

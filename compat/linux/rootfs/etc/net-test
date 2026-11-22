@@ -1,0 +1,11 @@
+#!/bin/sh
+# Tests (FLARE_TEST_INPUT): Linux's files and its network for Flare's
+# programs (kernel/src/linux/remote.rs), on QEMU's virtio network card that
+# the driver host drives.
+i=0
+while ! cat /linux/proc/version > /dev/null 2>&1 && [ $i -lt 150 ]; do usleep 100000; i=$((i + 1)); done
+echo "net-test: $(cut -d' ' -f1-3 /linux/proc/version)"
+echo "net-test: eth0 $(cat /sys/class/net/eth0/address)"
+udhcpc -i eth0 -n -q -t 5 -s /usr/share/udhcpc/default.script 2>&1 | grep "is "
+echo "net-test: $(wget -q -O - http://10.0.2.2:18765/flare-net.txt)"
+echo "net-test: $(wpa_supplicant -v 2>&1 | head -1)"
