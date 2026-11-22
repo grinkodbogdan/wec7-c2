@@ -294,18 +294,26 @@ static void slowest_initcalls(void)
 
 static volatile int devices_ready;
 
-/* Linux not done probing after 30 s (then 60 s): what it said last */
+/* What the driver host is doing (the watchdog says it; set without
+ * calling into Linux) */
+static const char *volatile phase = "starting Linux";
+
+/* Every 15 s until Linux's devices are up: what the driver host waits on;
+ * at 30 s and 90 s, also Linux's last messages (kept outside Linux: a stuck
+ * driver cannot keep them from being shown) */
 static void *watchdog(void *arg)
 {
 	(void)arg;
-	for (int round = 1; round <= 2; round++) {
-		for (int t = 0; t < 300 && !devices_ready; t++)
+	for (int round = 1; round <= 12; round++) {
+		for (int t = 0; t < 150 && !devices_ready; t++)
 			usleep(100000);
 		if (devices_ready)
 			return NULL;
-		fprintf(stderr, "linuxdrv: [%.1f s] Linux has not finished bringing up its devices; its last messages:\n",
-			since_boot());
-		kring_tail(18);
+		fprintf(stderr, "linuxdrv: [%.1f s] still %s\n", since_boot(), phase);
+		if (round == 2 || round == 6) {
+			fprintf(stderr, "linuxdrv: Linux's last messages:\n");
+			kring_tail(14);
+		}
 	}
 	return NULL;
 }
@@ -1095,6 +1103,7 @@ static void load_rootfs(void)
 	char found[32] = "";
 	uint64_t total = 0;
 	int part = 0;
+	phase = "looking for the userdata partition (Linux's eMMC driver)";
 	for (int i = 0; i < 40; i++) {
 		find_rootfs(found, sizeof found, &total, &part);
 		if (found[0] || part)
@@ -1121,6 +1130,7 @@ static void load_rootfs(void)
 	}
 	char path[64];
 	snprintf(path, sizeof path, "/dev/%s", found);
+	phase = "reading the root filesystem from the userdata partition";
 	long fd = l_open(path, 0);
 	/* big requests: 8 MiB readahead instead of 128 KiB (fewer, longer
 	 * transfers from the eMMC) */
@@ -1149,6 +1159,7 @@ static void load_rootfs(void)
 		/* in pieces: inflated here on every CPU, into a plain archive the
 		 * kernel takes as it is (no work under its lock) */
 		uint64_t nphys, nsize;
+		phase = "inflating the root filesystem";
 		unsigned char *nbuf = inflate_rootfs(buf, total, &nphys, &nsize);
 		munmap(buf, size);
 		uint64_t fr[2] = { phys, size };
@@ -1163,6 +1174,7 @@ static void load_rootfs(void)
 		total += 32;
 	}
 	uint64_t req[2] = { phys, total };
+	phase = "handing the root filesystem to Flare";
 	int n = ioctl(hw, FLAREHW_ROOTFS, req);
 	if (n < 0)
 		printf("linuxdrv: Flare refused the root filesystem: %s\n", strerror(errno));
@@ -1285,6 +1297,7 @@ static void report(void)
 	 * 10 s. */
 	static char deferred[256];
 	long ndeferred = 0;
+	phase = "waiting for Linux's devices to settle";
 	for (int i = 0; i < 50; i++) {
 		long fd = l_open("/sys/kernel/debug/devices_deferred", 0);
 		ndeferred = 0;
@@ -1331,6 +1344,7 @@ static void report(void)
 			nparts++;
 		}
 	}
+	phase = "reading the disks and the clock";
 	printf("linuxdrv: [%.2f s] block devices: %s", since_boot(), disks[0] ? disks : "none");
 	if (nparts)
 		printf(" (and %d partitions)", nparts);
@@ -1391,6 +1405,7 @@ static void report(void)
 		devs[ndev++] = n;
 	}
 	printf(ndev ? "\n" : "linuxdrv: input devices: none\n");
+	phase = "bridging the serial and input devices";
 	bridge_serial();
 	bridge_inputs(devs, ndev);
 	/* Bring-up: what each device Linux has not probed yet still waits for. */

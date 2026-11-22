@@ -126,8 +126,12 @@ After the phone shell is up, `linuxdrv`:
    prints what Linux drives: backlight, power supplies, network
    interfaces, sound cards, sensors, input, and what still waits.
 
-The driver set is QRT's for the Mi A1 (`lkl/config-qrt`), with the options
-the phone needs checked in `lkl/config-flare`.
+The driver set is the phone's driver families from QRT's Mi A1 config
+(`lkl/config-phone`, extracted from `lkl/config-qrt`): GPU, Wi-Fi and
+networking, audio, battery, backlight, vibrator, sensors, file systems.
+QRT's whole config also builds core drivers (interrupt controller, timers,
+CPU frequency, resets) that stalled the phone at boot. The options the
+phone needs are checked in `lkl/config-flare`.
 
 ## Linux's devices for every program
 

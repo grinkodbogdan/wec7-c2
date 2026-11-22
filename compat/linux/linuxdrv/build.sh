@@ -43,10 +43,13 @@ make ARCH=lkl CROSS_COMPILE=$X defconfig >/dev/null
 # tools/lkl rewrites .config the first time it runs (as QRT's ports/lkl.sh
 # notes): let it, then put QRT's and Flare's options on top
 make -C tools/lkl CROSS_COMPILE=$X "$src/.config" >/dev/null 2>&1 || true
-# QRT's whole config for the Mi A1 (lkl/config-qrt: GPU, Wi-Fi, audio, sensors,
-# battery, backlight, vibrator...) as the base; lkl/config-arm64 and
-# lkl/config-flare on top, checked below.
-cat "$here/lkl/config-qrt" "$here/lkl/config-arm64" "$here/lkl/config-flare" >> .config
+# The phone's driver families from QRT's config for the Mi A1
+# (lkl/config-phone: GPU, Wi-Fi and networking, audio, battery, backlight,
+# vibrator, sensors, the partitions' file systems; extracted from
+# lkl/config-qrt, QRT's whole config, whose core drivers - interrupt
+# controller, timers, CPU frequency, resets - stalled the phone at boot);
+# lkl/config-arm64 and lkl/config-flare on top, checked below.
+cat "$here/lkl/config-phone" "$here/lkl/config-arm64" "$here/lkl/config-flare" >> .config
 make ARCH=lkl CROSS_COMPILE=$X olddefconfig >/dev/null 2>&1
 # Every option asked for must have taken: Kconfig silently drops what it
 # cannot set (an option with no prompt, an unmet dependency).

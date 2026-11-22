@@ -753,7 +753,7 @@ fn linuxdrv_build() -> PathBuf {
         dir.join("lkl/flare.patch"),
         dir.join("lkl/config-arm64"),
         dir.join("lkl/config-flare"),
-        dir.join("lkl/config-qrt"),
+        dir.join("lkl/config-phone"),
         dir.join("alpine.lock"),
     ]);
     let stamp = out.join(".stamp");
