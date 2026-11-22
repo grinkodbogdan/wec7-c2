@@ -1416,7 +1416,7 @@ static void report(void)
 /* ---- The rest of the phone: what goes through the secure world ----
  * The board's linux.txt hides the devices whose firmware the secure world
  * loads (the GPU, its IOMMU, Wi-Fi, the audio DSP): their "qcom,"
- * compatibles start with a capital ("Qcom,adreno"), so no driver takes them (as
+ * compatibles start with "~" ("~com,adreno"), so no driver takes them (as
  * QRT does on this phone). Once the phone shell is up, the driver host
  * mounts the phone's partitions, lays out their firmware for Linux, and
  * gives each stage of /etc/linuxdrv/stages back in turn: the compatibles
@@ -1589,15 +1589,15 @@ static void firmware(void)
 	copy_first(nvp, nvf, "/lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin");
 }
 
-/* "Qcom,x" back to "qcom,x" in the tree Linux reads (dtb.py trim --hide) */
+/* "~com,x" back to "qcom,x" in the tree Linux reads (dtb.py trim --hide) */
 static int unhide(const char *compat)
 {
 	size_t n = strlen(compat);
 	int hits = 0;
-	if (n < 2 || compat[0] < 'a' || compat[0] > 'z')
+	if (n < 2)
 		return 0;
-	for (size_t i = 1; dtb && i + n < dtb_len; i++)
-		if (dtb[i] == compat[0] - 32 && !memcmp(dtb + i + 1, compat + 1, n - 1) && dtb[i + n] == 0) {
+	for (size_t i = 0; dtb && i + n < dtb_len; i++)
+		if (dtb[i] == '~' && !memcmp(dtb + i + 1, compat + 1, n - 1) && dtb[i + n] == 0) {
 			dtb[i] = compat[0];
 			hits++;
 		}

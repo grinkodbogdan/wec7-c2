@@ -22,7 +22,7 @@
 
     dtb.py hidden BOARD.dtb PATH...
         The compatible strings `trim --hide PATH...` renames ("qcom,x" is
-        kept as "Qcom,x" until the driver host restores it): one line.
+        kept as "~com,x" until the driver host restores it): one line.
 
     dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...] [--delprop NAME...]
                [--setprop PATH:NAME=STRING...]
@@ -285,7 +285,7 @@ def hidden(path, paths):
     out = []
     for n in walk(root):
         if any(n["path"] == h or n["path"].startswith(h.rstrip("/") + "/") for h in paths):
-            out += [c for c in strs(n["props"].get("compatible", b"")) if c[:1].islower() and c not in out]
+            out += [c for c in strs(n["props"].get("compatible", b"")) if c and c[0] != "~" and c not in out]
     print(" ".join(out))
 
 
@@ -304,11 +304,13 @@ def trim(src, dst, allow, drop, delprops=(), setprops=(), hide=()):
     for n in walk(root):
         pr = n["props"]
         # Hidden until the driver host gives it back (a stage after the
-        # shell is up): the first letter of each compatible string upper
-        # case ("Qcom,adreno"), which no driver matches - the same length,
-        # so the host can restore them in the tree Linux reads (`unhide`).
+        # shell is up): the first character of each compatible string "~"
+        # ("~com,adreno"), which no driver matches (Linux compares
+        # compatibles without regard to case, so a capital would not do) -
+        # the same length, so the host can restore them in the tree Linux
+        # reads (`unhide`, which has the original strings).
         if any(n["path"] == h or n["path"].startswith(h.rstrip("/") + "/") for h in hide) and "compatible" in pr:
-            pr["compatible"] = b"\0".join(c[:1].upper() + c[1:] for c in pr["compatible"].split(b"\0"))
+            pr["compatible"] = b"\0".join((b"~" + c[1:]) if c else c for c in pr["compatible"].split(b"\0"))
         for p in delprops:
             pr.pop(p, None)
         for path, name, value in setprops:
