@@ -373,6 +373,12 @@ fn linux_dt_grants(
             }
         }
     }
+    // the kernel console's device (a phone's splash framebuffer) is Flare's
+    if let Some(con) = platform.console.as_ref().and_then(|n| enabled.iter().find(|d| &d.name == n)) {
+        for r in &con.regs {
+            held_mmio.push((page(r.base, r.size), "the kernel console".to_string()));
+        }
+    }
     let flare_ram: Vec<(u64, u64)> =
         platform.memory.iter().filter(|m| !m.reserved).map(|m| (m.base, m.base + m.size)).collect();
     let mut nodes: Vec<(String, Vec<(u64, u64)>, Vec<u32>, bool)> = Vec::new();

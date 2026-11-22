@@ -28,6 +28,8 @@ drop /soc@0/power-controller@b018000
 # it; its IOMMU (the display's and video's) must keep passing the panel's
 # reads through; the debug UART is Flare's console pads.
 drop /soc@0/display-subsystem@1a00000
+drop /chosen/framebuffer@90001000
+drop /reserved-memory/ramoops@9ff00000
 drop /soc@0/iommu@1e20000
 drop /soc@0/serial@78af000
 # The bus fabric (NoCs): the RPM keeps the boot loader's bus clocks.
@@ -71,10 +73,10 @@ hide /i2c-sensors /soc@0/i2c@78b6000 /soc@0/spi@7af6000 /soc@0/dma-controller@7a
 # microcode and zap shader from the vendor partition), Wi-Fi (the Pronto
 # core; its firmware from the modem partition), the audio DSP with the
 # sound card, codecs and speaker amplifier.
-hide /firmware
+hide /firmware /reserved-memory/rmtfs@f2d00000
 hide /soc@0/iommu@1c48000
 hide /soc@0/gpu@1c00000
-hide /soc@0/remoteproc@a204000 /smp2p-wcnss /smsm/wcnss@6
+hide /soc@0/remoteproc@a204000 /smp2p-wcnss /smsm
 hide /soc@0/remoteproc@c200000 /smp2p-adsp /soc@0/sound-card@c051000 /soc@0/codec@c0f0000 /soc@0/spmi@200f000/pmic@1/codec@f000 /analog-amplifier
 
 # Bus bandwidth (interconnect) paths: the NoCs are not Linux's (above).

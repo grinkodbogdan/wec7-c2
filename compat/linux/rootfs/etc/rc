@@ -23,8 +23,18 @@ if [ "$FLARE_BOOT" = quick ]; then
     # be described before a user interface opens them.
     if [ -n "$linuxdrv_started" ]; then
         i=0
-        while [ ! -e /tmp/linuxdrv.ready ] && [ $i -lt 600 ]; do usleep 100000; i=$((i + 1)); done
-        echo "rc: [$(cut -d' ' -f1 /proc/uptime) s] the driver host's devices are ready"
+        while [ ! -e /tmp/linuxdrv.ready ] && [ $i -lt 600 ]; do
+            usleep 100000; i=$((i + 1))
+            # (the driver host gone: no point waiting)
+            [ $((i % 10)) = 0 ] && ! pidof linuxdrv > /dev/null && break
+        done
+        if [ -e /tmp/linuxdrv.ready ]; then
+            echo "rc: [$(cut -d' ' -f1 /proc/uptime) s] the driver host's devices are ready"
+        elif pidof linuxdrv > /dev/null; then
+            echo "rc: [$(cut -d' ' -f1 /proc/uptime) s] the driver host is not ready after 60 s (its log above)"
+        else
+            echo "rc: [$(cut -d' ' -f1 /proc/uptime) s] the driver host stopped (its last words above)"
+        fi
     fi
     # (tests: the first event that reaches Flare's input device eventN,
     # N = $FLARE_TEST_INPUT; its type, code and value, after the time)
