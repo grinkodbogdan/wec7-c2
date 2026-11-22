@@ -124,6 +124,11 @@ pub struct LinuxConfig {
     /// Linux serial devices (/dev/<name>) carried by the driver host over a
     /// tty of its Linux (a phone's USB serial gadget): fdb.
     pub serials: Vec<String>,
+    /// The driver host also gets every device of the board's Linux device
+    /// tree (`linux.dtb`, after `linux.txt`): its register windows and GIC
+    /// interrupts, except what components hold. Linux then probes its whole
+    /// tree, as on a Linux phone.
+    pub devicetree: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,7 +310,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
     for sec in doc.named_sections() {
         if sec.name == "linux" {
             for e in &sec.entries {
-                if !["init", "env", "control", "display", "rootfs", "hardware", "smc", "inputs", "serials"].contains(&e.key.as_str()) {
+                if !["init", "env", "control", "display", "rootfs", "hardware", "smc", "inputs", "serials", "devicetree"].contains(&e.key.as_str()) {
                     err(e.line, format!("unknown key '{}' in [linux]", e.key));
                 }
             }
@@ -346,6 +351,7 @@ pub fn parse(src: &str) -> Result<Composition, Vec<Diag>> {
                         smc,
                         inputs: list("inputs").unwrap_or_default(),
                         serials: list("serials").unwrap_or_default(),
+                        devicetree: sec.get("devicetree").and_then(|v| v.as_bool()).unwrap_or(false),
                     })
                 }
                 _ => err(sec.line, "[linux] needs init = [\"/absolute/path\", args...]".into()),
@@ -606,7 +612,7 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     // Input devices the driver host feeds: its own, and only with hardware.
     if let Some(l) = &comp.linux {
         for name in &l.inputs {
-            if l.hardware.is_empty() {
+            if l.hardware.is_empty() && !l.devicetree {
                 errs.push(format!("[linux] inputs '{}' needs [linux] hardware (a driver host to feed it)", name));
             }
             if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
@@ -619,7 +625,7 @@ pub fn validate(comp: &Composition, manifests: &[Manifest], devices: &[DeviceVie
     }
     if let Some(l) = &comp.linux {
         for name in &l.serials {
-            if l.hardware.is_empty() {
+            if l.hardware.is_empty() && !l.devicetree {
                 errs.push(format!("[linux] serials '{}' needs [linux] hardware (a driver host to carry it)", name));
             }
             if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {

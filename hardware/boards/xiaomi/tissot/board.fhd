@@ -51,7 +51,27 @@ reserved = true
 
 [memory.ram-mid]
 base = 0x92200000
-size = 0x0dd00000
+size = 0x00e00000
+
+# Carve-outs of Linux's device tree inside this RAM: GPS, and the GPU's zap
+# shader, which the secure world loads there for Linux's GPU driver.
+[memory.gps]
+base = 0x93000000
+size = 0x00200000
+reserved = true
+
+[memory.ram-mid2]
+base = 0x93200000
+size = 0x01e00000
+
+[memory.gpu-zap]
+base = 0x95000000
+size = 0x00002000
+reserved = true
+
+[memory.ram-mid3]
+base = 0x95002000
+size = 0x0aefe000
 
 [memory.ramoops]
 base = 0x9ff00000

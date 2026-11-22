@@ -18,6 +18,7 @@ flare-cap = { path = "../libs/cap" }
 miniz_oxide = { version = "0.8", default-features = false }
 
 [build-dependencies]
+miniz_oxide = "0.8"
 flare-fhd = { path = "../tools/fhd" }
 flare-cm = { path = "../component-manager" }
 flare-abi = { path = "../interfaces/abi" }

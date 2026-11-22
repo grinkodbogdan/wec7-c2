@@ -208,13 +208,23 @@ impl Personality {
         if boot::LINUX_DISPLAY.is_some() {
             vfs.add_device("fb0", vfs::DEV_FB0, 0o660);
         }
-        if !boot::LINUX_HARDWARE.is_empty() {
+        if !boot::LINUX_HARDWARE.is_empty() || !boot::LINUX_DT.is_empty() {
             vfs.add_device("flarehw", vfs::DEV_FLAREHW, 0o600);
         }
         for (i, _) in boot::INPUT_DEVICES.iter().enumerate() {
             vfs.add_device_at("/dev/input", &format!("event{}", i), vfs::DEV_INPUT_EVENT0 + i as u64, 0o660);
         }
-        match vfs.unpack(boot::INITRAMFS) {
+        // (compressed by the build: kernel/build.rs)
+        let initramfs: &'static [u8] = match crate::ramdisk::check(boot::INITRAMFS.as_ptr(), boot::INITRAMFS.len() as u64)
+            .and_then(|a| crate::ramdisk::materialize(boot::INITRAMFS.as_ptr(), a, true))
+        {
+            Ok(d) => d,
+            Err(e) => {
+                kprintln!("linux: initramfs: {}", e);
+                &[]
+            }
+        };
+        match vfs.unpack(initramfs) {
             Ok(n) => kprintln!("linux: initramfs unpacked: {} entries", n),
             Err(e) => kprintln!("linux: initramfs damaged: {}", e),
         }

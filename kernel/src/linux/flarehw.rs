@@ -61,7 +61,20 @@ fn devices() -> impl Iterator<Item = &'static platform::DeviceDesc> {
 
 /// An interrupt line given to Linux.
 pub fn granted_irq(intid: u32) -> bool {
-    devices().any(|d| d.irqs.contains(&intid))
+    devices().any(|d| d.irqs.contains(&intid)) || boot::LINUX_DT.iter().any(|d| d.2.contains(&intid))
+}
+
+/// Device `idx` of the driver host's list: the named devices, then the
+/// nodes of Linux's device tree (`[linux] devicetree`): name, windows,
+/// interrupts.
+fn device_info(idx: usize) -> Option<(&'static str, alloc::vec::Vec<(u64, u64)>, &'static [u32])> {
+    let named = devices().count();
+    if idx < named {
+        let d = devices().nth(idx)?;
+        return Some((d.name, d.regs.iter().map(|r| (r.base, r.size)).collect(), d.irqs));
+    }
+    let d = boot::LINUX_DT.get(idx - named)?;
+    Some((d.0, d.1.to_vec(), d.2))
 }
 
 impl Kernel {
@@ -81,6 +94,16 @@ impl Kernel {
                         return Some(crate::arch::mmu::ATTR_NORMAL_NC);
                     }
                     return Some(crate::arch::mmu::ATTR_DEVICE);
+                }
+            }
+        }
+        for d in boot::LINUX_DT {
+            for &(base, size) in d.1 {
+                let (b, e) = (base & !(PAGE_SIZE - 1), (base + size).div_ceil(PAGE_SIZE) * PAGE_SIZE);
+                if pa >= b && end <= e {
+                    // reserved memory (firmware images, SMEM): RAM, so
+                    // unaligned accesses work; registers as Device memory
+                    return Some(if d.3 { crate::arch::mmu::ATTR_NORMAL_NC } else { crate::arch::mmu::ATTR_DEVICE });
                 }
             }
         }
@@ -138,23 +161,23 @@ impl Kernel {
                 // name[32], 4 bytes of padding (C alignment), regs[8]
                 // (u64 base, u64 size), irqs[8] (u32)
                 let idx = u32::from_le_bytes(self.uread(c, arg, 4)?.try_into().unwrap()) as usize;
-                let d = devices().nth(idx).ok_or(ENOENT)?;
+                let (dname, regs, irqs) = device_info(idx).ok_or(ENOENT)?;
                 let mut b = Vec::with_capacity(12 + 32 + 4 + 128 + 32);
                 b.extend_from_slice(&(idx as u32).to_le_bytes());
-                b.extend_from_slice(&(d.regs.len().min(8) as u32).to_le_bytes());
-                b.extend_from_slice(&(d.irqs.len().min(8) as u32).to_le_bytes());
+                b.extend_from_slice(&(regs.len().min(8) as u32).to_le_bytes());
+                b.extend_from_slice(&(irqs.len().min(8) as u32).to_le_bytes());
                 let mut name = [0u8; 32];
-                let n = d.name.len().min(31);
-                name[..n].copy_from_slice(&d.name.as_bytes()[..n]);
+                let n = dname.len().min(31);
+                name[..n].copy_from_slice(&dname.as_bytes()[..n]);
                 b.extend_from_slice(&name);
                 b.extend_from_slice(&[0; 4]);
                 for i in 0..8 {
-                    let (base, size) = d.regs.get(i).map(|r| (r.base, r.size)).unwrap_or((0, 0));
+                    let (base, size) = regs.get(i).copied().unwrap_or((0, 0));
                     b.extend_from_slice(&base.to_le_bytes());
                     b.extend_from_slice(&size.to_le_bytes());
                 }
                 for i in 0..8 {
-                    b.extend_from_slice(&d.irqs.get(i).copied().unwrap_or(0).to_le_bytes());
+                    b.extend_from_slice(&irqs.get(i).copied().unwrap_or(0).to_le_bytes());
                 }
                 self.uwrite(c, arg, &b).map(|_| 0)
             }

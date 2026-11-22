@@ -94,7 +94,7 @@ static int dma_alloc(uint64_t size, uint64_t *phys)
 }
 
 /* ---- the granted register windows, mapped on first ioremap ---- */
-#define MAXWIN 64
+#define MAXWIN 512
 static struct { uint64_t base, size; char *va; char name[32]; } win[MAXWIN];
 static int nwin;
 static pthread_mutex_t win_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1060,6 +1060,16 @@ static void report(void)
 		l_list("/sys/class/block", names, sizeof names);
 		if (ndeferred <= 0 && names[0])
 			break;
+		/* devices that wait for what the driver host starts later (the
+		 * GPU's IOMMU, the DSP...) keep waiting: settled once the list
+		 * stays the same for a second */
+		static char last[256];
+		static int same;
+		deferred[ndeferred > 0 ? ndeferred : 0] = 0;
+		same = strcmp(last, deferred) == 0 ? same + 1 : 0;
+		snprintf(last, sizeof last, "%s", deferred);
+		if (same >= 5 && names[0])
+			break;
 		struct timespec ts = { 0, 200000000 };
 		nanosleep(&ts, NULL);
 	}
@@ -1069,7 +1079,7 @@ static void report(void)
 		for (char *c = deferred; *c; c++)
 			if (*c == '\n' || *c == '\t')
 				*c = ' ';
-		printf("linuxdrv: still deferred after 10 s: %s\n", deferred);
+		printf("linuxdrv: still waiting: %s\n", deferred);
 	}
 	/* (again: the partitions are there now) */
 	l_list("/sys/class/block", names, sizeof names);
@@ -1153,6 +1163,377 @@ static void report(void)
 	fflush(stdout);
 }
 
+/* ---- The rest of the phone: what goes through the secure world ----
+ * The board's linux.txt hides the devices whose firmware the secure world
+ * loads (the GPU, its IOMMU, Wi-Fi, the audio DSP): their "qcom,"
+ * compatibles are "flr-," in the tree, so no driver takes them at boot (as
+ * QRT does on this phone). Once the phone shell is up, the driver host
+ * mounts the phone's partitions, lays out their firmware for Linux, and
+ * gives each stage of /etc/linuxdrv/stages back in turn: the compatibles
+ * restored in the tree Linux reads (it points into this buffer), then every
+ * device probed. Remote processors (Wi-Fi, the DSP) are started. */
+static char *dtb;
+static size_t dtb_len;
+#define NR_UMOUNT2 39
+#define NR_SYMLINKAT 36
+
+static long l_write_text(const char *path, const char *text)
+{
+	long fd = l_open(path, 1 /* O_WRONLY */);
+	if (fd < 0)
+		return fd;
+	long r = l_sys(NR_WRITE, fd, (long)text, (long)strlen(text), 0, 0);
+	l_close((int)fd);
+	return r;
+}
+
+static int l_exists(const char *path)
+{
+	long fd = l_open(path, 0x200000 /* O_PATH */);
+	if (fd < 0)
+		return 0;
+	l_close((int)fd);
+	return 1;
+}
+
+static void l_mkdirs(const char *path)
+{
+	char p[160];
+	snprintf(p, sizeof p, "%s", path);
+	for (char *c = p + 1; *c; c++)
+		if (*c == '/') {
+			*c = 0;
+			l_sys(NR_MKDIRAT, AT_FDCWD, (long)p, 0755, 0, 0);
+			*c = '/';
+		}
+	l_sys(NR_MKDIRAT, AT_FDCWD, (long)p, 0755, 0, 0);
+}
+
+/* copy a file inside Linux; its size, or a negative error */
+static long l_copy(const char *from, const char *to)
+{
+	long in = l_open(from, 0);
+	if (in < 0)
+		return in;
+	char dir[160];
+	snprintf(dir, sizeof dir, "%s", to);
+	char *slash = strrchr(dir, '/');
+	if (slash) {
+		*slash = 0;
+		l_mkdirs(dir);
+	}
+	long out = l_sys(NR_OPENAT, AT_FDCWD, (long)to, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644, 0);
+	if (out < 0) {
+		l_close((int)in);
+		return out;
+	}
+	static char buf[65536];
+	long total = 0, n;
+	while ((n = l_read((int)in, buf, sizeof buf)) > 0) {
+		l_sys(NR_WRITE, out, (long)buf, n, 0, 0);
+		total += n;
+	}
+	l_close((int)in);
+	l_close((int)out);
+	return total;
+}
+
+/* The phone's partitions Linux's drivers need files from, read-only:
+ * /mnt/<partition name>. */
+static void mount_partitions(void)
+{
+	static const char *const want[] = { "modem_a", "modem", "vendor_a", "vendor", "persist", NULL };
+	static char names[8192];
+	l_list("/sys/class/block", names, sizeof names);
+	l_mkdirs("/mnt");
+	char *save = NULL;
+	for (char *dev = strtok_r(names, " ", &save); dev; dev = strtok_r(NULL, " ", &save)) {
+		char path[96], ue[512] = "", part[40] = "";
+		snprintf(path, sizeof path, "/sys/class/block/%s/uevent", dev);
+		long fd = l_open(path, 0);
+		if (fd < 0)
+			continue;
+		long n = l_read((int)fd, ue, sizeof ue - 1);
+		l_close((int)fd);
+		ue[n > 0 ? n : 0] = 0;
+		const char *pn = strstr(ue, "PARTNAME=");
+		if (!pn)
+			continue;
+		int i = 0;
+		for (pn += 9; *pn && *pn != '\n' && i < 39; pn++)
+			part[i++] = *pn;
+		part[i] = 0;
+		int wanted = 0;
+		for (int w = 0; want[w]; w++)
+			wanted |= !strcmp(part, want[w]);
+		if (!wanted)
+			continue;
+		char mnt[64], devp[64];
+		snprintf(mnt, sizeof mnt, "/mnt/%s", part);
+		snprintf(devp, sizeof devp, "/dev/%s", dev);
+		l_mkdirs(mnt);
+		static const char *const fss[] = { "ext4", "vfat", NULL };
+		const char *got = NULL;
+		for (int f = 0; fss[f] && !got; f++)
+			if (l_sys(NR_MOUNT, (long)devp, (long)mnt, (long)fss[f], 1 /* MS_RDONLY */, 0) == 0)
+				got = fss[f];
+		printf("linuxdrv: %s (%s): %s\n", part, dev, got ? got : "not mountable");
+	}
+}
+
+/* the first of `parts`/`files` that exists, copied to `to` */
+static long copy_first(const char *const parts[], const char *const files[], const char *to)
+{
+	for (int p = 0; parts[p]; p++)
+		for (int f = 0; files[f]; f++) {
+			char from[192];
+			snprintf(from, sizeof from, "/mnt/%s/%s", parts[p], files[f]);
+			long n = l_copy(from, to);
+			if (n > 0) {
+				printf("linuxdrv: firmware %s (from %s)\n", to + 14, from);
+				return n;
+			}
+		}
+	return -1;
+}
+
+/* Lay out the firmware Linux's drivers ask for. */
+static void firmware(void)
+{
+	static const char *const vendor[] = { "vendor_a", "vendor", NULL };
+	static const char *const modem[] = { "modem_a", "modem", NULL };
+	/* the DSP's and Wi-Fi's firmware (adsp.mdt, wcnss.mdt and their
+	 * pieces): where the phone keeps them, as Linux's search path */
+	for (int m = 0; modem[m]; m++) {
+		char img[64];
+		snprintf(img, sizeof img, "/mnt/%s/image", modem[m]);
+		if (l_exists(img)) {
+			l_write_text("/sys/module/firmware_class/parameters/path", img);
+			printf("linuxdrv: firmware from %s\n", img);
+			break;
+		}
+	}
+	/* the GPU's command processor microcode and its zap shader */
+	static const char *const gpu[] = { "a530_pm4.fw", "a530_pfp.fw", "a506_zap.mdt", "a506_zap.b00", "a506_zap.b01",
+					   "a506_zap.b02", NULL };
+	for (int g = 0; gpu[g]; g++) {
+		char f1[64], f2[64], f3[64], to[128];
+		snprintf(f1, sizeof f1, "firmware/%s", gpu[g]);
+		snprintf(f2, sizeof f2, "etc/firmware/%s", gpu[g]);
+		snprintf(f3, sizeof f3, "image/%s", gpu[g]);
+		const char *const files[] = { f1, f2, NULL };
+		const char *const files_m[] = { f3, NULL };
+		snprintf(to, sizeof to, "/lib/firmware/qcom/%s", gpu[g]);
+		if (copy_first(vendor, files, to) < 0)
+			copy_first(modem, files_m, to);
+		if (!strncmp(gpu[g], "a506_zap", 8)) {
+			char to2[128];
+			snprintf(to2, sizeof to2, "/lib/firmware/qcom/msm8953/xiaomi/tissot/%s", gpu[g]);
+			l_copy(to, to2);
+		}
+	}
+	/* Wi-Fi's calibration (NV) */
+	static const char *const nvp[] = { "vendor_a", "vendor", "persist", NULL };
+	static const char *const nvf[] = { "firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin", "etc/wifi/WCNSS_qcom_wlan_nv.bin",
+					   "WCNSS_qcom_wlan_nv.bin", NULL };
+	copy_first(nvp, nvf, "/lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin");
+}
+
+/* "flr-,x" back to "qcom,x" in the tree Linux reads */
+static int unhide(const char *compat)
+{
+	size_t n = strlen(compat);
+	int hits = 0;
+	if (n < 6 || strncmp(compat, "qcom,", 5))
+		return 0;
+	for (size_t i = 0; dtb && i + n < dtb_len; i++)
+		if (!memcmp(dtb + i, "flr-,", 5) && !memcmp(dtb + i + 5, compat + 5, n - 5) && dtb[i + n] == 0) {
+			memcpy(dtb + i, "qcom,", 5);
+			hits++;
+		}
+	__sync_synchronize();
+	return hits;
+}
+
+/* every platform device without a driver: probed again */
+static int probe_unbound(char *bound_now, int cap)
+{
+	static char names[16384];
+	l_list("/sys/bus/platform/devices", names, sizeof names);
+	int newly = 0, at = 0;
+	char *save = NULL;
+	bound_now[0] = 0;
+	for (char *dev = strtok_r(names, " ", &save); dev; dev = strtok_r(NULL, " ", &save)) {
+		char p[160];
+		snprintf(p, sizeof p, "/sys/bus/platform/devices/%s/driver", dev);
+		if (l_exists(p))
+			continue;
+		l_write_text("/sys/bus/platform/drivers_probe", dev);
+		if (l_exists(p)) {
+			newly++;
+			if (at + (int)strlen(dev) + 2 < cap)
+				at += snprintf(bound_now + at, (size_t)(cap - at), "%s%s", at ? " " : "", dev);
+		}
+	}
+	return newly;
+}
+
+/* remote processors that wait: started (the secure world loads them) */
+static void start_remoteprocs(void)
+{
+	static char names[1024];
+	l_list("/sys/class/remoteproc", names, sizeof names);
+	char *save = NULL;
+	for (char *rp = strtok_r(names, " ", &save); rp; rp = strtok_r(NULL, " ", &save)) {
+		char sp[96], st[32] = "", fw[64] = "";
+		snprintf(sp, sizeof sp, "/sys/class/remoteproc/%s/firmware", rp);
+		l_gets(sp, fw, sizeof fw);
+		snprintf(sp, sizeof sp, "/sys/class/remoteproc/%s/state", rp);
+		l_gets(sp, st, sizeof st);
+		if (!strncmp(st, "offline", 7)) {
+			printf("linuxdrv: starting %s (%s) through the secure world\n", rp, fw);
+			fflush(stdout);
+			l_write_text(sp, "start");
+			for (int t = 0; t < 100; t++) {
+				l_gets(sp, st, sizeof st);
+				if (!strncmp(st, "running", 7))
+					break;
+				usleep(100000);
+			}
+		}
+		printf("linuxdrv: %s (%s): %s\n", rp, fw, st);
+	}
+}
+
+/* The GPU, asked what it is and whether it runs (msm's GET_PARAM). */
+static void gpu_check(void)
+{
+	static char names[512];
+	l_list("/dev/dri", names, sizeof names);
+	if (!names[0])
+		return;
+	char *save = NULL;
+	for (char *n = strtok_r(names, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
+		char p[64];
+		snprintf(p, sizeof p, "/dev/dri/%s", n);
+		long fd = l_open(p, 2);
+		if (fd < 0)
+			continue;
+		struct { uint32_t pipe, param; uint64_t value; uint32_t len, pad; } q = { 1 /* 3D */, 1 /* GPU_ID */, 0, 0, 0 };
+		long r = l_sys(NR_IOCTL, fd, 0xc0186440 /* DRM_IOCTL_MSM_GET_PARAM */, (long)&q, 0, 0);
+		uint64_t id = q.value, t0 = 0, t1 = 0;
+		q.param = 4; /* TIMESTAMP */
+		if (l_sys(NR_IOCTL, fd, 0xc0186440, (long)&q, 0, 0) == 0)
+			t0 = q.value;
+		usleep(100000);
+		if (l_sys(NR_IOCTL, fd, 0xc0186440, (long)&q, 0, 0) == 0)
+			t1 = q.value;
+		l_close((int)fd);
+		if (r == 0 && id)
+			printf("linuxdrv: GPU: Adreno %llu (%s), %s\n", (unsigned long long)id, p,
+			       t1 > t0 ? "running" : "present, its clock not counting");
+		else
+			printf("linuxdrv: %s: not a GPU this asked (%ld)\n", p, r);
+		return;
+	}
+}
+
+/* What Linux drives now, by class. */
+static void summary(void)
+{
+	static char names[4096];
+	char line[1024];
+	int at;
+	l_list("/sys/class/backlight", names, sizeof names);
+	if (names[0]) {
+		char p[128], v[32] = "", m[32] = "";
+		snprintf(p, sizeof p, "/sys/class/backlight/%s/brightness", strtok(names, " "));
+		l_gets(p, v, sizeof v);
+		snprintf(p + strlen(p) - 10, 20, "max_brightness");
+		l_gets(p, m, sizeof m);
+		printf("linuxdrv: backlight: %s of %s\n", v, m);
+	}
+	l_list("/sys/class/power_supply", names, sizeof names);
+	at = 0;
+	char *save = NULL;
+	for (char *n = strtok_r(names, " ", &save); n; n = strtok_r(NULL, " ", &save)) {
+		char p[128], cap[16] = "", st[32] = "";
+		snprintf(p, sizeof p, "/sys/class/power_supply/%s/capacity", n);
+		l_gets(p, cap, sizeof cap);
+		snprintf(p, sizeof p, "/sys/class/power_supply/%s/status", n);
+		l_gets(p, st, sizeof st);
+		at += snprintf(line + at, sizeof line - (size_t)at, "%s%s%s%s%s%s", at ? ", " : "", n, cap[0] ? " " : "",
+			       cap, cap[0] ? "%" : "", st[0] ? "" : "");
+		if (st[0])
+			at += snprintf(line + at, sizeof line - (size_t)at, " %s", st);
+	}
+	if (at)
+		printf("linuxdrv: power: %s\n", line);
+	l_list("/sys/class/net", names, sizeof names);
+	printf("linuxdrv: network: %s\n", names[0] ? names : "none");
+	l_list("/sys/class/sound", names, sizeof names);
+	printf("linuxdrv: sound: %s\n", names[0] ? names : "none");
+	l_list("/sys/bus/iio/devices", names, sizeof names);
+	if (names[0])
+		printf("linuxdrv: sensors: %s\n", names);
+	l_list("/sys/class/input", names, sizeof names);
+	printf("linuxdrv: input: %s\n", names);
+	l_cat("/sys/kernel/debug/devices_deferred", "linuxdrv: still waiting: ");
+}
+
+static void *bring_up(void *arg)
+{
+	(void)arg;
+	/* after the phone shell is up (it must not wait for this) */
+	for (int t = 0; t < 240; t++) {
+		FILE *f = fopen("/tmp/flare-ui.log", "r");
+		char l[256];
+		int up = 0;
+		while (f && fgets(l, sizeof l, f))
+			up |= strstr(l, "flarehome: ready") != NULL;
+		if (f)
+			fclose(f);
+		if (up)
+			break;
+		sleep(1);
+	}
+	l_sys(NR_MOUNT, (long)"proc", (long)"/proc", (long)"proc", 0, 0);
+	mount_partitions();
+	firmware();
+	FILE *st = fopen("/etc/linuxdrv/stages", "r");
+	char line[1024];
+	while (st && fgets(line, sizeof line, st)) {
+		char *save = NULL, *name = strtok_r(line, " \n", &save);
+		if (!name)
+			continue;
+		int n = 0;
+		for (char *c = strtok_r(NULL, " \n", &save); c; c = strtok_r(NULL, " \n", &save))
+			n += unhide(c);
+		printf("linuxdrv: [%.1f s] stage %s: %d devices given to Linux\n", since_boot(), name, n);
+		fflush(stdout);
+		static char bound[2048];
+		int total = 0;
+		for (int t = 0; t < 10; t++) {
+			int k = probe_unbound(bound, sizeof bound);
+			if (k)
+				printf("linuxdrv: stage %s: %s\n", name, bound);
+			total += k;
+			if (!k && t >= 2)
+				break;
+			usleep(500000);
+		}
+		start_remoteprocs();
+		fflush(stdout);
+	}
+	if (st)
+		fclose(st);
+	gpu_check();
+	summary();
+	printf("linuxdrv: [%.1f s] bring-up done\n", since_boot());
+	fflush(stdout);
+	return NULL;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2) {
@@ -1165,22 +1546,20 @@ int main(int argc, char **argv)
 		fprintf(stderr, "linuxdrv: /dev/flarehw: %s (the composition gives Linux no hardware)\n", strerror(errno));
 		return 1;
 	}
+	int ndevs = 0;
 	for (int i = 0; nwin < MAXWIN; i++) {
 		struct hw_info in = { .index = (uint32_t)i };
 		if (ioctl(hw, FLAREHW_INFO, &in))
 			break;
-		printf("linuxdrv: %s:", in.name);
 		for (uint32_t r = 0; r < in.nregs && nwin < MAXWIN; r++) {
 			win[nwin].base = in.regs[r][0];
 			win[nwin].size = in.regs[r][1];
 			memcpy(win[nwin].name, in.name, sizeof in.name);
 			nwin++;
-			printf(" %#llx+%#llx", (unsigned long long)in.regs[r][0], (unsigned long long)in.regs[r][1]);
 		}
-		for (uint32_t q = 0; q < in.nirqs; q++)
-			printf(" irq %u", in.irqs[q]);
-		printf("\n");
+		ndevs++;
 	}
+	printf("linuxdrv: %d devices from Flare (%d register windows)\n", ndevs, nwin);
 
 	/* the device tree, which the kernel keeps for good */
 	int fd = open(argv[1], O_RDONLY);
@@ -1194,6 +1573,8 @@ int main(int argc, char **argv)
 		return 1;
 	close(fd);
 	lkl_qrt_fdt = fdt;
+	dtb = fdt;
+	dtb_len = (size_t)st.st_size;
 
 	/* coherent DMA memory: non-cacheable, as the SoC's DMA does not snoop */
 	pool_size = 4 << 20;
@@ -1225,6 +1606,8 @@ int main(int argc, char **argv)
 	l_sys(NR_MOUNT, (long)"sysfs", (long)"/sys", (long)"sysfs", 0, 0);
 	l_sys(NR_MOUNT, (long)"debugfs", (long)"/sys/kernel/debug", (long)"debugfs", 0, 0);
 	report();
+	pthread_t up;
+	pthread_create(&up, NULL, bring_up, NULL);
 	/* keep the drivers running */
 	for (;;)
 		pause();

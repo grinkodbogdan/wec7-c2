@@ -45,10 +45,18 @@ control = true
 # userdata partition, read through Linux's eMMC driver at boot.
 rootfs = "userdata"
 display = "display"
-hardware = ["tlmm", "rpm", "gcc", "tcsr", "apcs", "spmi", "smem", "sdhc1", "sdhc2", "blsp1-dma", "blsp1-i2c3", "usb", "usb-phy"]
-# Linux's Qualcomm drivers make no firmware calls in this configuration
-# (QCOM_SCM is off); none are allowed.
-smc = []
+# All of the phone's hardware in Linux's device tree goes to Linux's own
+# drivers, as on a Linux phone: eMMC, touch, keys, USB, the PMICs (battery
+# gauge, backlight, vibrator, RTC), sensors, then - once the driver host has
+# their firmware ready - the GPU, Wi-Fi and audio. Except what Flare's
+# drivers hold (the panel: [component.display]) and what the board's
+# linux.txt drops (the CPUs' own hardware, what can reset the phone).
+devicetree = true
+# Qualcomm's secure-world calls (SCM, SMC Calling Convention "SiP" ids,
+# 32- and 64-bit): loading the GPU's zap shader, the Wi-Fi and DSP firmware
+# (PAS), the GPU IOMMU's secure page tables. Never PSCI (the CPUs' power):
+# that stays Flare's.
+smc = ["0x02000000..0x02ffffff", "0x42000000..0x42ffffff", "0x82000000..0x82ffffff", "0xc2000000..0xc2ffffff"]
 # Linux's touch screen and keys, handed back to Flare (/dev/input/event0, 1)
 # for the phone shell.
 inputs = ["touch", "keys"]

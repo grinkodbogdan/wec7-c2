@@ -156,11 +156,34 @@ fn main() {
             let mut archive = Vec::new();
             let mut count = 0;
             pack_dir(&rootfs, &rootfs, &mut archive, &mut count);
+            let raw_len = archive.len();
+            // zlib-compressed, with the header of kernel/src/ramdisk.rs
+            // (FLARERDZ): the image must fit below a phone's firmware
+            // memory (the Mi A1's LK: about 23 MiB), and the driver host
+            // alone is tens of MiB.
+            let body = miniz_oxide::deflate::compress_to_vec_zlib(&archive, 6);
+            let mut sum = 0u64;
+            for c in body.chunks(8) {
+                let mut w = [0u8; 8];
+                w[..c.len()].copy_from_slice(c);
+                sum = sum.wrapping_add(u64::from_le_bytes(w));
+            }
+            let mut z = b"FLARERDZ".to_vec();
+            z.extend_from_slice(&(body.len() as u64).to_le_bytes());
+            z.extend_from_slice(&sum.to_le_bytes());
+            z.extend_from_slice(&(raw_len as u64).to_le_bytes());
+            z.extend_from_slice(&body);
+            archive = z;
             std::fs::write(out.join("initramfs.bin"), &archive).unwrap();
             let _ = writeln!(g, "pub const LINUX_INIT: Option<&[&str]> = Some(&{:?});", l.init);
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &{:?};", l.env);
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = {};", l.control);
             let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &{:?};", l.hardware);
+            // [linux] devicetree: every device of Linux's tree, as listed by
+            // `dtb.py grants` (FLARE_LINUX_DT, written by `cargo xtask
+            // build`), less what components hold and Flare's own RAM.
+            let dt = if l.devicetree { linux_dt_grants(&comp, &platform, &enabled) } else { String::new() };
+            let _ = writeln!(g, "pub const LINUX_DT: &[(&str, &[(u64, u64)], &[u32], bool)] = &[{}];", dt);
             let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &{:?};", l.smc);
             // The full root filesystem in the boot image's ramdisk, at the
             // board's ramdisk address.
@@ -181,8 +204,9 @@ fn main() {
                 out.join("initramfs.bin").display().to_string()
             );
             println!(
-                "cargo:warning=initramfs: {} entries, {} KiB from {}",
+                "cargo:warning=initramfs: {} entries, {} KiB ({} KiB compressed) from {}",
                 count,
+                raw_len / 1024,
                 archive.len() / 1024,
                 rootfs.display()
             );
@@ -192,6 +216,7 @@ fn main() {
             let _ = writeln!(g, "pub const LINUX_ENV: &[&str] = &[];");
             let _ = writeln!(g, "pub const LINUX_CONTROL: bool = false;");
             let _ = writeln!(g, "pub const LINUX_HARDWARE: &[&str] = &[];");
+            let _ = writeln!(g, "pub const LINUX_DT: &[(&str, &[(u64, u64)], &[u32], bool)] = &[];");
             let _ = writeln!(g, "pub const LINUX_SMC: &[(u32, u32)] = &[];");
             let _ = writeln!(g, "pub const LINUX_INPUTS: &[usize] = &[];");
             let _ = writeln!(g, "pub const LINUX_SERIALS: &[usize] = &[];");
@@ -310,4 +335,91 @@ fn check_kernel_constraints(p: &Platform) {
     if !p.enabled_nodes().any(|n| n.class == "intc" && n.is_compatible("arm,gic-v2")) {
         fail("the kernel needs an arm,gic-v2 interrupt controller");
     }
+}
+
+/// `[linux] devicetree`: the windows and interrupts of every node of Linux's
+/// device tree, grouped per node, as Rust source for `boot::LINUX_DT`.
+/// Windows sharing a page with a component's registers, or lying in RAM
+/// Flare manages, and interrupts a component holds, are left out (and said).
+fn linux_dt_grants(
+    comp: &flare_cm::boot::Composition,
+    platform: &flare_fhd::Platform,
+    enabled: &[&flare_fhd::Node],
+) -> String {
+    use flare_cm::boot::GrantKind;
+    let path = std::env::var("FLARE_LINUX_DT")
+        .unwrap_or_else(|_| fail("[linux] devicetree needs FLARE_LINUX_DT (build with `cargo xtask build`)"));
+    println!("cargo:rerun-if-env-changed=FLARE_LINUX_DT");
+    println!("cargo:rerun-if-changed={}", path);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("{}: {}", path, e)));
+    let page = |b: u64, s: u64| (b & !0xfff, (b + s.max(1) + 0xfff) & !0xfff);
+    // What components hold.
+    let mut held_mmio = Vec::new();
+    let mut held_irq = Vec::new();
+    for c in &comp.components {
+        for gr in &c.grants {
+            match &gr.kind {
+                GrantKind::Mmio { device, reg } => {
+                    if let Some(r) = enabled.iter().find(|n| &n.name == device).and_then(|n| n.regs.get(*reg)) {
+                        held_mmio.push((page(r.base, r.size), c.instance.clone()));
+                    }
+                }
+                GrantKind::Irq { device, index } => {
+                    if let Some(i) = enabled.iter().find(|n| &n.name == device).and_then(|n| n.irqs.get(*index)) {
+                        held_irq.push(*i);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let flare_ram: Vec<(u64, u64)> =
+        platform.memory.iter().filter(|m| !m.reserved).map(|m| (m.base, m.base + m.size)).collect();
+    let mut nodes: Vec<(String, Vec<(u64, u64)>, Vec<u32>, bool)> = Vec::new();
+    let mut left_out = Vec::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        let hex = |t: &str| u64::from_str_radix(t.trim_start_matches("0x"), 16).unwrap_or_else(|_| fail(&format!("{}: {}", path, l)));
+        let (node, entry) = match f.as_slice() {
+            ["w", b, sz, kind, p] => (*p, Ok((hex(b), hex(sz), *kind == "mem"))),
+            ["i", n, p] => (*p, Err(n.parse::<u32>().unwrap_or_else(|_| fail(&format!("{}: {}", path, l))))),
+            _ => continue,
+        };
+        let name = node.rsplit('/').next().unwrap_or(node).to_string();
+        if nodes.last().map(|n| n.0 != name).unwrap_or(true) {
+            nodes.push((name.clone(), Vec::new(), Vec::new(), false));
+        }
+        let cur = nodes.last_mut().unwrap();
+        match entry {
+            Ok((b, sz, mem)) => {
+                let (p0, p1) = page(b, sz);
+                if let Some((_, who)) = held_mmio.iter().find(|((a0, a1), _)| p0 < *a1 && *a0 < p1) {
+                    left_out.push(format!("{} {:#x} ({})", node, b, who));
+                } else if flare_ram.iter().any(|(r0, r1)| b < *r1 && *r0 < b + sz) {
+                    left_out.push(format!("{} {:#x} (Flare's RAM)", node, b));
+                } else {
+                    cur.1.push((b, sz));
+                    cur.3 |= mem;
+                }
+            }
+            Err(i) => {
+                if held_irq.contains(&i) {
+                    left_out.push(format!("{} interrupt {} (a component's)", node, i));
+                } else if !cur.2.contains(&i) {
+                    cur.2.push(i);
+                }
+            }
+        }
+    }
+    if !left_out.is_empty() {
+        println!("cargo:warning=[linux] devicetree: left out: {}", left_out.join(", "));
+    }
+    let n = nodes.iter().filter(|n| !n.1.is_empty() || !n.2.is_empty()).count();
+    println!("cargo:warning=[linux] devicetree: {} devices of Linux's tree go to the driver host", n);
+    nodes
+        .iter()
+        .filter(|n| !n.1.is_empty() || !n.2.is_empty())
+        .map(|(name, w, i, mem)| format!("({:?}, &{:?}, &{:?}, {})", name, w, i, mem))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

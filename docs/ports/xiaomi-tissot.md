@@ -196,6 +196,42 @@ at boot. llvmpipe's cache key leaves out the number of CPUs
 CPUs; the rest of the key (Flare's CPU description, the Mesa build, the
 compile flags) is the same on both.
 
+### Linux's drivers for the rest of the phone
+
+Linux gets the phone's whole device tree (`[linux] devicetree = true`;
+[linux-drivers.md](../linux-drivers.md)) with QRT's driver set. At boot it
+probes eMMC, touch, keys, USB, the PMICs (RTC, fuel gauge, backlight,
+vibrator, power key), sensors and the DMA and I2C/SPI buses. About when the
+shell is ready, the driver host brings up what goes through the secure
+world, one stage at a time, and prints each step (Volume up + down shows
+the console):
+
+```
+linuxdrv: modem_a (mmcblk0pNN): vfat
+linuxdrv: vendor_a (mmcblk0pNN): ext4
+linuxdrv: firmware from /mnt/modem_a/image
+linuxdrv: firmware qcom/a530_pm4.fw (from /mnt/vendor_a/firmware/a530_pm4.fw)
+linuxdrv: [..] stage firmware: 2 devices given to Linux          (SCM)
+linuxdrv: [..] stage iommu@1c48000: ...                          (the GPU's IOMMU)
+linuxdrv: [..] stage gpu@1c00000: ...
+linuxdrv: [..] stage remoteproc@a204000: ...                     (Wi-Fi)
+linuxdrv: starting remoteproc0 (wcnss.mdt) through the secure world
+linuxdrv: [..] stage remoteproc@c200000: ...                     (audio DSP, sound card)
+linuxdrv: GPU: Adreno 506 (/dev/dri/card0), running
+linuxdrv: backlight: 2000 of 4095
+linuxdrv: power: battery 87% Discharging, ...
+linuxdrv: network: lo wlan0
+linuxdrv: sound: card0 ...
+linuxdrv: still waiting: ...
+linuxdrv: [..] bring-up done
+```
+
+If the phone resets during one stage, the last stage printed is the one to
+leave out: put its line in `linux.txt` as `drop` instead of `hide`. What
+Flare's programs can use of these is the next step: the GPU through
+[gpu.md](../gpu.md), and Wi-Fi, audio, battery and brightness bridged like
+the touch screen and fdb are.
+
 ### Troubleshooting
 
 * **The boot loader goes back to fastboot ("dtb not found").** LK did not

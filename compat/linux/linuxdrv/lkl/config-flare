@@ -12,3 +12,28 @@ CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_RTC_DRV_PM8XXX=y
 # QEMU's virtio console (the fdb channel there, /dev/hvc0)
 CONFIG_VIRTIO_CONSOLE=y
+# The phone's drivers QRT runs (lkl/config-qrt), checked here: the GPU and
+# its IOMMU, Wi-Fi, audio, the fuel gauge, backlight and vibrator, and the
+# file systems of the partitions their firmware is read from.
+CONFIG_DRM_MSM=y
+CONFIG_QCOM_IOMMU=y
+CONFIG_QCOM_SCM=y
+CONFIG_REMOTEPROC=y
+CONFIG_QCOM_WCNSS_PIL=y
+CONFIG_QCOM_WCNSS_CTRL=y
+CONFIG_WCN36XX=y
+CONFIG_QCOM_Q6V5_PAS=y
+CONFIG_QCOM_APR=y
+CONFIG_SND_SOC_QDSP6=y
+CONFIG_SND_SOC_MSM8916_WCD_ANALOG=y
+CONFIG_SND_SOC_MSM8916_WCD_DIGITAL=y
+CONFIG_BATTERY_QCOM_FG=y
+CONFIG_BACKLIGHT_QCOM_WLED=y
+CONFIG_INPUT_QCOM_SPMI_HAPTICS=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_FW_LOADER=y
+# QRT's virtual test devices off: a simulated Wi-Fi radio and a dummy sound
+# card would be reported as the phone's.
+CONFIG_MAC80211_HWSIM=n
+CONFIG_SND_DUMMY=n

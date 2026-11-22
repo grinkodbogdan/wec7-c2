@@ -348,7 +348,7 @@ fn build(o: &Opts) -> PathBuf {
             out.strip_prefix(root()).unwrap().display()
         );
     }
-    if comp.linux.as_ref().is_some_and(|l| !l.hardware.is_empty()) {
+    if comp.linux.as_ref().is_some_and(|l| !l.hardware.is_empty() || l.devicetree) {
         stage_linuxdrv(&comp, &rootfs);
     }
     let mut k = cargo();
@@ -357,6 +357,7 @@ fn build(o: &Opts) -> PathBuf {
         k.arg("--release");
     }
     k.env("FLARE_SYSTEM", root().join(&o.system)).env("FLARE_COMPONENTS_DIR", &out).env("FLARE_ROOTFS", &rootfs);
+    k.env("FLARE_LINUX_DT", root().join("target/linux-dt-grants.txt"));
     run(k);
     out.join("flare-kernel")
 }
@@ -711,6 +712,7 @@ fn linuxdrv_build() -> PathBuf {
         dir.join("lkl/flare.patch"),
         dir.join("lkl/config-arm64"),
         dir.join("lkl/config-flare"),
+        dir.join("lkl/config-qrt"),
     ]);
     let stamp = out.join(".stamp");
     if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) || !out.join("linuxdrv").exists() {
@@ -738,10 +740,14 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
         // The board's own (mainline) tree, with everything Linux was not
         // given disabled, and the board's notes for Linux (linux.txt).
         let (mut drop, mut cmdline, mut delprop, mut setprop) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        // hide: one stage per line, started by the driver host in order
+        let mut stages: Vec<Vec<String>> = Vec::new();
+        let devicetree = comp.linux.as_ref().is_some_and(|l| l.devicetree);
         if let Ok(text) = std::fs::read_to_string(board_dir.join("linux.txt")) {
             for l in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
                 match l.split_once(' ') {
                     Some(("drop", p)) => drop.push(p.trim().to_string()),
+                    Some(("hide", p)) => stages.push(p.split_whitespace().map(String::from).collect()),
                     Some(("cmdline", a)) => cmdline.push(a.trim().to_string()),
                     Some(("delprop", a)) => delprop.push(a.trim().to_string()),
                     // setprop <path> <name> <string value>
@@ -759,10 +765,18 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
         let mut c = Command::new("python3");
         c.arg("-I").arg(root().join("tools/bootimg/dtb.py")).arg("trim").arg(&own).arg(dir.join("board.dtb"));
         c.arg("--allow");
+        if devicetree {
+            // the whole tree is Linux's (less what is dropped)
+            c.arg("0x0+0x10000000000");
+        }
         for name in hw {
             for r in p.node(name).map(|n| n.regs.clone()).unwrap_or_default() {
                 c.arg(format!("{:#x}+{:#x}", r.base, r.size));
             }
+        }
+        let hide: Vec<&String> = stages.iter().flatten().collect();
+        if !hide.is_empty() {
+            c.arg("--hide").args(&hide);
         }
         if !drop.is_empty() {
             c.arg("--drop").args(&drop);
@@ -776,6 +790,28 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
         c.stdout(Stdio::null());
         run(c);
         std::fs::write(dir.join("cmdline"), cmdline.join(" ") + "\n").unwrap();
+        // The stages: per line, the compatible strings the driver host gives
+        // back to Linux ("flr-," to "qcom,") before probing them.
+        let mut st = String::new();
+        for (i, paths) in stages.iter().enumerate() {
+            let mut c = Command::new("python3");
+            c.arg("-I").arg(root().join("tools/bootimg/dtb.py")).arg("hidden").arg(&own).args(paths);
+            let out = c.output().unwrap_or_else(|e| die(&format!("dtb.py hidden: {}", e)));
+            st += &format!("{} {}\n", paths[0].rsplit('/').next().unwrap_or(&paths[0]), String::from_utf8_lossy(&out.stdout).trim());
+            let _ = i;
+        }
+        std::fs::write(dir.join("stages"), st).unwrap();
+        // [linux] devicetree: what Linux's tree uses, for the kernel's grant
+        // (FLARE_LINUX_DT, read by kernel/build.rs)
+        if devicetree {
+            let mut c = Command::new("python3");
+            c.arg("-I").arg(root().join("tools/bootimg/dtb.py")).arg("grants").arg(dir.join("board.dtb"));
+            let out = c.output().unwrap_or_else(|e| die(&format!("dtb.py grants: {}", e)));
+            if !out.status.success() {
+                die("dtb.py grants failed");
+            }
+            std::fs::write(root().join("target/linux-dt-grants.txt"), &out.stdout).unwrap();
+        }
     } else {
         let regs = |n: &flare_fhd::Node| {
             n.regs.iter().map(|r| format!("[{}, {}]", r.base, r.size)).collect::<Vec<_>>().join(", ")
@@ -1425,7 +1461,7 @@ fn linuxdrv_test(o: &Opts) -> bool {
     });
     let expected = [
         "s] Linux is up",
-        "linuxdrv: virtio31: 0xa003e00+0x200 irq 79",
+        "linuxdrv: 5 devices from Flare",
         "s] block devices: vda (and 1 partitions)",
         // The userdata disk starts with "FLAR".
         // (the disk's protective MBR, as a phone's eMMC)

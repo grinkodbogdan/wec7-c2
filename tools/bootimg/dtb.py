@@ -12,8 +12,21 @@
         composition's [linux] hardware, the node not dropped in linux.txt,
         and its driver in the driver host's kernel config.
 
+    dtb.py grants BOARD.dtb
+        What Linux uses in a (trimmed) tree, for the kernel to grant it
+        (`[linux] devicetree = true`): one line per register window,
+        "w BASE SIZE dev|mem PATH" ("mem" for reserved memory: RAM Linux
+        maps itself), and per GIC interrupt, "i INTID PATH". The interrupt
+        controller, the CPUs and RAM are left out; so are interrupts that
+        go to another controller (Linux's own: TLMM, SPMI...).
+
+    dtb.py hidden BOARD.dtb PATH...
+        The compatible strings `trim --hide PATH...` renames ("qcom,x" is
+        kept as "flr-,x" until the driver host restores it): one line.
+
     dtb.py trim IN.dtb OUT.dtb --allow BASE+SIZE... [--drop PATH...] [--delprop NAME...]
                [--setprop PATH:NAME=STRING...]
+               [--hide PATH...]
         Disable every device whose registers are not all inside an allowed
         window, and the nodes named by --drop (with what is under them). The
         interrupt controller is kept. --delprop removes a property from every
@@ -110,8 +123,32 @@ def regs(n):
             a = (a << 32) | x
         for x in c[i + ac:i + ac + sc]:
             s = (s << 32) | x
-        out.append((a, s))
+        out.append((translate(par, a), s))
     return out
+
+
+def translate(bus, a):
+    """A child address of `bus` as a CPU address, through each bus's
+    'ranges' (empty: the same addresses)."""
+    while bus is not None and bus["parent"] is not None:
+        r = bus["props"].get("ranges", b"")
+        if r:
+            ca = num(bus, "#address-cells", 2)
+            pa = num(bus["parent"], "#address-cells", 2)
+            sz = num(bus, "#size-cells", 1)
+            c, step = cells(r), ca + pa + sz
+            for i in range(0, len(c) - step + 1, step):
+                def val(xs):
+                    v = 0
+                    for x in xs:
+                        v = (v << 32) | x
+                    return v
+                cb, pb, ln = val(c[i:i + ca]), val(c[i + ca:i + ca + pa]), val(c[i + ca + pa:i + step])
+                if cb <= a < cb + ln:
+                    a = a - cb + pb
+                    break
+        bus = bus["parent"]
+    return a
 
 
 def status(n):
@@ -185,6 +222,73 @@ def fhd(path, which, name):
         print("# " + x)
 
 
+def gic_phandles(root):
+    return {num(x, "phandle", None) for x in walk(root)
+            if "interrupt-controller" in x["props"] and set(strs(x["props"].get("compatible", b""))) & GIC}
+
+
+def irq_parent(n):
+    while n is not None:
+        if "interrupt-parent" in n["props"]:
+            return cells(n["props"]["interrupt-parent"])[0]
+        n = n["parent"]
+    return None
+
+
+def gic_irqs(n, gics):
+    """INTIDs of a node's SPIs at the GIC (PPIs are the CPUs': Flare's)."""
+    pr, out = n["props"], []
+    if "interrupts" in pr and irq_parent(n) in gics:
+        c = cells(pr["interrupts"])
+        out += [c[i + 1] + 32 for i in range(0, len(c) - 2, 3) if c[i] == 0]
+    if "interrupts-extended" in pr:
+        c, i = cells(pr["interrupts-extended"]), 0
+        while i < len(c):
+            ph = c[i]
+            if ph in gics:
+                if c[i + 1] == 0:
+                    out.append(c[i + 2] + 32)
+                i += 4
+            else:
+                # another controller: its #interrupt-cells
+                ctl = next((x for x in walk(n_root(n)) if num(x, "phandle", None) == ph), None)
+                i += 1 + num(ctl, "#interrupt-cells", 2)
+    return out
+
+
+def n_root(n):
+    while n["parent"] is not None:
+        n = n["parent"]
+    return n
+
+
+def grants(path):
+    root = parse(open(path, "rb").read())
+    gics = gic_phandles(root)
+    for n in walk(root):
+        p = n["path"]
+        if not enabled(n) or p == "/" or p.startswith(("/cpus", "/memory", "/chosen", "/aliases")):
+            continue
+        pr = n["props"]
+        if set(strs(pr.get("compatible", b""))) & GIC or strs(pr.get("device_type", b"x")) == ["memory"]:
+            continue
+        kind = "mem" if p.startswith("/reserved-memory/") else "dev"
+        for a, sz in regs(n):
+            if sz:
+                print("w %#x %#x %s %s" % (a, sz, kind, p))
+        for i in gic_irqs(n, gics):
+            print("i %d %s" % (i, p))
+
+
+def hidden(path, paths):
+    root = parse(open(path, "rb").read())
+    out = []
+    for n in walk(root):
+        if any(n["path"] == h or n["path"].startswith(h.rstrip("/") + "/") for h in paths):
+            out += [c for c in strs(n["props"].get("compatible", b"")) if c.startswith("qcom,") and c not in out]
+    print(" ".join(out))
+
+
 def emit(f, n):
     f.begin("" if n["parent"] is None else n["name"])
     for k, v in n["props"].items():
@@ -194,11 +298,17 @@ def emit(f, n):
     f.end()
 
 
-def trim(src, dst, allow, drop, delprops=(), setprops=()):
+def trim(src, dst, allow, drop, delprops=(), setprops=(), hide=()):
     root = parse(open(src, "rb").read())
     off = []
     for n in walk(root):
         pr = n["props"]
+        # Hidden until the driver host gives it back (firmware first): its
+        # "qcom," compatibles become "flr-," in place - the same length, so
+        # the host can restore them in the tree Linux reads (`unhide`).
+        if any(n["path"] == h or n["path"].startswith(h.rstrip("/") + "/") for h in hide) and "compatible" in pr:
+            pr["compatible"] = b"\0".join(
+                (b"flr-," + c[5:]) if c.startswith(b"qcom,") else c for c in pr["compatible"].split(b"\0"))
         for p in delprops:
             pr.pop(p, None)
         for path, name, value in setprops:
@@ -236,12 +346,16 @@ def main():
     a = sys.argv[1:]
     if len(a) >= 2 and a[0] == "info":
         info(a[1], "--all" in a)
+    elif len(a) >= 3 and a[0] == "hidden":
+        hidden(a[1], a[2:])
+    elif len(a) == 2 and a[0] == "grants":
+        grants(a[1])
     elif len(a) == 4 and a[0] == "fhd":
         fhd(a[1], a[2], a[3])
     elif len(a) >= 3 and a[0] == "trim":
-        allow, drop, delprops, setprops, mode = [], [], [], [], None
+        allow, drop, delprops, setprops, hide, mode = [], [], [], [], [], None
         for x in a[3:]:
-            if x in ("--allow", "--drop", "--delprop", "--setprop"):
+            if x in ("--allow", "--drop", "--delprop", "--setprop", "--hide"):
                 mode = x
             elif mode == "--setprop":
                 path, _, rest = x.partition(":")
@@ -253,9 +367,11 @@ def main():
                 drop.append(x)
             elif mode == "--delprop":
                 delprops.append(x)
+            elif mode == "--hide":
+                hide.append(x)
             else:
                 sys.exit("dtb.py: unexpected '%s'" % x)
-        trim(a[1], a[2], allow, drop, delprops, setprops)
+        trim(a[1], a[2], allow, drop, delprops, setprops, hide)
     else:
         sys.exit(__doc__)
 

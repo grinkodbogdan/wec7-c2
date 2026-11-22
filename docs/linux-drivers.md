@@ -88,9 +88,52 @@ addresses given to devices are therefore right, with no IOMMU needed.
   (`cmdline`). `dtb.py info` lists a tree's devices, windows and
   interrupts, which is how the FHD entries for Linux's devices are written.
 
+## The whole device tree (`devicetree = true`)
+
+```toml
+[linux]
+devicetree = true                 # every device in the board's linux.dtb
+smc = ["0x02000000..0x02ffffff", "0x42000000..0x42ffffff"]  # Qualcomm SCM (SiP) calls
+```
+
+With `devicetree`, Linux gets its board's whole tree, as on a Linux phone.
+`dtb.py grants` lists every register window and GIC interrupt the
+remaining nodes use. The kernel grants them, minus what components hold
+(a page shared with a component's registers, a component's interrupt) and
+Flare's own RAM. The build says what it left out. Reserved memory
+(firmware images, SMEM) is granted as memory, not registers. The board's
+`linux.txt` decides the rest:
+
+* `drop PATH`: Linux never sees the node (the CPUs' own hardware, the
+  panel, what can reset the phone);
+* `hide PATH...`: one stage. Linux sees the nodes only once the driver host
+  has their firmware ready: their `qcom,` compatibles are `flr-,` in the
+  tree until then.
+
+After the phone shell is up, `linuxdrv`:
+1. mounts the phone's partitions read-only inside Linux (`/mnt/modem_a`,
+   `/mnt/vendor_a`, `/mnt/persist`);
+2. lays out the firmware: Linux's search path is the modem partition's
+   `image/` (the Wi-Fi and DSP firmware). The GPU's microcode and zap
+   shader, and Wi-Fi's calibration, are copied from vendor/persist to
+   `/lib/firmware`;
+3. runs each stage: it restores the compatibles in the tree Linux reads
+   (Linux's properties point into the host's buffer), then probes every
+   device that has no driver, then starts the remote processors waiting
+   (`/sys/class/remoteproc/*/state`);
+4. asks the GPU for its id and clock (`DRM_IOCTL_MSM_GET_PARAM`), and
+   prints what Linux drives: backlight, power supplies, network
+   interfaces, sound cards, sensors, input, and what still waits.
+
+The driver set is QRT's for the Mi A1 (`lkl/config-qrt`), with the options
+the phone needs checked in `lkl/config-flare`.
+
 ## Adding a driver
 
 Any driver in Linux's tree can run in the driver host. On a real board:
+
+With `devicetree = true` (the Mi A1), a driver in Linux's tree needs only
+steps 3 and 4. Otherwise:
 
 1. **The device**: `python3 tools/bootimg/dtb.py fhd hardware/boards/<board>/linux.dtb <node> <name>`
    prints its FHD entry from mainline's device tree (compatible, register

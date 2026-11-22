@@ -2,37 +2,74 @@
 #
 # linux.dtb is the Mi A1's mainline device tree: postmarketOS's
 # msm8953-mainline (Linux 6.12) msm8953-xiaomi-tissot.dts, compiled, as QRT
-# ships it (src/arch/arm64/dts/; its Makefile's dts-tissot target rebuilds it). At build
-# time every device whose registers the composition does not give Linux is
-# disabled in it, and so are the nodes below, which have no registers.
+# ships it (src/arch/arm64/dts/; its Makefile's dts-tissot target rebuilds it).
+# The composition gives Linux the whole tree ([linux] devicetree = true):
+# every device below that is not dropped is Linux's, with its registers and
+# interrupts, as on a Linux phone - except what Flare's own drivers hold,
+# which the build leaves out. QRT's notes on this phone (README 0.21-0.28)
+# say which devices must not run: they are dropped here.
+#
+#   drop PATH      Linux never sees it (with everything under it)
+#   hide PATH      Linux sees it only once the driver host has its firmware
+#                  ready: one stage per line, in order (`linuxdrv`)
+#   delprop/setprop/cmdline  as below
 
-# Linux talks to the modem, ADSP and Wi-Fi firmware only through these; Flare
-# does not start that firmware.
-drop /smp2p-adsp
-drop /smp2p-modem
-drop /smp2p-wcnss
-drop /smsm
-drop /memshare
-# The secure world's call interface (SCM): Flare allows Linux no firmware
-# calls, and on this phone a call the secure world does not like resets it
-# (QRT 0.21.10, 0.21.14).
-drop /firmware
-# The CPUs' timer, PMU and power states are Flare's.
+# ---- Flare's own ----
+# The CPUs: their timers, PMU, power states, clock (APCS PLL), voltage (CPR)
+# and thermal limits.
 drop /timer
 drop /pmu
 drop /psci
 drop /thermal-zones
-# Sensors on bit-banged I2C and the speaker amplifier: not given yet.
-drop /i2c-sensors
-drop /analog-amplifier
-# The panel's backlight (WLED) and bias rails (LAB/IBB) stay as the boot
-# loader set them: the panel is Flare's.
-drop /soc@0/spmi@200f000/pmic@3/leds@d800
+drop /soc@0/timer@b120000
+drop /soc@0/clock-controller@b011050
+drop /soc@0/power-controller@b018000
+# The panel: Flare's display driver (drivers/qcom/mdp5-display) scans out of
+# it; its IOMMU (the display's and video's) must keep passing the panel's
+# reads through; the debug UART is Flare's console pads.
+drop /soc@0/display-subsystem@1a00000
+drop /soc@0/iommu@1e20000
+drop /soc@0/serial@78af000
+# The bus fabric (NoCs): the RPM keeps the boot loader's bus clocks.
+drop /soc@0/interconnect@400000
+drop /soc@0/interconnect@500000
+drop /soc@0/interconnect@580000
+
+# ---- What can reset or power off the phone by itself (QRT 0.21.14) ----
+# PS_HOLD (Linux restarts the phone through it), the thermal sensors and the
+# PMIC's temperature alarm (a misread "critical" powers it off), the charger
+# and the display's bias rails (LAB/IBB) reprogram the power hardware.
+drop /soc@0/restart@4ab000
+drop /soc@0/thermal-sensor@4a9000
+drop /soc@0/spmi@200f000/pmic@0/temp-alarm@2400
+drop /soc@0/spmi@200f000/pmic@2/smbchager@1000
 drop /soc@0/spmi@200f000/pmic@3/labibb
 
-# Bus bandwidth (interconnect) paths: the NoCs are not Linux's, and the RPM
-# keeps the boot loader's bus clocks (QRT's clk-smd-rpm patch). Without the
-# references the SDHC does not wait for providers that never appear.
+# ---- Not yet: the modem, the camera, video and the IP accelerator ----
+drop /soc@0/remoteproc@4080000
+drop /smp2p-modem
+drop /smsm/modem@1
+drop /memshare
+drop /soc@0/camss@1b00020
+drop /soc@0/cci@1b0c000
+drop /soc@0/venus@1d00000
+drop /soc@0/ipa@7900000
+
+# ---- Through the secure world, once their firmware is ready ----
+# Each line is a stage `linuxdrv` starts after it has mounted the phone's
+# partitions and laid out the firmware: the secure world's call interface
+# (SCM), then the GPU's IOMMU and the GPU (Adreno 506; CP microcode and zap
+# shader from the vendor partition), Wi-Fi (the Pronto core; its firmware
+# from the modem partition), the audio DSP with the sound card.
+hide /firmware
+hide /soc@0/iommu@1c48000
+hide /soc@0/gpu@1c00000
+hide /soc@0/remoteproc@a204000
+hide /soc@0/remoteproc@c200000 /soc@0/sound-card@c051000 /soc@0/codec@c0f0000
+
+# Bus bandwidth (interconnect) paths: the NoCs are not Linux's (above).
+# Without the references the SDHC does not wait for providers that never
+# appear.
 delprop interconnects
 delprop interconnect-names
 # ... and the bandwidths in operating-point tables, which Linux's OPP code
