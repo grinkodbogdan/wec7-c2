@@ -175,6 +175,15 @@ impl Tty {
         }
     }
 
+    /// New settings (TCSETS). Leaving canonical mode hands the line being
+    /// edited to readers, as Linux does.
+    pub fn set_termios(&mut self, t: Termios) {
+        self.termios = t;
+        if t.lflag & ICANON == 0 && !self.edit.is_empty() {
+            self.ready.extend(self.edit.drain(..));
+        }
+    }
+
     pub fn readable(&self) -> bool {
         !self.ready.is_empty() || self.eof
     }

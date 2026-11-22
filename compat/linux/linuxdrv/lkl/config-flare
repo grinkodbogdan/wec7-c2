@@ -37,3 +37,13 @@ CONFIG_FW_LOADER=y
 # card would be reported as the phone's.
 CONFIG_MAC80211_HWSIM=n
 CONFIG_SND_DUMMY=n
+# Boot time: Linux starts on one CPU; QRT's config also builds what a phone
+# does not use, some with work at boot (btrfs's RAID6 benchmark).
+CONFIG_BTRFS_FS=n
+CONFIG_MD=n
+CONFIG_RAID6_PQ_BENCHMARK=n
+CONFIG_XFS_FS=n
+CONFIG_NFS_FS=n
+CONFIG_9P_FS=n
+CONFIG_CRYPTO_DEV_CCREE=n
+CONFIG_CRYPTO_DEV_AMLOGIC_GXL=n

@@ -1170,8 +1170,8 @@ impl Kernel {
                 let b = self.uread(c, arg, super::tty::TERMIOS_SIZE)?;
                 let t = super::tty::Termios::from_bytes(&b);
                 match &pty {
-                    Some(p) => p.borrow_mut().tty.termios = t,
-                    None => self.lx().tty.termios = t,
+                    Some(p) => p.borrow_mut().tty.set_termios(t),
+                    None => self.lx().tty.set_termios(t),
                 }
                 Ok(0)
             }

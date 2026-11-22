@@ -55,17 +55,27 @@ drop /soc@0/cci@1b0c000
 drop /soc@0/venus@1d00000
 drop /soc@0/ipa@7900000
 
-# ---- Through the secure world, once their firmware is ready ----
-# Each line is a stage `linuxdrv` starts after it has mounted the phone's
-# partitions and laid out the firmware: the secure world's call interface
-# (SCM), then the GPU's IOMMU and the GPU (Adreno 506; CP microcode and zap
-# shader from the vendor partition), Wi-Fi (the Pronto core; its firmware
-# from the modem partition), the audio DSP with the sound card.
+# ---- After the shell is up, one stage at a time ----
+# At boot Linux gets what the phone needs to start: eMMC, touch, keys, USB,
+# the RPM and clocks, the PMICs' RTC, power key and GPIOs. Everything else
+# comes in stages (`linuxdrv`, once the shell is up), each announced on the
+# console before it starts, so a device that hangs or resets the phone
+# names itself: the stage printed last.
+# 1. the PMICs' battery gauge, ADCs, backlight, vibrator and charge LED
+hide /soc@0/spmi@200f000/pmic@2/fuel-gauge@4000 /soc@0/spmi@200f000/pmic@2/adc@3100 /soc@0/spmi@200f000/pmic@0/adc@3100 /soc@0/spmi@200f000/pmic@3/leds@d800 /soc@0/spmi@200f000/pmic@3/haptics@c000 /soc@0/spmi@200f000/pmic@2/leds@1243
+# 2. the other buses and what is on them: sensors (bit-banged I2C), the
+#    second I2C and SPI controllers and their DMA, the RNG, the fuses
+hide /i2c-sensors /soc@0/i2c@78b6000 /soc@0/spi@7af6000 /soc@0/dma-controller@7ac4000 /soc@0/rng@e3000 /soc@0/efuse@a4000
+# 3-7. through the secure world, once the driver host has their firmware:
+# its call interface (SCM), the GPU's IOMMU, the GPU (Adreno 506; CP
+# microcode and zap shader from the vendor partition), Wi-Fi (the Pronto
+# core; its firmware from the modem partition), the audio DSP with the
+# sound card, codecs and speaker amplifier.
 hide /firmware
 hide /soc@0/iommu@1c48000
 hide /soc@0/gpu@1c00000
-hide /soc@0/remoteproc@a204000
-hide /soc@0/remoteproc@c200000 /soc@0/sound-card@c051000 /soc@0/codec@c0f0000
+hide /soc@0/remoteproc@a204000 /smp2p-wcnss /smsm/wcnss@6
+hide /soc@0/remoteproc@c200000 /smp2p-adsp /soc@0/sound-card@c051000 /soc@0/codec@c0f0000 /soc@0/spmi@200f000/pmic@1/codec@f000 /analog-amplifier
 
 # Bus bandwidth (interconnect) paths: the NoCs are not Linux's (above).
 # Without the references the SDHC does not wait for providers that never
@@ -90,6 +100,7 @@ cmdline clk_ignore_unused pd_ignore_unused regulator_ignore_unused
 # Probe order by the tree's references, but never wait forever for a
 # supplier Linux does not have (as QRT boots it).
 cmdline fw_devlink=permissive
-# Only critical messages on the screen: the driver host's report says what
-# is missing (devices_deferred), and drawing every line slows the boot.
-cmdline loglevel=3
+# Every message to the driver host, which keeps them (and shows their tail
+# if Linux has not brought its devices up after 30 s) but prints only the
+# ones that look like trouble.
+cmdline loglevel=7

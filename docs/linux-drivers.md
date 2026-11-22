@@ -107,7 +107,8 @@ Flare's own RAM. The build says what it left out. Reserved memory
 * `drop PATH`: Linux never sees the node (the CPUs' own hardware, the
   panel, what can reset the phone);
 * `hide PATH...`: one stage. Linux sees the nodes only once the driver host
-  has their firmware ready: their `qcom,` compatibles are `flr-,` in the
+  has their firmware ready: their compatibles start with a capital
+  (`Qcom,adreno`) in the
   tree until then.
 
 After the phone shell is up, `linuxdrv`:

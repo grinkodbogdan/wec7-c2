@@ -9,7 +9,7 @@ cat /etc/motd
 start_linuxdrv() {
     if [ -e /dev/flarehw ] && [ -x /usr/bin/linuxdrv ] && [ -z "$linuxdrv_started" ]; then
         linuxdrv_started=1
-        (linuxdrv /etc/linuxdrv/board.dtb loglevel=4 $(cat /etc/linuxdrv/cmdline 2>/dev/null) \
+        (linuxdrv /etc/linuxdrv/board.dtb loglevel=7 $(cat /etc/linuxdrv/cmdline 2>/dev/null) \
             > /dev/console 2>&1 &)
     fi
 }

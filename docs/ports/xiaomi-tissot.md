@@ -200,11 +200,24 @@ compile flags) is the same on both.
 
 Linux gets the phone's whole device tree (`[linux] devicetree = true`;
 [linux-drivers.md](../linux-drivers.md)) with QRT's driver set. At boot it
-probes eMMC, touch, keys, USB, the PMICs (RTC, fuel gauge, backlight,
-vibrator, power key), sensors and the DMA and I2C/SPI buses. About when the
-shell is ready, the driver host brings up what goes through the secure
-world, one stage at a time, and prints each step (Volume up + down shows
-the console):
+probes only what the phone needs to start: eMMC, touch, keys, USB, the RPM
+and clocks, the PMICs' RTC, power key and GPIOs. With everything probing at
+boot, one device stalled Linux before it had read the userdata partition.
+Once the shell is up, the driver host brings up the rest one stage at a
+time (`hide` lines in `linux.txt`), and prints each stage before it starts
+(Volume up + down shows the console):
+1. the battery gauge, ADCs, backlight, vibrator and charge LED;
+2. the sensors, the second I2C and SPI buses, the RNG and the fuses;
+3. the secure world's call interface (SCM);
+4. the GPU's IOMMU;
+5. the GPU;
+6. Wi-Fi;
+7. the audio DSP with the sound card.
+
+If Linux has not brought its boot devices up 30 s after it started, the
+driver host prints Linux's last messages. It keeps them outside Linux, so a
+stuck driver cannot hide them. Otherwise only messages that look like
+trouble reach the console. The usual output:
 
 ```
 linuxdrv: modem_a (mmcblk0pNN): vfat

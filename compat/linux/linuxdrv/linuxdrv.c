@@ -183,7 +183,79 @@ static void h_smc(unsigned long *r)
 }
 
 /* ---- the rest of LKL's host: pthreads, timers, memory ---- */
-static void h_print(const char *s, int len) { (void)!write(2, s, (size_t)len); }
+/* Linux's console. Everything goes into a ring kept outside Linux (a
+ * driver that hangs Linux cannot keep it from being shown: the watchdog
+ * below prints its tail); only lines that look like trouble go to Flare's
+ * console as they come. */
+#define KRING 16384
+static char kring[KRING];
+static unsigned kring_at;
+static char kline[512];
+static unsigned kline_len;
+static pthread_mutex_t kring_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int trouble(const char *l)
+{
+	static const char *const w[] = { "rror", "fail", "Fail", "nable to", "timeout", "timed out", "WARNING", "BUG",
+					 "Oops", "panic", "-110", "-22", NULL };
+	for (int i = 0; w[i]; i++)
+		if (strstr(l, w[i]))
+			return 1;
+	return 0;
+}
+
+static void h_print(const char *s, int len)
+{
+	pthread_mutex_lock(&kring_lock);
+	for (int i = 0; i < len; i++) {
+		kring[kring_at++ % KRING] = s[i];
+		if (s[i] == '\n' || kline_len == sizeof kline - 1) {
+			kline[kline_len] = 0;
+			if (trouble(kline))
+				fprintf(stderr, "linux: %s\n", kline);
+			kline_len = 0;
+		} else {
+			kline[kline_len++] = s[i];
+		}
+	}
+	pthread_mutex_unlock(&kring_lock);
+}
+
+/* the last `lines` lines Linux printed */
+static void kring_tail(int lines)
+{
+	pthread_mutex_lock(&kring_lock);
+	unsigned end = kring_at, start = end > KRING ? end - KRING : 0, at = end;
+	int n = 0;
+	while (at > start && n <= lines)
+		if (kring[--at % KRING] == '\n')
+			n++;
+	static char out[KRING + 1];
+	unsigned k = 0;
+	for (unsigned i = at; i < end; i++)
+		out[k++] = kring[i % KRING];
+	out[k] = 0;
+	pthread_mutex_unlock(&kring_lock);
+	fprintf(stderr, "%s\n", out);
+}
+
+static volatile int devices_ready;
+
+/* Linux not done probing after 30 s (then 60 s): what it said last */
+static void *watchdog(void *arg)
+{
+	(void)arg;
+	for (int round = 1; round <= 2; round++) {
+		for (int t = 0; t < 300 && !devices_ready; t++)
+			usleep(100000);
+		if (devices_ready)
+			return NULL;
+		fprintf(stderr, "linuxdrv: [%.1f s] Linux has not finished bringing up its devices; its last messages:\n",
+			since_boot());
+		kring_tail(18);
+	}
+	return NULL;
+}
 /* liblkl's helpers, which the kernel library calls (normally from liblkl). */
 int lkl_printf(const char *fmt, ...)
 {
@@ -800,6 +872,7 @@ static void bridge_inputs(char *devs[], int n)
 	free(kd);
 	/* /etc/rc waits for this before starting a user interface. */
 	printf("linuxdrv: [%.2f s] inputs ready\n", since_boot());
+	devices_ready = 1;
 	FILE *f = fopen("/tmp/linuxdrv.ready", "w");
 	if (f)
 		fclose(f);
@@ -1171,7 +1244,7 @@ static void report(void)
 /* ---- The rest of the phone: what goes through the secure world ----
  * The board's linux.txt hides the devices whose firmware the secure world
  * loads (the GPU, its IOMMU, Wi-Fi, the audio DSP): their "qcom,"
- * compatibles are "flr-," in the tree, so no driver takes them at boot (as
+ * compatibles start with a capital ("Qcom,adreno"), so no driver takes them (as
  * QRT does on this phone). Once the phone shell is up, the driver host
  * mounts the phone's partitions, lays out their firmware for Linux, and
  * gives each stage of /etc/linuxdrv/stages back in turn: the compatibles
@@ -1344,16 +1417,16 @@ static void firmware(void)
 	copy_first(nvp, nvf, "/lib/firmware/wlan/prima/WCNSS_qcom_wlan_nv.bin");
 }
 
-/* "flr-,x" back to "qcom,x" in the tree Linux reads */
+/* "Qcom,x" back to "qcom,x" in the tree Linux reads (dtb.py trim --hide) */
 static int unhide(const char *compat)
 {
 	size_t n = strlen(compat);
 	int hits = 0;
-	if (n < 6 || strncmp(compat, "qcom,", 5))
+	if (n < 2 || compat[0] < 'a' || compat[0] > 'z')
 		return 0;
-	for (size_t i = 0; dtb && i + n < dtb_len; i++)
-		if (!memcmp(dtb + i, "flr-,", 5) && !memcmp(dtb + i + 5, compat + 5, n - 5) && dtb[i + n] == 0) {
-			memcpy(dtb + i, "qcom,", 5);
+	for (size_t i = 1; dtb && i + n < dtb_len; i++)
+		if (dtb[i] == compat[0] - 32 && !memcmp(dtb + i + 1, compat + 1, n - 1) && dtb[i + n] == 0) {
+			dtb[i] = compat[0];
 			hits++;
 		}
 	__sync_synchronize();
@@ -1948,8 +2021,9 @@ int main(int argc, char **argv)
 		strncat(cmd, " ", sizeof cmd - strlen(cmd) - 1);
 		strncat(cmd, argv[i], sizeof cmd - strlen(cmd) - 1);
 	}
-	pthread_t irq;
+	pthread_t irq, wd;
 	pthread_create(&irq, NULL, irq_thread, NULL);
+	pthread_create(&wd, NULL, watchdog, NULL);
 	if (lkl_init(&ops) < 0 || lkl_start_kernel("%s", cmd) < 0) {
 		fprintf(stderr, "linuxdrv: Linux did not start\n");
 		return 1;
