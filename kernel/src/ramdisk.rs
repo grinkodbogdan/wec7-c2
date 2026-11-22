@@ -15,8 +15,12 @@
 //! | bytes | `FLARERD1` (plain) | `FLARERDZ` (zlib) |
 //! | --- | --- | --- |
 //! | 8..16 | payload length | compressed length |
-//! | 16..24 | checksum: the wrapping sum of the payload's little-endian u64 words (zero-padded) | (the same, of the compressed bytes) |
+//! | 16..24 | checksum: the wrapping sum of the payload's little-endian u64 words (zero-padded); 0 when the maker verified it | (the same, of the compressed bytes) |
 //! | 24..32 | 0 | uncompressed length |
+//!
+//! (`FLARERDC`, the userdata image, is zlib in 4 MiB pieces: the driver
+//! host inflates it on every CPU and hands the kernel a plain `FLARERD1`
+//! with checksum 0, which the kernel takes in place.)
 //!
 //! then the payload: an initramfs archive in the kernel's own format
 //! (kernel/build.rs `pack_dir`), plain or zlib-compressed. The archive's
@@ -60,12 +64,14 @@ pub fn check(va: *const u8, avail: u64) -> Result<Archive, &'static str> {
     // SAFETY: inside the `avail` bytes.
     let body = unsafe { core::slice::from_raw_parts(va.add(HEADER as usize), len as usize) };
     let mut sum = 0u64;
-    for c in body.chunks(8) {
+    for c in body.chunks(8).take(if want == 0 { 0 } else { usize::MAX }) {
         let mut w = [0u8; 8];
         w[..c.len()].copy_from_slice(c);
         sum = sum.wrapping_add(u64::from_le_bytes(w));
     }
-    if sum != want {
+    // (0: verified by whoever made the archive: the driver host inflated
+    // it from pieces whose zlib streams carry their own checksums)
+    if sum != want && want != 0 {
         return Err("checksum mismatch (damaged or stale)");
     }
     Ok(Archive { len, zlib: zlib.then_some(ulen) })

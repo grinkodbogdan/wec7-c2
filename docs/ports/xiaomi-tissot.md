@@ -214,6 +214,12 @@ time (`hide` lines in `linux.txt`), and prints each stage before it starts
 6. Wi-Fi;
 7. the audio DSP with the sound card.
 
+Once its boot devices are up, the driver host prints Linux's five slowest
+start-up steps (`linuxdrv: Linux's slowest start-up steps: ...`), from
+`initcall_debug`: what to cut next. The userdata image is in 4 MiB zlib
+pieces, inflated on all eight cores by the driver host (`... inflated on 8
+threads in N ms`), and the kernel takes the result without copying it.
+
 If Linux has not brought its boot devices up 30 s after it started, the
 driver host prints Linux's last messages. It keeps them outside Linux, so a
 stuck driver cannot hide them. Otherwise only messages that look like

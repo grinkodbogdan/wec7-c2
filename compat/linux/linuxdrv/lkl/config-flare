@@ -47,3 +47,6 @@ CONFIG_NFS_FS=n
 CONFIG_9P_FS=n
 CONFIG_CRYPTO_DEV_CCREE=n
 CONFIG_CRYPTO_DEV_AMLOGIC_GXL=n
+# (measured: Linux's slowest start-up steps, linuxdrv's report)
+CONFIG_LEGACY_PTYS=n
+CONFIG_BLK_DEV_NBD=n

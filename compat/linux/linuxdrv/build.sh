@@ -68,8 +68,12 @@ make -C tools/lkl CROSS_COMPILE=$X -j"$(nproc)" "$src/tools/lkl/lib/lkl.o" >"$ou
     || { tail -30 "$out/lkl-build.log"; exit 1; }
 ${X}objcopy --strip-debug tools/lkl/lib/lkl.o "$out/lkl.o"
 gcclib=$(dirname "$(ls "$sys"/usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a | head -1)")
+# zlib, static (the root filesystem's pieces): Alpine's, pinned in
+# alpine.lock next to this script
+z="$out/zsys"
+[ -f "$z/usr/lib/libz.a" ] || python3 -I "$here/../../arcan/alpine.py" "$out/zcache" "$z" "$here/alpine.lock" zlib-static zlib-dev
 clang --target=aarch64-alpine-linux-musl --sysroot="$sys" --gcc-toolchain="$sys/usr" -fuse-ld=lld -static -O2 \
-    -Wall -Wno-unused-function -I tools/lkl/include -o "$out/linuxdrv" "$here/linuxdrv.c" "$out/lkl.o" \
-    -lpthread -L"$gcclib" -lgcc
+    -Wall -Wno-unused-function -I tools/lkl/include -I"$z/usr/include" -o "$out/linuxdrv" "$here/linuxdrv.c" "$out/lkl.o" \
+    "$z/usr/lib/libz.a" -lpthread -L"$gcclib" -lgcc
 llvm-strip "$out/linuxdrv"
 echo "linuxdrv/build.sh: $out/linuxdrv ($(du -h "$out/linuxdrv" | cut -f1))"

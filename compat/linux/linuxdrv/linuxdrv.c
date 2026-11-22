@@ -48,6 +48,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <zlib.h>
 #include <lkl/asm/host_ops.h>
 
 /* ---- lkl.o ---- */
@@ -187,7 +188,7 @@ static void h_smc(unsigned long *r)
  * driver that hangs Linux cannot keep it from being shown: the watchdog
  * below prints its tail); only lines that look like trouble go to Flare's
  * console as they come. */
-#define KRING 16384
+#define KRING (512 << 10)
 static char kring[KRING];
 static unsigned kring_at;
 static char kline[512];
@@ -237,6 +238,58 @@ static void kring_tail(int lines)
 	out[k] = 0;
 	pthread_mutex_unlock(&kring_lock);
 	fprintf(stderr, "%s\n", out);
+}
+
+static long l_sys(long nr, long a, long b, long c, long d, long e);
+
+/* Linux's slowest start-up steps (initcall_debug: "initcall F+0x.. returned
+ * 0 after N usecs"), from the ring */
+static void slowest_initcalls(void)
+{
+	struct { long us; char name[64]; } top[8] = { 0 };
+	/* Linux's own log (syslog: read all) */
+	static char klog[1 << 20];
+	long kn = l_sys(116, 3, (long)klog, sizeof klog, 0, 0);
+	if (kn <= 0)
+		return;
+	static char line[256];
+	unsigned k = 0;
+	for (long i = 0; i <= kn; i++) {
+		char ch = i < kn ? klog[i] : '\n';
+		if (ch != '\n' && k < sizeof line - 1) {
+			line[k++] = ch;
+			continue;
+		}
+		line[k] = 0;
+		k = 0;
+		char *a = strstr(line, "initcall "), *b = strstr(line, " after "), *u = strstr(line, " usecs");
+		if (!a || !b || !u || !strstr(line, "returned"))
+			continue;
+		long us = atol(b + 7);
+		int m = 0;
+		for (int j = 1; j < 8; j++)
+			if (top[j].us < top[m].us)
+				m = j;
+		if (us <= top[m].us)
+			continue;
+		top[m].us = us;
+		char *nm = a + 9, *e = strpbrk(nm, "+ ");
+		int len = e ? (int)(e - nm) : 40;
+		snprintf(top[m].name, sizeof top[m].name, "%.*s", len > 60 ? 60 : len, nm);
+	}
+	for (int i = 0; i < 8; i++)
+		for (int j = i + 1; j < 8; j++)
+			if (top[j].us > top[i].us) {
+				__typeof__(top[0]) t = top[i];
+				top[i] = top[j];
+				top[j] = t;
+			}
+	if (!top[0].us)
+		return;
+	printf("linuxdrv: Linux's slowest start-up steps:");
+	for (int i = 0; i < 5 && top[i].us; i++)
+		printf("%s %s %ld ms", i ? "," : "", top[i].name, top[i].us / 1000);
+	printf("\n");
 }
 
 static volatile int devices_ready;
@@ -873,6 +926,7 @@ static void bridge_inputs(char *devs[], int n)
 	/* /etc/rc waits for this before starting a user interface. */
 	printf("linuxdrv: [%.2f s] inputs ready\n", since_boot());
 	devices_ready = 1;
+	slowest_initcalls();
 	FILE *f = fopen("/tmp/linuxdrv.ready", "w");
 	if (f)
 		fclose(f);
@@ -915,7 +969,7 @@ static int has_rootfs_header(const char *dev, uint64_t *total)
 		return 0;
 	long r = l_read((int)fd, h, sizeof h);
 	l_close((int)fd);
-	if (r != 32 || memcmp(h, "FLARERD", 7) || (h[7] != '1' && h[7] != 'Z'))
+	if (r != 32 || memcmp(h, "FLARERD", 7) || (h[7] != '1' && h[7] != 'Z' && h[7] != 'C'))
 		return 0;
 	uint64_t len;
 	memcpy(&len, h + 8, 8);
@@ -946,6 +1000,92 @@ static void find_rootfs(char *found, size_t cap, uint64_t *total, int *part)
 		if (is_disk(n) && has_rootfs_header(n, total))
 			snprintf(found, cap, "%s", n);
 	free(list);
+}
+
+#define FLAREHW_DMA_FREE 0x4607
+
+/* FLARERDC: zlib pieces (xtask's pack_ramdisk), inflated by one thread per
+ * CPU into a fresh DMA block as a plain FLARERD1 archive */
+struct piece { uint64_t off, len, out, olen; };
+static struct {
+	const unsigned char *body;
+	unsigned char *out;
+	const struct piece *p;
+	uint32_t n;
+	int next, bad;
+	uint64_t sum;
+	pthread_mutex_t lock;
+} inf = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+static void *inflate_worker(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		pthread_mutex_lock(&inf.lock);
+		int i = inf.next++;
+		pthread_mutex_unlock(&inf.lock);
+		if (i >= (int)inf.n)
+			return NULL;
+		const struct piece *p = &inf.p[i];
+		uLongf olen = p->olen;
+		int ok = uncompress(inf.out + 32 + p->out, &olen, inf.body + p->off, p->len) == Z_OK && olen == p->olen;
+		uint64_t sum = 0;
+		pthread_mutex_lock(&inf.lock);
+		inf.bad |= !ok;
+		inf.sum += sum;
+		pthread_mutex_unlock(&inf.lock);
+	}
+}
+
+static unsigned char *inflate_rootfs(const unsigned char *img, uint64_t total, uint64_t *phys, uint64_t *size)
+{
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	uint64_t ulen;
+	memcpy(&ulen, img + 24, 8);
+	const unsigned char *body = img + 32;
+	uint32_t n;
+	memcpy(&n, body, 4);
+	if (32 + 8 + (uint64_t)n * 32 > total) {
+		printf("linuxdrv: the root filesystem's piece table is damaged\n");
+		return NULL;
+	}
+	*size = (32 + ulen + 0xfff) & ~0xfffull;
+	if (dma_alloc(*size, phys)) {
+		printf("linuxdrv: no %llu MiB of DMA memory to inflate the root filesystem\n", (unsigned long long)(*size >> 20));
+		return NULL;
+	}
+	unsigned char *out = mmap(NULL, *size, PROT_READ | PROT_WRITE, MAP_SHARED, hw, (off_t)*phys);
+	if (out == MAP_FAILED)
+		return NULL;
+	inf.body = body;
+	inf.out = out;
+	inf.p = (const struct piece *)(body + 8);
+	inf.n = n;
+	inf.next = 0;
+	inf.bad = 0;
+	inf.sum = 0;
+	pthread_t t[8];
+	int nt = 8;
+	for (int i = 0; i < nt; i++)
+		pthread_create(&t[i], NULL, inflate_worker, NULL);
+	for (int i = 0; i < nt; i++)
+		pthread_join(t[i], NULL);
+	if (inf.bad) {
+		printf("linuxdrv: the root filesystem does not inflate (damaged or stale userdata.img)\n");
+		munmap(out, *size);
+		return NULL;
+	}
+	memcpy(out, "FLARERD1", 8);
+	memcpy(out + 8, &ulen, 8);
+	/* 0: verified here (each piece's zlib stream has its checksum) */
+	memset(out + 16, 0, 8);
+	memset(out + 24, 0, 8);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	printf("linuxdrv: [%.2f s] %llu MiB root filesystem inflated on %d threads in %ld ms\n", since_boot(),
+	       (unsigned long long)(ulen >> 20), nt,
+	       (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+	return out;
 }
 
 static void load_rootfs(void)
@@ -1005,6 +1145,23 @@ static void load_rootfs(void)
 	}
 	printf("linuxdrv: [%.2f s] %s: %llu MiB root filesystem read through Linux's driver in %ld ms\n", since_boot(),
 	       found, (unsigned long long)(total >> 20), ms);
+	if (!memcmp(buf, "FLARERDC", 8)) {
+		/* in pieces: inflated here on every CPU, into a plain archive the
+		 * kernel takes as it is (no work under its lock) */
+		uint64_t nphys, nsize;
+		unsigned char *nbuf = inflate_rootfs(buf, total, &nphys, &nsize);
+		munmap(buf, size);
+		uint64_t fr[2] = { phys, size };
+		if (ioctl(hw, FLAREHW_DMA_FREE, fr))
+			printf("linuxdrv: could not give back the compressed root filesystem: %s\n", strerror(errno));
+		if (!nbuf)
+			return;
+		buf = nbuf;
+		phys = nphys;
+		size = nsize;
+		memcpy(&total, buf + 8, 8);
+		total += 32;
+	}
 	uint64_t req[2] = { phys, total };
 	int n = ioctl(hw, FLAREHW_ROOTFS, req);
 	if (n < 0)
@@ -2016,7 +2173,7 @@ int main(int argc, char **argv)
 	lkl_qrt_dma_base = pool_phys;
 	lkl_qrt_dma_size = pool_size;
 
-	char cmd[512] = "mem=160M loglevel=6"; /* QRT gives Linux 160 MiB on the Mi A1 */
+	char cmd[512] = "mem=160M loglevel=6 log_buf_len=1M"; /* QRT gives Linux 160 MiB on the Mi A1 */
 	for (int i = 2; i < argc; i++) {
 		strncat(cmd, " ", sizeof cmd - strlen(cmd) - 1);
 		strncat(cmd, argv[i], sizeof cmd - strlen(cmd) - 1);

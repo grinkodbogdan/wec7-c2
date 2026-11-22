@@ -103,4 +103,7 @@ cmdline fw_devlink=permissive
 # Every message to the driver host, which keeps them (and shows their tail
 # if Linux has not brought its devices up after 30 s) but prints only the
 # ones that look like trouble.
-cmdline loglevel=7
+cmdline loglevel=8
+# Each start-up step timed (into the driver host's ring only): it prints
+# the slowest once Linux's devices are up.
+cmdline initcall_debug

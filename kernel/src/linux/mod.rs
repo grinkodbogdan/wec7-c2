@@ -642,7 +642,7 @@ impl Kernel {
                 }
             }
         };
-        let mut mm = Mm { vmas: Vec::new(), brk_start: info.end, brk: info.end };
+        let mut mm = Mm { vmas: Vec::new(), brk_start: info.end, brk: info.end, guards: Default::default() };
         for &(s, e, prot) in info.segments.iter().chain(interp.iter().flat_map(|i| i.segments.iter())) {
             let p = PROT_READ | if prot.write { PROT_WRITE } else { 0 } | if prot.exec { PROT_EXEC } else { 0 };
             mm.carve(s, e);

@@ -347,7 +347,7 @@ fn build(o: &Opts) -> PathBuf {
     if profile == "ramdisk" || profile == "userdata" {
         let full = assemble_rootfs_at(true, &root().join("target/flare-rootfs-full"));
         let out = root().join(if profile == "ramdisk" { "target/flare-ramdisk.bin" } else { "target/flare-userdata.img" });
-        let (n, z) = pack_ramdisk(&full, &out);
+        let (n, z) = pack_ramdisk(&full, &out, profile == "userdata");
         println!(
             "xtask: {} root filesystem: {} MiB, {} MiB compressed ({})",
             profile,
@@ -754,6 +754,7 @@ fn linuxdrv_build() -> PathBuf {
         dir.join("lkl/config-arm64"),
         dir.join("lkl/config-flare"),
         dir.join("lkl/config-qrt"),
+        dir.join("alpine.lock"),
     ]);
     let stamp = out.join(".stamp");
     if std::fs::read_to_string(&stamp).map(|s| s.trim() != inputs).unwrap_or(true) || !out.join("linuxdrv").exists() {
@@ -894,7 +895,7 @@ fn stage_linuxdrv(comp: &Composition, rootfs: &Path) {
 /// (kernel/src/ramdisk.rs): a 32-byte header (`FLARERDZ`, compressed length,
 /// checksum, length) and the kernel's initramfs format (kernel/build.rs
 /// `pack_dir`), zlib-compressed. Returns (size, compressed size).
-fn pack_ramdisk(dir: &Path, out: &Path) -> (usize, usize) {
+fn pack_ramdisk(dir: &Path, out: &Path, chunked: bool) -> (usize, usize) {
     fn pack(root: &Path, dir: &Path, out: &mut Vec<u8>) {
         use std::os::unix::fs::PermissionsExt;
         let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
@@ -922,7 +923,35 @@ fn pack_ramdisk(dir: &Path, out: &Path) -> (usize, usize) {
     }
     let mut raw = Vec::new();
     pack(dir, dir, &mut raw);
-    let body = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
+    let (magic, body): (&[u8; 8], Vec<u8>) = if chunked {
+        // FLARERDC (the userdata image): 4 MiB pieces, each its own zlib
+        // stream, so the driver host inflates them on every CPU at once.
+        // Body: u32 count, u32 0, then per piece u64 offset (in the body),
+        // u64 length, u64 offset in the archive, u64 its length; the pieces.
+        const PIECE: usize = 4 << 20;
+        let pieces: Vec<&[u8]> = raw.chunks(PIECE).collect();
+        let comp: Vec<Vec<u8>> = std::thread::scope(|s| {
+            let hs: Vec<_> =
+                pieces.iter().map(|p| s.spawn(move || miniz_oxide::deflate::compress_to_vec_zlib(p, 9))).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut b = (pieces.len() as u32).to_le_bytes().to_vec();
+        b.extend_from_slice(&0u32.to_le_bytes());
+        let mut at = 8 + 32 * pieces.len() as u64;
+        for (i, c) in comp.iter().enumerate() {
+            b.extend_from_slice(&at.to_le_bytes());
+            b.extend_from_slice(&(c.len() as u64).to_le_bytes());
+            b.extend_from_slice(&((i * PIECE) as u64).to_le_bytes());
+            b.extend_from_slice(&(pieces[i].len() as u64).to_le_bytes());
+            at += c.len() as u64;
+        }
+        for c in &comp {
+            b.extend_from_slice(c);
+        }
+        (b"FLARERDC", b)
+    } else {
+        (b"FLARERDZ", miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9))
+    };
     let mut sum = 0u64;
     for c in body.chunks(8) {
         let mut w = [0u8; 8];
@@ -930,7 +959,7 @@ fn pack_ramdisk(dir: &Path, out: &Path) -> (usize, usize) {
         sum = sum.wrapping_add(u64::from_le_bytes(w));
     }
     let mut img = Vec::with_capacity(body.len() + 32);
-    img.extend_from_slice(b"FLARERDZ");
+    img.extend_from_slice(magic);
     img.extend_from_slice(&(body.len() as u64).to_le_bytes());
     img.extend_from_slice(&sum.to_le_bytes());
     img.extend_from_slice(&(raw.len() as u64).to_le_bytes());

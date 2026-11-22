@@ -42,6 +42,7 @@ pub const FLAREHW_SMC: u64 = 0x4603;
 pub const FLAREHW_INPUT: u64 = 0x4604;
 pub const FLAREHW_ROOTFS: u64 = 0x4605;
 pub const FLAREHW_SERIAL: u64 = 0x4606;
+pub const FLAREHW_DMA_FREE: u64 = 0x4607;
 /// mmap offset bit: map DMA memory non-cacheable.
 pub const NOCACHE: u64 = 1 << 62;
 
@@ -248,6 +249,28 @@ impl Kernel {
                     Err(EINVAL)
                 }
             }
+            FLAREHW_DMA_FREE => {
+                // in: u64 physical address, u64 size, exactly as allocated;
+                // the host must have unmapped it
+                let v = self.uread(c, arg, 16)?;
+                let pa = u64::from_le_bytes(v[0..8].try_into().unwrap());
+                let size = u64::from_le_bytes(v[8..16].try_into().unwrap());
+                let i = self.lx().hw.dma.iter().position(|&(b, s)| b == pa && s == size).ok_or(EINVAL)?;
+                let mapped = self.proc(c).mm.vmas.iter().any(|v| match v.backing {
+                    super::mm::Backing::Phys(b, _) => b < pa + size && pa < b + (v.end - v.start),
+                    _ => false,
+                });
+                if mapped {
+                    return Err(EBUSY);
+                }
+                self.lx().hw.dma.remove(i);
+                let mut p = pa;
+                while p < pa + size {
+                    frame::free(p);
+                    p += PAGE_SIZE;
+                }
+                Ok(0)
+            }
             FLAREHW_ROOTFS => {
                 // in: u64 physical address, u64 length (inside one of this
                 // host's DMA blocks); out: the number of entries added
@@ -264,7 +287,17 @@ impl Kernel {
                     kprintln!("linux: root filesystem from storage: {}", e);
                     EINVAL
                 })?;
-                let data = crate::ramdisk::materialize(va, a, false).map_err(|e| {
+                // a plain archive is adopted where it is: the DMA block
+                // becomes the kernel's for good (no copy); a compressed one
+                // is inflated into fresh memory
+                let in_place = a.zlib.is_none();
+                if in_place {
+                    let blk = self.lx().hw.dma.iter().position(|&(b, s)| pa >= b && end <= b + s);
+                    if let Some(i) = blk {
+                        self.lx().hw.dma.remove(i);
+                    }
+                }
+                let data = crate::ramdisk::materialize(va, a, in_place).map_err(|e| {
                     kprintln!("linux: root filesystem from storage: {}", e);
                     ENOMEM
                 })?;

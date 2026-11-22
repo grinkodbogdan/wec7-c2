@@ -159,7 +159,16 @@ pub struct Mm {
     pub vmas: Vec<Vma>,
     pub brk_start: u64,
     pub brk: u64,
+    /// Read-only zero pages kept just below large mappings (`sys_mmap`).
+    pub guards: alloc::collections::BTreeSet<u64>,
 }
+
+/// Mappings this large get a readable zero page below them. On Linux a new
+/// mapping usually sits right above the previous one, so code that reads a
+/// little before a buffer (Mesa's llvmpipe sampling a client's window, by
+/// up to a row) reads that neighbour; here the page below would otherwise be
+/// unmapped and the program killed.
+const GUARD_MIN: u64 = 256 << 10;
 
 pub fn prot_of(p: u64) -> Prot {
     Prot { none: p & (PROT_READ | PROT_WRITE | PROT_EXEC) == 0, write: p & PROT_WRITE != 0, exec: p & PROT_EXEC != 0 }
@@ -435,6 +444,11 @@ impl Kernel {
             && !p.mm.overlaps(addr, addr + len)
         {
             addr
+        } else if len >= GUARD_MIN && (flags & MAP_ANONYMOUS != 0 || shared) {
+            let at = p.mm.find_free(len + PAGE_SIZE, super::MMAP_TOP, MMAP_FLOOR).ok_or(ENOMEM)?;
+            p.mm.insert(Vma { start: at, end: at + PAGE_SIZE, prot: PROT_READ, backing: Backing::Anon });
+            p.mm.guards.insert(at);
+            at + PAGE_SIZE
         } else {
             p.mm.find_free(len, super::MMAP_TOP, MMAP_FLOOR).ok_or(ENOMEM)?
         };
@@ -455,8 +469,10 @@ impl Kernel {
             return Err(EINVAL);
         }
         let end = addr.checked_add(page_ceil(len)).ok_or(EINVAL)?;
-        self.proc(c).mm.carve(addr, end);
-        unmap_range(&mut self.comps[c].vspace.as_ref().unwrap().borrow_mut(), addr, end);
+        // (with the guard page below, if the mapping had one)
+        let start = if self.proc(c).mm.guards.remove(&(addr.wrapping_sub(PAGE_SIZE))) { addr - PAGE_SIZE } else { addr };
+        self.proc(c).mm.carve(start, end);
+        unmap_range(&mut self.comps[c].vspace.as_ref().unwrap().borrow_mut(), start, end);
         Ok(0)
     }
 
